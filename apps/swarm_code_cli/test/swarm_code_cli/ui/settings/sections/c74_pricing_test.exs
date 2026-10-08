@@ -59,7 +59,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74PricingTest do
              "0.28",
              "0.007 ·",
              "0.088 ·",
-             "family default"
+             "1M default"
            ]
 
     assert cols(row(rows, "rec:pricing_row:deepseek-v4-pro")) == [
@@ -68,7 +68,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74PricingTest do
              "1.10",
              "0.027 ·",
              "0.34 ·",
-             "family default"
+             "1M default"
            ]
 
     assert text(row(rows, "info:derived").value) ==

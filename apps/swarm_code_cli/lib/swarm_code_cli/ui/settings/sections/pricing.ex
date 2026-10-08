@@ -210,7 +210,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
   defp cache_cell(_ctx, value, _derived, priority), do: {R.money(value), :text_primary, priority}
 
   defp context_cell(ctx, nil, priority),
-    do: {"family default", :text_faint, priority} |> keep(ctx)
+    do: {"1M default", :text_faint, priority} |> keep(ctx)
 
   defp context_cell(_ctx, n, priority), do: {group_digits(n), :text_primary, priority}
 
@@ -336,7 +336,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
           [{"$" <> R.money(v), :text_primary}]
 
         {:context, nil} ->
-          [{"family default", :text_faint}]
+          [{"1M default", :text_faint}]
 
         {:context, v} ->
           [{group_digits(v), :text_primary}]
@@ -371,7 +371,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
              step: 1_000,
              big_step: 100_000,
              nullable: true,
-             null_label: "family default"
+             null_label: "1M default"
            }}
       end
 
@@ -443,20 +443,52 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Pricing do
   defp open_or_delete(ctx, %{id: "act:pricing.delete"}, model), do: delete_ops(ctx, model)
   defp open_or_delete(_ctx, _row, model), do: [{:open, R.new_page(:pricing, {@kind, model})}]
 
-  defp add_ops(model) do
+  defp add_ops(model), do: draft_ops(model, %{})
+
+  @doc """
+  Opens a new price draft for `model` (nil: none named yet) with `fields`
+  already filled in; it saves once the model and both prices are set.
+  """
+  def draft_ops(model, fields) do
     [
       {:draft_discard, @kind},
       {:draft_put, @kind,
-       %{
-         "model" => model || "",
-         "input" => nil,
-         "output" => nil,
-         "cache_read" => nil,
-         "cache_write" => nil,
-         "context_window" => nil
-       }},
+       Map.merge(
+         %{
+           "model" => model || "",
+           "input" => nil,
+           "output" => nil,
+           "cache_read" => nil,
+           "cache_write" => nil,
+           "context_window" => nil
+         },
+         fields
+       )},
       {:open, R.new_page(:pricing, {@kind, @draft})}
     ]
+  end
+
+  @doc """
+  cli021 U3: sets `model`'s context window (nil: back to the 1M default) from
+  another page. A priced model's whole row is written with CAS on the row as
+  read; a model without a price opens its draft (the window is stored on the
+  price row, as on the desktop). `{:error, words}` for a value out of bounds.
+  """
+  def window_ops(ctx, model, value) do
+    with :ok <- check("context_window", value) do
+      case Enum.find(R.items(ctx, "pricing_rows"), &(R.record_id(&1) == model)) do
+        nil -> {:ok, draft_ops(model, %{"context_window" => value})}
+        rec -> {:ok, put_ops(ctx, model, row_wire(R.fields(rec)), %{"context_window" => value})}
+      end
+    end
+  end
+
+  @doc "The configured window of `model` on its price row, nil for none (or no row)."
+  def window(ctx, model) do
+    case Enum.find(R.items(ctx, "pricing_rows"), &(R.record_id(&1) == model)) do
+      nil -> {:unpriced, nil}
+      rec -> {:priced, R.field(R.fields(rec), "context_window")}
+    end
   end
 
   defp delete_ops(ctx, model) do

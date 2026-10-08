@@ -97,7 +97,8 @@ defmodule SwarmCode.Settings.Registry.Models do
       "Fetch every provider's models",
       "provider.fetch_all",
       group: "new conversations",
-      description: "Lists every provider's models and shows what changed; apply per provider.",
+      description:
+        "Saves every provider's model list as the provider names it now and says what changed for each.",
       parity: "D§1c"
     ),
     global("efforts.default", :models_effort, "Default effort",

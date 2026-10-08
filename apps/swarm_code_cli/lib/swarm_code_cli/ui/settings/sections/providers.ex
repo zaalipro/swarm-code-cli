@@ -285,17 +285,7 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
   end
 
   defp fetch_all_row(ctx) do
-    task = R.task(ctx, "provider.fetch_all")
-
-    {value, tag} =
-      if task do
-        R.task_words(ctx, task, "fetching every provider's models", fn s ->
-          total = R.field(s, "total") || length(R.field(s, "providers") || [])
-          "#{R.count(total, "provider")} · #{R.field(s, "changed") || 0} changed lists"
-        end)
-      else
-        {[{"shows each difference before it changes a list", :text_faint}], []}
-      end
+    {value, tag, lines, task} = fetch_all_view(ctx)
 
     R.row(
       id: "act:providers.fetch_all",
@@ -303,10 +293,113 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
       label: "▸ Fetch every provider's models",
       value: value,
       tag: tag,
+      lines: lines,
       state: if(R.running?(task), do: :running, else: :normal),
       keys: [{"Enter", :open_row, "fetch"}] ++ cancel_key(task),
       target: {:fetch_all}
     )
+  end
+
+  @fetch_lines 6
+
+  @doc """
+  cli021 U3: what `Fetch every provider's models` says where it was started
+  (this page and Models & effort): `{value, tag, lines, task}`. Done, the
+  service's words (C1: `3 providers · 2 updated · 1 failed`), and one line
+  per provider (`DeepSeek · 12 models · 3 new`, a failure in its own words).
+  """
+  def fetch_all_view(ctx) do
+    task = R.task(ctx, "provider.fetch_all")
+
+    {value, tag} =
+      if task do
+        R.task_words(ctx, task, "fetching every provider's models", &fetch_all_words/1)
+      else
+        {[{"saves each provider's list as it is now", :text_faint}], []}
+      end
+
+    lines =
+      case task && to_string(R.field(elem(task, 1), "state")) do
+        "done" ->
+          summary = R.field(elem(task, 1), "summary") || %{}
+          provider_lines(ctx, R.field(summary, "providers") || [])
+
+        _ ->
+          []
+      end
+
+    {value, tag, lines, task}
+  end
+
+  defp fetch_all_words(s) do
+    case R.field(s, "words") do
+      words when is_binary(words) and words != "" ->
+        words
+
+      _ ->
+        rows = R.field(s, "providers") || []
+        total = R.field(s, "total") || R.field(s, "count") || length(rows)
+        failed = R.field(s, "failed") || Enum.count(rows, &(R.field(&1, "state") != "done"))
+        saved = R.field(s, "saved")
+        saved = if is_integer(saved), do: saved, else: 0
+
+        [R.count(total, "provider"), if(saved > 0, do: "#{saved} updated", else: "no change")]
+        |> Kernel.++(if failed > 0, do: ["#{failed} failed"], else: [])
+        |> Enum.join(" · ")
+    end
+  end
+
+  defp provider_lines(ctx, rows) do
+    shown =
+      rows
+      |> Enum.take(@fetch_lines)
+      |> Enum.map(fn row ->
+        name = to_string(R.field(row, "name") || R.field(row, "id") || "?")
+
+        case to_string(R.field(row, "state")) do
+          "done" ->
+            [{name, :text_muted}, {" · " <> provider_words(row), :text_faint}]
+
+          _ ->
+            [
+              {R.glyph(ctx, :error) <> " " <> name, :error},
+              {" · " <> to_string(R.field(row, "message") || "failed"), :text_muted}
+            ]
+        end
+      end)
+
+    case length(rows) - @fetch_lines do
+      n when n > 0 -> shown ++ [[{"+#{n} more", :text_faint}]]
+      _ -> shown
+    end
+  end
+
+  defp provider_words(row) do
+    case R.field(row, "message") do
+      words when is_binary(words) and words != "" ->
+        words
+
+      _ ->
+        model_words(
+          R.field(row, "count") || 0,
+          R.field(row, "added") || 0,
+          R.field(row, "removed") || 0
+        )
+    end
+  end
+
+  @doc "C1's sentence for one list: `12 models · 3 new · 2 removed` (`no change`)."
+  def model_words(listed, added, removed) do
+    changes =
+      case Enum.reject(
+             [added > 0 && "#{added} new", removed > 0 && "#{removed} removed"],
+             &(&1 == false)
+           ) do
+        [] -> ["no change"]
+        parts -> parts
+      end
+
+    Enum.join([R.count(listed, "model") | changes], " · ")
   end
 
   defp cancel_key(task) do
@@ -747,9 +840,11 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
   """
   def pending_fetch(ctx, id, f) do
     with {task_id, task} <- R.task(ctx, "provider.fetch_models", %{"id" => id}),
-         "done" <- to_string(R.field(task, "state")) do
+         "done" <- to_string(R.field(task, "state")),
+         summary = R.task_summary(ctx, task_id) || R.field(task, "summary") || %{},
+         # cli021 C1: a fetch that saved has nothing left to apply.
+         false <- R.field(summary, "saved") == true do
       rows = R.task_rows(ctx, task_id)
-      summary = R.task_summary(ctx, task_id) || R.field(task, "summary") || %{}
       models = R.field(f, "models") || []
       new = for r <- rows, R.field(r, "change") == "new", do: R.field(r, "model")
       gone = for r <- rows, R.field(r, "change") == "gone", do: R.field(r, "model")
@@ -768,11 +863,23 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.Providers do
 
     {value, tag} =
       if task do
+        # cli021 U3: the result in C1's words (`12 models · 3 new · 2
+        # removed`), the service's own when it sends them.
         R.task_words(ctx, task, "fetching the model list", fn s ->
-          "#{R.count(R.field(s, "listed") || 0, "model")} from #{host(R.field(f, "base_url"))} · #{R.field(s, "ms") || 0} ms"
+          case R.field(s, "words") do
+            words when is_binary(words) and words != "" ->
+              words
+
+            _ ->
+              model_words(
+                R.field(s, "listed") || 0,
+                R.field(s, "added") || 0,
+                R.field(s, "removed") || 0
+              )
+          end
         end)
       else
-        {[{"shows the difference before it changes the list", :text_faint}], [{"f", :key}]}
+        {[{"saves the list the provider names now", :text_faint}], [{"f", :key}]}
       end
 
     action =
