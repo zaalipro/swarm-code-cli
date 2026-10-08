@@ -140,9 +140,14 @@ defmodule SwarmCodeCLI.UI.SlashArgs do
 
     # cli022 F2: `default` clears the conversation's value; it is the current
     # row while none is set and then names the level in effect (F4).
+    # cli022 int: the level in effect comes from the daemon (F4); a session's
+    # NCODE_EFFORT is named as such, since it is not the global default.
     default =
-      case EffortPicker.effective(state, target) do
-        level when is_binary(level) and is_nil(current) ->
+      case {EffortPicker.effective(state, target), EffortPicker.source(state, target)} do
+        {level, :env} when is_binary(level) and is_nil(current) ->
+          "Follow NCODE_EFFORT · " <> level
+
+        {level, _} when is_binary(level) and is_nil(current) ->
           "Follow the global default · " <> level
 
         _ ->

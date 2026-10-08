@@ -1418,6 +1418,12 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
     levels = ["default" | levels]
     current = current || "default"
     effective = SwarmCodeCLI.UI.Reducer.EffortPicker.effective(state, scope)
+    # cli022 int: a session's NCODE_EFFORT is named beside its level (F4).
+    effective =
+      if is_binary(effective) and
+           SwarmCodeCLI.UI.Reducer.EffortPicker.source(state, scope) == :env,
+         do: effective <> " (NCODE_EFFORT)",
+         else: effective
 
     mark = SafeText.value(Support.glyph(:check, state))
 

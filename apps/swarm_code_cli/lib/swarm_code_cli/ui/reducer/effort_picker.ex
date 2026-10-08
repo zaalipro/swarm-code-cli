@@ -55,18 +55,38 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
 
   @doc """
   The level in effect for `target`: the conversation's value, else the
-  environment's, else the global default (cli022 F4, the workspace's
-  `effective_effort` / `effective_swarm_effort`); nil while the daemon does
-  not say.
+  environment's (`NCODE_EFFORT`, chat only), else the global default (cli022
+  F4, the workspace's `effort_effective` / `swarm_effort_effective`); nil
+  while the daemon does not say (an older daemon, the live launcher).
   """
   @spec effective(map(), :chat | :swarm) :: binary() | nil
   def effective(state, target) do
-    field = if target == :chat, do: :effective_effort, else: :effective_swarm_effort
+    field = if target == :chat, do: :effort_effective, else: :swarm_effort_effective
 
     case Map.get(state.read_model.snapshots, :workspace) do
       %{} = workspace ->
         case Map.get(workspace, field) do
           level when is_binary(level) and level != "" -> level
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  Where the level in effect comes from (cli022 F4, `effort_source` /
+  `swarm_effort_source`): `:conversation`, `:env`, `:default` or nil.
+  """
+  @spec source(map(), :chat | :swarm) :: :conversation | :env | :default | nil
+  def source(state, target) do
+    field = if target == :chat, do: :effort_source, else: :swarm_effort_source
+
+    case Map.get(state.read_model.snapshots, :workspace) do
+      %{} = workspace ->
+        case Map.get(workspace, field) do
+          source when source in [:conversation, :env, :default] -> source
           _ -> nil
         end
 

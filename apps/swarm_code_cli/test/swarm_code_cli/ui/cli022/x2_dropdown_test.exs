@@ -64,7 +64,7 @@ defmodule SwarmCodeCLI.UI.Cli022.X2DropdownTest do
   end
 
   test "the default row names the level in effect when the daemon reports it" do
-    state = type(base(effort: nil, effective_effort: "medium"), "/effort ")
+    state = type(base(effort: nil, effort_effective: "medium"), "/effort ")
     assert %{desc: desc} = Enum.find(SlashPalette.entries(state), &(&1.value == "default"))
     assert desc =~ "medium"
   end

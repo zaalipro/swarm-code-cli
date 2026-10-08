@@ -88,19 +88,19 @@ defmodule SwarmCodeCLI.UI.Cli022.X1EffortDefaultTest do
   end
 
   test "the default row says which level is in effect when the daemon reports it" do
-    state = leveled(effort: nil, effective_effort: "medium")
+    state = leveled(effort: nil, effort_effective: "medium")
     {state, []} = Reducer.update(state, {:slash_local, {:effort, :chat}})
     text = Cli020EHelpers.screen_text(state)
     assert text =~ ~r/default · medium/
     # a pinned level is ticked "in use" and default shows nothing
-    pinned = leveled(effort: "high", effective_effort: "high")
+    pinned = leveled(effort: "high", effort_effective: "high")
     {pinned, []} = Reducer.update(pinned, {:slash_local, {:effort, :chat}})
     refute Cli020EHelpers.screen_text(pinned) =~ "default ·"
   end
 
   test "EffortPicker.effective reads the daemon's field, nil when it sends none" do
-    assert EffortPicker.effective(leveled(effective_effort: "max"), :chat) == "max"
-    assert EffortPicker.effective(leveled(effective_swarm_effort: "low"), :swarm) == "low"
+    assert EffortPicker.effective(leveled(effort_effective: "max"), :chat) == "max"
+    assert EffortPicker.effective(leveled(swarm_effort_effective: "low"), :swarm) == "low"
     assert EffortPicker.effective(leveled(), :chat) == nil
   end
 end
