@@ -732,8 +732,14 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
 
     # fix round U8: a queued message whose text is already in the transcript
     # has left the queue (it started), so its "queued" row goes with it.
+    # cli020 qa2 (U8): without the daemon's queue (a run view) the fallback
+    # rows mean "sends after the running turn", so they need a running turn;
+    # under a run that ended they were drained or dropped long ago.
     queued =
       case queued do
+        nil when not (is_map(ctx.run) and ctx.run.state in @live) ->
+          []
+
         nil ->
           for d <- mine,
               Map.get(d, :status) == :queued,

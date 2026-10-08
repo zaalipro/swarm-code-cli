@@ -374,5 +374,35 @@ defmodule SwarmCodeCLI.UI.FixRoundUTest do
       state = user_item(state, "drained prompt", delivery.at + 50)
       refute screen_text(state) =~ @waiting
     end
+
+    # cli020 qa2: a run view has no workspace queue for its conversation, so
+    # the fallback drew every queued send of the session under a stopped
+    # run (drained ones in other runs and dropped ones) on the release.
+    test "a run that no longer runs draws no fallback queued rows" do
+      delivery = %{
+        id: "d2",
+        conversation_id: "demo-panel",
+        run_id: nil,
+        text: "dropped or drained elsewhere",
+        status: :queued,
+        at: 1_788_436_800_000 - 100,
+        reason: nil,
+        said?: false,
+        turn_id: nil,
+        operation: :queue
+      }
+
+      state = scene() |> with_queue(queued_texts: nil) |> Map.put(:deliveries, [delivery])
+      assert screen_text(state) =~ @waiting
+
+      for ended <- [:stopped, :done, :failed] do
+        runs =
+          Map.update!(state.read_model.runs, Pass73Scenes.chat_id(), &%{&1 | state: ended})
+
+        text = screen_text(%{state | read_model: %{state.read_model | runs: runs}})
+        refute text =~ @waiting, inspect(ended)
+        refute text =~ "dropped or drained elsewhere", inspect(ended)
+      end
+    end
   end
 end
