@@ -1,7 +1,14 @@
 defmodule SwarmCode.Domain.Engine.Context do
   @moduledoc "Token estimation and history trimming."
 
-  @budget 120_000
+  # pass 74 K1: the context window of every model without a configured one
+  # (Settings → Pricing), and the trim budget that is 75 % of it. It used to be
+  # 120 000 tokens of budget for most models (160 000 for `claude*`, 900 000
+  # for `[1m]`); a model whose real window is smaller is caught by the
+  # context-overflow retry (`overflow_budget/3`), not by a low default.
+  @default_window 1_000_000
+  @budget 750_000
+  @window_share 0.75
   # Messages this close to the end are never compressed — the model is usually
   # still working with them.
   @keep_recent 8
@@ -17,39 +24,31 @@ defmodule SwarmCode.Domain.Engine.Context do
   @cut_keep 4_000
   @cut_suffix "chars); re-read a range if needed]"
 
-  @doc "The trim budget in estimated tokens (spec 51 §6.6)."
+  @doc "The trim budget in estimated tokens of a model with the default window (spec 51 §6.6, pass 74 K1)."
   @spec budget() :: pos_integer()
   def budget, do: @budget
 
-  @doc """
-  The trim budget for `model` (spec 55 T18, 55a A12): 200 k / 1 M contexts minus
-  the output and headroom.
+  @doc "pass 74 K1: the context window, in tokens, of a model without a configured one."
+  @spec default_window() :: pos_integer()
+  def default_window, do: @default_window
 
-  spec 66 T13: with `settings`, the model's own `context_window` (the optional
-  third number on its `settings.pricing` row) decides instead of the substring
-  test, at 75 % — the remaining quarter is the reply and the estimate error.
-  A model with no row, or a settings struct that is nil, keeps the three cases
-  below exactly as they were.
+  @doc """
+  The trim budget for `model`: 75 % of its context window — the remaining
+  quarter is the reply and the estimate error (spec 66 T13).
+
+  The window is the model's own `context_window` (the optional third number on
+  its `settings.pricing` row, 8 000 to 2 000 000) when Settings → Pricing has
+  one, and `default_window/0` (1 000 000) for every other model (pass 74 K1;
+  before, 120 000 tokens of budget for most models). A nil model or nil
+  settings take the default.
   """
   @spec budget(String.t() | nil, map() | nil) :: pos_integer()
-  def budget(model, settings \\ nil)
+  def budget(model, settings \\ nil),
+    do: trunc(effective_window(model, settings) * @window_share)
 
-  def budget(model, settings) when is_binary(model) do
-    case window(model, settings) do
-      window when is_integer(window) and window > 0 -> trunc(window * 0.75)
-      _none -> default_budget(model)
-    end
-  end
-
-  def budget(_model, _settings), do: @budget
-
-  defp default_budget(model) do
-    cond do
-      String.contains?(model, "[1m]") -> 900_000
-      String.starts_with?(model, "claude") -> 160_000
-      true -> @budget
-    end
-  end
+  @doc "pass 74 K1: the model's configured context window, else `default_window/0`."
+  @spec effective_window(String.t() | nil, map() | nil) :: pos_integer()
+  def effective_window(model, settings), do: window(model, settings) || @default_window
 
   @doc "The model's configured context window in tokens, or nil (spec 66 T13)."
   @spec window(String.t() | nil, map() | nil) :: pos_integer() | nil
@@ -61,6 +60,77 @@ defmodule SwarmCode.Domain.Engine.Context do
   end
 
   def window(_model, _settings), do: nil
+
+  @doc """
+  pass 74 K1: the budget the context-overflow retry trims to, after the
+  provider refused a request of `sent` estimated tokens under `budget`.
+
+  The retry has to come in under what was *sent*: with the 1 000 000 default
+  window a 128 k model's refusal arrives far below the budget, and 0.6 of the
+  budget (spec 66 T14's rule) trimmed nothing. So it is 0.6 of the smaller of
+  the two — the old rule exactly when the history filled the budget. When the
+  error names the provider's own numbers (`N tokens > M maximum`, `maximum
+  context length is M tokens … resulted in / you requested N tokens`) and they
+  ask for more than that, the history shrinks by their ratio with a fifth to
+  spare; a limit alone is taken at 0.6. Never below one token.
+  """
+  @spec overflow_budget(non_neg_integer(), pos_integer(), term()) :: pos_integer()
+  def overflow_budget(sent, budget, error) do
+    base = div(min(budget, max(sent, 0)) * 3, 5)
+
+    target =
+      case overflow_numbers(error) do
+        {used, limit} when is_integer(used) and used > limit ->
+          min(base, div(sent * limit * 4, used * 5))
+
+        {nil, limit} ->
+          min(base, div(limit * 3, 5))
+
+        _none ->
+          base
+      end
+
+    max(target, 1)
+  end
+
+  @overflow_used_limit ~r/(\d[\d,]*)\s*tokens?\s*>\s*(\d[\d,]*)\s*(?:tokens?\s*)?maximum/i
+  @overflow_limit ~r/maximum context length is\s*(\d[\d,]*)/i
+  @overflow_used ~r/(?:resulted in|you requested)\s*(\d[\d,]*)\s*tokens/i
+
+  # `{used | nil, limit}` from the provider's sentence, or nil.
+  defp overflow_numbers(error) when is_binary(error) do
+    case Regex.run(@overflow_used_limit, error) do
+      [_, used, limit] ->
+        positive({number(used), number(limit)})
+
+      nil ->
+        case Regex.run(@overflow_limit, error) do
+          [_, limit] ->
+            used =
+              case Regex.run(@overflow_used, error) do
+                [_, used] -> number(used)
+                nil -> nil
+              end
+
+            positive({used, number(limit)})
+
+          nil ->
+            nil
+        end
+    end
+  end
+
+  defp overflow_numbers(_error), do: nil
+
+  defp positive({_used, limit} = numbers) when is_integer(limit) and limit > 0, do: numbers
+  defp positive(_numbers), do: nil
+
+  defp number(digits) do
+    case Integer.parse(String.replace(digits, ",", "")) do
+      {n, ""} -> n
+      _other -> nil
+    end
+  end
 
   @doc """
   A conservative token estimate. Sakana task 12: images count too — a multimodal
