@@ -453,7 +453,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ProvidersTest do
       HTTP.stop(server)
     end
 
-    test "fetch shows the difference and writes nothing until apply", c do
+    test "fetch with apply none shows the difference and writes nothing until apply", c do
       server = models_server(["m-1", "m-2", "m-3"])
 
       provider =
@@ -467,7 +467,12 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ProvidersTest do
       {:ok, conv} = Conversations.create(c.ailogic.id)
       {:ok, _} = Conversations.update(conv, %{chat_provider_id: provider.id, chat_model: "old"})
 
-      {:task, spec, _} = run("provider.fetch_models", c, target: %{"id" => provider.id})
+      {:task, spec, _} =
+        run("provider.fetch_models", c,
+          target: %{"id" => provider.id},
+          attributes: %{"apply" => "none"}
+        )
+
       assert spec.timeout_ms == 30_000
       {:ok, fetched} = C74S2.run_task(spec)
 
@@ -513,7 +518,12 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ProvidersTest do
       server = models_server(ids)
       provider = local_provider!("Big", server.url)
 
-      {:task, spec, _} = run("provider.fetch_models", c, target: %{"id" => provider.id})
+      {:task, spec, _} =
+        run("provider.fetch_models", c,
+          target: %{"id" => provider.id},
+          attributes: %{"apply" => "none"}
+        )
+
       {:ok, fetched} = C74S2.run_task(spec)
       assert fetched["truncated"] == true
       assert fetched["listed"] == 2_500
@@ -565,7 +575,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ProvidersTest do
                )
     end
 
-    test "fetch_all reports progress per provider and writes nothing", c do
+    test "fetch_all reports progress per provider and saves each list", c do
       Enum.each([c.deepseek, c.anthropic, c.ollama, c.openrouter], &Providers.delete/1)
       server = models_server(["a", "b"])
       one = local_provider!("One", server.url)
@@ -582,8 +592,11 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ProvidersTest do
       assert Enum.all?(result["providers"], &(&1["state"] == "done" and &1["added"] == 2))
       assert result["changed"] == 2
       refute spec.summary.(result)["providers"] |> hd() |> Map.has_key?("models")
-      assert Providers.get(one.id).models == ["m-1"]
-      assert Providers.get(two.id).models == ["m-1"]
+      assert Enum.all?(result["providers"], &(&1["saved"] == true))
+      assert result["saved"] == 2 and result["failed"] == 0
+      assert result["words"] == "2 providers · 2 updated"
+      assert Providers.get(one.id).models == ["a", "b"]
+      assert Providers.get(two.id).models == ["a", "b"]
       HTTP.stop(server)
     end
   end
