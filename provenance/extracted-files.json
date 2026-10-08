@@ -500,7 +500,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex",
-      "sha256": "2909be895ab1f2d208d9a9f700229e0ce460fec0cc1749ccdb183b14f04d0311",
+      "sha256": "01977f1ce1036ad5043b4c968c16845c6cfa9df220d0af4af113124a63d13396",
       "upstream_commit": "a93d6d8ee74358749e157e91dea46ad8c0d66722",
       "upstream_path": "lib/swarm_code/mcp/client.ex",
       "upstream_sha256": "031af4ca749ebd2878a3bf3f0de5182d1e93312c75722bddce31a43b60b53a39"
@@ -1796,7 +1796,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/lsp/client.ex",
-      "sha256": "d1de6a1b4c78ff36cc0d9cb62a17a58bd8fe3f0c48027e7cd8edf0fc9c4e2b87",
+      "sha256": "f176c163585349650905c9e0968f476d3d69a82608e5a0992a5165a206137de6",
       "upstream_commit": "a93d6d8ee74358749e157e91dea46ad8c0d66722",
       "upstream_path": "lib/swarm_code/lsp/client.ex",
       "upstream_sha256": "40e5c3590500755b27bb9617989a1eee3ec52fb55731f4e1340d88e32b81f8f9"

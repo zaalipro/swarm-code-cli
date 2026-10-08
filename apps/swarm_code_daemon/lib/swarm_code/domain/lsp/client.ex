@@ -182,7 +182,7 @@ defmodule SwarmCode.Domain.LSP.Client do
         "capabilities" => %{},
         "processId" => System.pid() |> String.trim() |> String.to_integer(),
         # cli021 K7 (CLI patch): the CLI introduces itself with its own version.
-        "clientInfo" => %{"name" => "ncode", "version" => "0.2.1"}
+        "clientInfo" => %{"name" => "ncode", "version" => "0.2.2"}
       }
     }
 
