@@ -5,10 +5,7 @@ defmodule SwarmCode.Daemon.Runtime.RunTest do
   alias SwarmCode.Test.LoopbackHTTP, as: HTTP
 
   setup do
-    unless Process.whereis(SwarmCode.LLM.ProviderCaps),
-      do: start_supervised!(SwarmCode.LLM.ProviderCaps)
-
-    SwarmCode.LLM.ProviderCaps.reset()
+    SwarmCode.Domain.LLM.ProviderCaps.reset()
 
     root =
       Path.join(

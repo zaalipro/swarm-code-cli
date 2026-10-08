@@ -50,10 +50,7 @@ defmodule SwarmCode.Daemon.Runtime.RunSinkTest do
   end
 
   setup do
-    unless Process.whereis(SwarmCode.LLM.ProviderCaps),
-      do: start_supervised!(SwarmCode.LLM.ProviderCaps)
-
-    SwarmCode.LLM.ProviderCaps.reset()
+    SwarmCode.Domain.LLM.ProviderCaps.reset()
 
     root =
       Path.join(System.tmp_dir!(), "swarm-sink-" <> Base.encode16(:crypto.strong_rand_bytes(12)))

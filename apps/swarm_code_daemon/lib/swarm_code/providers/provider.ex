@@ -103,7 +103,7 @@ defmodule SwarmCode.Providers.Provider do
   defp valid_levels(nil), do: {:ok, nil}
 
   defp valid_levels(levels) when is_list(levels) do
-    case SwarmCode.LLM.Efforts.validate(levels) do
+    case SwarmCode.Domain.LLM.Efforts.validate(levels) do
       {:ok, normalized} -> {:ok, normalized}
       {:error, _} -> {:error, "invalid effort levels"}
     end

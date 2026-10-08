@@ -10,8 +10,9 @@ defmodule SwarmCode.Daemon.Application do
 
   @impl true
   def start(_type, _args) do
+    # cli020 L1: the live runtime's capability table is the synced one,
+    # `SwarmCode.Domain.LLM.ProviderCaps`, started by `Domain.Runtime`.
     children = [
-      SwarmCode.LLM.ProviderCaps,
       SwarmCode.Daemon.Runtime.RunSupervisor,
       SwarmCode.Domain.Runtime
     ]

@@ -43,6 +43,8 @@ defmodule SwarmCode.Domain.LLM.SSETest do
   end
 
   test "no data line is appended to the tail of the accumulator" do
-    refute File.read!("lib/swarm_code/llm/sse.ex") =~ "data ++ ["
+    # cli020 L1: the CLI's copy of the parser is the synced one (the desktop
+    # path held the frozen live copy, now removed).
+    refute File.read!("lib/swarm_code/domain/llm/sse.ex") =~ "data ++ ["
   end
 end

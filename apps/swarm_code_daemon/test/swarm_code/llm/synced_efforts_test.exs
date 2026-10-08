@@ -1,20 +1,23 @@
-defmodule SwarmCode.LLM.EffortsTest do
-  @moduledoc "Spec 45 §3: reasoning-effort profiles — defaults, the merge, resolution, presets."
+defmodule SwarmCode.Domain.LLM.SyncedEffortsTest do
+  @moduledoc """
+  Spec 45 §3: reasoning-effort profiles — defaults, the merge, resolution,
+  presets — on the synced `SwarmCode.Domain.LLM.Efforts` (cli020 L1: the CLI's
+  test of the frozen live copy, ported when the copy was removed; the
+  desktop's own test needs its database).
+  """
   use ExUnit.Case, async: false
 
-  alias SwarmCode.LLM.{Efforts, OpenAI, Request}
-  alias SwarmCode.Providers.Provider
+  alias SwarmCode.Domain.LLM.{Efforts, OpenAI, ProviderCaps, Request}
+  alias SwarmCode.Domain.Providers.Provider
 
   setup do
-    if Process.whereis(SwarmCode.LLM.ProviderCaps) == nil,
-      do: start_supervised!(SwarmCode.LLM.ProviderCaps)
-
-    OpenAI.reset_caps()
+    ProviderCaps.reset()
+    on_exit(&ProviderCaps.reset/0)
     :ok
   end
 
   defp openai(attrs \\ %{}),
-    do: struct(%Provider{id: "p-openai", name: "o", kind: "openai"}, attrs)
+    do: struct(%Provider{id: "p-openai", name: "o", kind: "openai_compatible"}, attrs)
 
   defp anthropic(attrs \\ %{}),
     do: struct(%Provider{id: "p-anthropic", name: "a", kind: "anthropic"}, attrs)
@@ -94,8 +97,8 @@ defmodule SwarmCode.LLM.EffortsTest do
 
   test "nil effort, an unknown kind and the fake kind" do
     assert wire(openai(), "m", nil) == %{"max_tokens" => 8192, "temperature" => 0.2}
-    assert Efforts.defaults("fake", nil) == Efforts.defaults("openai", nil)
-    assert Efforts.levels(nil, nil) == Efforts.defaults("openai", nil)
+    assert Efforts.defaults("fake", nil) == Efforts.defaults("openai_compatible", nil)
+    assert Efforts.levels(nil, nil) == Efforts.defaults("openai_compatible", nil)
   end
 
   # ------------------------------------------------------------- §3.1 merge
