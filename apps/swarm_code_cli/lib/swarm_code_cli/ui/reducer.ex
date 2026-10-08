@@ -508,25 +508,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # out as the typed command would, the draft kept.
   defp transition(state, {:effort_move, delta}), do: EffortPicker.move(state, delta)
 
-  # fix round U4: the `default` row (shown while no effort is set) is the
-  # state already in use; it only closes the picker.
+  # cli022 F2: the `default` row is always offered. While no effort is set it
+  # is the state already in use and only closes the picker; while a level is
+  # set it sends `/effort default`, which clears the conversation's value.
   defp transition(%{layers: [{:effort_picker, target} | _]} = state, {:effort_pick, "default"}) do
     if is_nil(EffortPicker.current(state, target)),
       do: transition(state, :close_top_layer),
-      else: {state, []}
+      else: effort_pick(state, "default")
   end
 
-  defp transition(state, {:effort_pick, level}) do
-    case EffortPicker.command(state, level) do
-      nil ->
-        {state, []}
-
-      text ->
-        {state, closed} = transition(state, :close_top_layer)
-        {state, sent} = send_command_text(state, text)
-        {state, closed ++ sent}
-    end
-  end
+  defp transition(state, {:effort_pick, level}), do: effort_pick(state, level)
 
   # cli020 D10: the rewind list and its confirm (`Reducer.Rewind`).
   defp transition(state, {:rewind_move, delta}), do: Rewind.move(state, delta)
@@ -1457,6 +1448,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
         id == "new" and feature == :mcp -> SwarmCodeCLI.UI.Library.new_form(:mcp)
         true -> nil
       end
+
+    # cli022 F1: a scheduled task's effort is unset by default (`default`).
+    form = if feature == :schedules, do: SwarmCodeCLI.UI.Library.schedule_form(form), else: form
 
     case form do
       %DTO.FeatureForm{} = form ->
@@ -3254,6 +3248,19 @@ defmodule SwarmCodeCLI.UI.Reducer do
     do: "No editor could be started; set $VISUAL or $EDITOR."
 
   # ------------------------------------------------- client slash commands
+
+  # cli020 D18 / cli022 F2: a picker row goes out as the typed command would.
+  defp effort_pick(state, level) do
+    case EffortPicker.command(state, level) do
+      nil ->
+        {state, []}
+
+      text ->
+        {state, closed} = transition(state, :close_top_layer)
+        {state, sent} = send_command_text(state, text)
+        {state, closed ++ sent}
+    end
+  end
 
   # cli020 D20: bare /delete asks first; the second within 5 s goes out.
   defp slash_local(state, :delete) do

@@ -555,7 +555,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
   # effort, so the status line shows it (the picker's PTY test).
   defp slash_command(script, _request, :set_effort, %{effort: effort, target: target}) do
     field = if target == :chat, do: :effort, else: :swarm_effort
-    level = Atom.to_string(effort)
+    # cli022 F2: `/effort default` arrives with a nil effort and clears it.
+    level = if effort, do: Atom.to_string(effort)
     next = Map.put(script.session, field, level)
 
     deltas =
@@ -565,7 +566,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       |> Enum.map(&metadata_fact(script, next, &1))
 
     {:ok, %{script | session: next}, deltas, [script.session.current],
-     %DTO.Feedback{kind: :notice, title: "Effort", text: "Effort set to " <> level}}
+     %DTO.Feedback{
+       kind: :notice,
+       title: "Effort",
+       text: if(level, do: "Effort set to " <> level, else: "Effort follows the default")
+     }}
   end
 
   defp slash_command(script, request, :trust_project, _),

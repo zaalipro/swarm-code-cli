@@ -6,7 +6,8 @@ defmodule SwarmCodeCLI.UI.SlashArgs do
   Static ones are the command's own enumeration (`/panel full|compact|…`,
   `/diff on|off`, `/approval read-only|auto|full`, `/theme dark|light|<palette>`,
   `/mouse on|off`, `/ultra on|off`); dynamic ones come from data the client
-  already holds: the levels of the model (`/effort`, `/worker_effort`), the
+  already holds: `default` and the levels of the model (`/effort`,
+  `/worker_effort`), the
   models of the workspace snapshot (`/model`, `/worker_model`) and the
   project's conversations (`/resume`). The worker slot's old names
   (`/swarm_effort`, `/swarm_model`) are aliases of the worker commands.
@@ -137,8 +138,25 @@ defmodule SwarmCodeCLI.UI.SlashArgs do
     target = if name == "effort", do: :chat, else: :swarm
     current = EffortPicker.current(state, target)
 
-    for level <- EffortPicker.levels(state, target),
-        do: pick(level, effort_words(level), level == current)
+    # cli022 F2: `default` clears the conversation's value; it is the current
+    # row while none is set and then names the level in effect (F4).
+    default =
+      case EffortPicker.effective(state, target) do
+        level when is_binary(level) and is_nil(current) ->
+          "Follow the global default · " <> level
+
+        _ ->
+          "Follow the global default"
+      end
+
+    case EffortPicker.levels(state, target) do
+      [] ->
+        []
+
+      levels ->
+        [pick("default", default, is_nil(current))] ++
+          for level <- levels, do: pick(level, effort_words(level), level == current)
+    end
   end
 
   defp all(state, name) when name in ["model", "worker_model"] do
@@ -154,7 +172,7 @@ defmodule SwarmCodeCLI.UI.SlashArgs do
       %{
         value: option.provider_id <> "|" <> option.model,
         label: option.model,
-        desc: mark(option.provider, option.model == current),
+        desc: option.provider,
         current?: option.model == current
       }
     end)
@@ -169,7 +187,7 @@ defmodule SwarmCodeCLI.UI.SlashArgs do
           %{
             value: item.id,
             label: title,
-            desc: mark(item.id, item.current),
+            desc: item.id,
             current?: item.current
           }
         end
@@ -184,14 +202,11 @@ defmodule SwarmCodeCLI.UI.SlashArgs do
   # ---------------------------------------------------------------- pieces
 
   defp pick(value, desc, current?),
-    do: %{value: value, label: value, desc: mark(desc, current?), current?: current?}
+    do: %{value: value, label: value, desc: desc, current?: current?}
 
   defp on_off(current, on, off) do
     [pick("on", on, current == true), pick("off", off, current == false)]
   end
-
-  defp mark(desc, true), do: desc <> " (current)"
-  defp mark(desc, _current?), do: desc
 
   defp effort_words("none"), do: "No reasoning"
   defp effort_words("minimal"), do: "Barely any reasoning"

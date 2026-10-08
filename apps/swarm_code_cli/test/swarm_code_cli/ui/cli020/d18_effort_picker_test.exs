@@ -46,7 +46,8 @@ defmodule SwarmCodeCLI.UI.Cli020.D18EffortPickerTest do
     {opened, []} = Reducer.update(state, {:slash_local, {:effort, :chat}})
 
     assert [{:effort_picker, :chat} | _] = opened.layers
-    assert opened.selection["effort_picker"] == 1
+    # cli022 F2: `default` heads the rows, so `medium` is the third.
+    assert opened.selection["effort_picker"] == 2
   end
 
   test "no levels says so" do
@@ -60,13 +61,13 @@ defmodule SwarmCodeCLI.UI.Cli020.D18EffortPickerTest do
     state = %{
       state
       | layers: [{:effort_picker, :chat}],
-        selection: Map.put(state.selection, "effort_picker", 1)
+        selection: Map.put(state.selection, "effort_picker", 2)
     }
 
     assert {:ok, {:effort_move, 1}} = Keymap.resolve(Input.key(:down), state, %{})
     {state, []} = Reducer.update(state, {:effort_move, 1})
     {state, []} = Reducer.update(state, {:effort_move, 1})
-    assert state.selection["effort_picker"] == 2
+    assert state.selection["effort_picker"] == 3
     assert {:ok, {:effort_pick, "high"}} = Keymap.resolve(Input.key(:enter), state, %{})
     {state, effects} = Reducer.update(state, {:effort_pick, "high"})
     assert [%{kind: {:dispatch, :send, "/effort high", :main, []}}] = requests(effects)
@@ -90,8 +91,8 @@ defmodule SwarmCodeCLI.UI.Cli020.D18EffortPickerTest do
       assert EffortPicker.selected(opened, :swarm) == "default"
     end
 
-    test "with an effort set there is no default row" do
-      assert EffortPicker.rows(leveled(), :chat) == ~w(low medium high)
+    test "cli022 F2: with an effort set the default row is still there" do
+      assert EffortPicker.rows(leveled(), :chat) == ~w(default low medium high)
     end
 
     test "Enter on the default row sends nothing and closes the picker" do

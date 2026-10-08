@@ -213,13 +213,15 @@ defmodule SwarmCodeCLI.UI.FeatureForm do
   defp parse_value(:text, text, _label, _),
     do: if(String.trim(text) == "", do: {:ok, nil}, else: {:ok, text})
 
+  # cli022 F1: a choice named `default` means "unset" (a scheduled task's
+  # effort follows Settings), so it is submitted as nil, not as the word.
   defp parse_value(:choice, text, label, choices),
     do:
       if(text == "" and choices != [],
         do: {:ok, nil},
         else:
           if(text in choices,
-            do: {:ok, text},
+            do: if(text == "default", do: {:ok, nil}, else: {:ok, text}),
             else: {:error, "#{label} must use one of the listed choices."}
           )
       )

@@ -190,6 +190,27 @@ class LiveDemo(unittest.TestCase):
         self.assertNotIn(b'Effort \xc2\xb7 chat model',d.screen())
         self.assertIn(b'medium',status()); d.capture('effort-picked')
         self.quit(d)
+    def test_effort_default_row_and_marked_dropdown(self):
+        # cli022 F2/F3: `default` heads the `/effort ` dropdown (the current row
+        # while nothing is set: a dot, never "(current)"), `/effort default`
+        # runs, and the picker keeps a `default` row. (The demo's fake does not
+        # apply its workspace metadata deltas to the open snapshot, so a level
+        # set in the picker does not reach the next picker here; the reducer
+        # tests cover set-high-then-default.)
+        d=self.demo(); d.wait_for(b'NO USER DATA'); self.answer_question(d)
+        d.send(b'/effort '); d.wait_for(b'Follow the global default'); d.capture('effort-dropdown')
+        screen=d.screen()
+        self.assertIn(b'/effort default',screen); self.assertIn(b'/effort medium',screen)
+        self.assertIn(b'\xe2\x97\x8f',screen); self.assertNotIn(b'(current)',screen)
+        d.send(b'\x15'); self.settle(d,.3)
+        d.send(b'/effort default'); self.settle(d,.5); d.send(b'\r')
+        d.wait_for(b'Effort follows the default'); d.capture('effort-default')
+        d.send(b'/effort'); d.wait_for(b'Reasoning effort of this conversation')
+        d.send(b'\r'); d.wait_for(b'Effort \xc2\xb7 chat model')
+        self.assertIn(b'\xe2\x9c\x93 default',d.screen())
+        d.send(b'\x1b'); self.settle(d,.5)
+        self.assertNotIn(b'Effort \xc2\xb7 chat model',d.screen())
+        self.quit(d)
     def test_slash_argument_dropdown_and_command_colour(self):
         # cli021 B3/B4: `/panel ` lists its choices under the composer, Down +
         # Enter runs the highlighted one; the command word is drawn bold.

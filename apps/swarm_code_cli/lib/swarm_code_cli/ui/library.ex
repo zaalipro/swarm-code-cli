@@ -61,7 +61,13 @@ defmodule SwarmCodeCLI.UI.Library do
         },
         %DTO.FormField{key: "day_of_month", label: "Day of month", kind: :integer, hint: "1..31"},
         %DTO.FormField{key: "cron", label: "Cron", hint: "Five-field cron expression"},
-        %DTO.FormField{key: "timezone", label: "Timezone", value: "Etc/UTC", required: true},
+        # cli022 F1: no zone of its own; the daemon stores the Mac's local zone
+        # (the function the desktop's form uses) when it is blank.
+        %DTO.FormField{
+          key: "timezone",
+          label: "Timezone (blank = this Mac's)",
+          hint: "IANA zone name; blank is this Mac's zone"
+        },
         %DTO.FormField{key: "enabled", label: "Enabled", kind: :boolean, value: "true"},
         %DTO.FormField{key: "catch_up", label: "Catch up", kind: :boolean, value: "true"},
         %DTO.FormField{key: "workflow_name", label: "Workflow name"},
@@ -73,12 +79,14 @@ defmodule SwarmCodeCLI.UI.Library do
         },
         %DTO.FormField{key: "provider_id", label: "Provider ID"},
         %DTO.FormField{key: "model", label: "Model"},
+        # cli022 F1: unset by default, so the task follows Settings' scheduled
+        # effort; `default` stores nil (`FeatureForm`).
         %DTO.FormField{
           key: "effort",
-          label: "Effort",
+          label: "Effort (default follows Settings)",
           kind: :choice,
-          choices: ~w(low medium high max),
-          value: "medium"
+          choices: ~w(default low medium high max),
+          value: "default"
         },
         %DTO.FormField{
           key: "color",
@@ -113,6 +121,28 @@ defmodule SwarmCodeCLI.UI.Library do
       ]
     }
   end
+
+  @doc """
+  cli022 F1: a scheduled-task form from the daemon gets the same `default`
+  effort choice as the new form: an unset effort (blank) reads `default`, and
+  `default` is submitted as nil. Idempotent.
+  """
+  @spec schedule_form(DTO.FeatureForm.t()) :: DTO.FeatureForm.t()
+  def schedule_form(%DTO.FeatureForm{fields: fields} = form) do
+    fields =
+      Enum.map(fields, fn
+        %DTO.FormField{key: "effort", kind: :choice, choices: choices, value: value} = field ->
+          choices = if "default" in choices, do: choices, else: ["default" | choices]
+          %{field | choices: choices, value: if(value in ["", nil], do: "default", else: value)}
+
+        field ->
+          field
+      end)
+
+    %{form | fields: fields}
+  end
+
+  def schedule_form(form), do: form
 
   def open(state, feature) do
     state = close(state)

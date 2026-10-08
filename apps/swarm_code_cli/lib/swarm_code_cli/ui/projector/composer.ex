@@ -708,12 +708,17 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         room =
           width - used - String.length(pad) - 3 - if(right == [], do: 0, else: right_cells + 2)
 
+        # cli022 F3: an argument row's current value is a muted dot before the
+        # description (a blank slot on the other rows keeps the column).
+        mark = if Map.get(item, :arg?) == true, do: current_mark(item, state, policy), else: ""
+        mark_cells = Width.cells(mark, policy)
         desc = item.desc || ""
+        room = room - mark_cells
         desc = if room > 0, do: Width.elide(desc, room, :end, policy), else: ""
 
         row(
           [rail, {name, name_style}, {args <> pad, tint(:text_faint, state)}] ++
-            [{"   " <> desc, tint(:text_muted, state)}],
+            [{"   " <> mark <> desc, tint(:text_muted, state)}],
           right,
           if(item.selected?, do: :hover, else: :popover),
           state,
@@ -727,6 +732,13 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
     else
       rows
     end
+  end
+
+  # `● ` on the current row, two blanks on the others; `*` where the dot is not
+  # one cell (ASCII terminals, the wide ambiguous-width policy).
+  defp current_mark(item, state, policy) do
+    dot = if state.capabilities.ascii? or Width.cells("●", policy) != 1, do: "*", else: "●"
+    if Map.get(item, :current?) == true, do: dot <> " ", else: "  "
   end
 
   defp fit_signature(name, args, column, policy) do

@@ -303,7 +303,8 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
   defp execute(conv, %{action: :set_effort} = cmd, _) do
     field = if cmd.target == :chat, do: :effort, else: :swarm_effort
-    fields = %{field => Atom.to_string(cmd.effort)}
+    # cli022 F2: a nil effort (`/effort default`) clears the stored value.
+    fields = %{field => if(cmd.effort, do: Atom.to_string(cmd.effort))}
 
     with {:ok, _} <- Conversations.update(conv, fields),
          do: result(conv, cmd.name, :updated, %{fields: fields, field: field, value: cmd.effort})
