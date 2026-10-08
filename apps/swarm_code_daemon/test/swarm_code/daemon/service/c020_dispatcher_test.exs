@@ -226,9 +226,12 @@ defmodule SwarmCode.Daemon.Service.C020DispatcherTest do
                "Effort: medium (chat model). Levels: #{Enum.join(levels, ", ")}. /effort <level> sets it."
 
       assert {:ok, %{type: :report, text: worker}} =
-               parsed(conv, "swarm_effort", :show_effort, %{target: :swarm})
+               parsed(conv, "worker_effort", :show_effort, %{target: :swarm})
 
-      assert worker =~ "(worker model)" and worker =~ "/swarm_effort <level> sets it."
+      # cli021 B2: the worker slot's command is /worker_effort (/swarm_effort
+      # stays a hidden alias, so the report names the new word).
+      assert worker =~ "(worker model)" and worker =~ "/worker_effort <level> sets it."
+      refute worker =~ "swarm_effort"
     end
   end
 

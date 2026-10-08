@@ -582,12 +582,13 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
          do: result(conv, cmd.name, :conversation, %{conversation_id: new.id, created: true})
   end
 
-  # cli020 C17: bare /effort and /swarm_effort (E3's `:show_effort`) say the
-  # current level and the ones accepted here.
+  # cli020 C17: bare /effort and /worker_effort (E3's `:show_effort`) say the
+  # current level and the ones accepted here (cli021 B2: the worker slot's
+  # command is /worker_effort; /swarm_effort is its hidden alias).
   defp execute(conv, %{action: :show_effort} = cmd, _) do
     {words, field, command} =
       case Map.get(cmd, :target, :chat) do
-        :swarm -> {"Worker effort", :swarm_effort, "/swarm_effort"}
+        :swarm -> {"Worker effort", :swarm_effort, "/worker_effort"}
         _ -> {"Effort", :effort, "/effort"}
       end
 
