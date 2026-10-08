@@ -4,7 +4,7 @@ defmodule SwarmCode.CommandsTest do
 
   test "catalogue exposes all builtins" do
     assert Enum.map(Commands.catalogue(), & &1.name) ==
-             ~w(swarm goal plan review effort worker_effort model worker_model rewind undo stop workflow workflows create-workflow ultra consensus deep_research attach compact new clear resume resume-run rename delete fork approval trust diff cost search export agents help quit)
+             ~w(swarm goal plan review effort worker_effort model worker_model rewind undo stop workflow workflows create-workflow ultra consensus deep_research attach compact new clear resume resume-run rename delete fork approval profile trust diff cost search export agents help quit)
   end
 
   test "catalogue ranking" do
@@ -395,5 +395,19 @@ defmodule SwarmCode.CommandsTest do
     assert byte_size(
              inspect(elem(Commands.parse("/effort " <> String.duplicate("x", 10_000)), 1))
            ) < 512
+  end
+
+  test "cli021 P1 /profile parses a bare list and one project profile name" do
+    assert {:ok, %{action: :apply_profile, profile: nil}} = Commands.parse("/profile")
+    assert {:ok, %{action: :apply_profile, profile: "fast-2"}} = Commands.parse("/profile fast-2")
+
+    assert {:ok, %{action: :apply_profile, profile: "Deep_1"}} =
+             Commands.parse("/profile  Deep_1 ")
+
+    assert {:error, %{type: :invalid_argument}} = Commands.parse("/profile two words")
+    assert {:error, %{type: :invalid_argument}} = Commands.parse("/profile ../x")
+
+    assert {:error, %{type: :invalid_argument}} =
+             Commands.parse("/profile " <> String.duplicate("a", 33))
   end
 end

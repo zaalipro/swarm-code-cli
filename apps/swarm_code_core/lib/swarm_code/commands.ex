@@ -46,6 +46,9 @@ defmodule SwarmCode.Commands do
     {"delete", "", "Delete this conversation (asks first)"},
     {"fork", "", "Copy this conversation into a new one and open it"},
     {"approval", "[read-only|auto|full]", "How much agents may do without asking"},
+    # cli021 P1 (desktop spec 70 D4): a named profile of .swarm_code/config.json.
+    {"profile", "[name]",
+     "Apply a profile from .swarm_code/config.json (its efforts and models); no name lists them"},
     {"trust", "", "Trust this project: read its AGENTS.md and allow edits"},
     {"diff", "", "The files this conversation changed, with their diffs"},
     {"cost", "", "Tokens and cost of this conversation, by model"},
@@ -370,6 +373,17 @@ defmodule SwarmCode.Commands do
   defp parse_known(%{name: "rename"} = item, title, _) do
     if valid_text?(title, @max_label) and not Regex.match?(~r/\p{Cc}/u, title),
       do: ok(item, :rename_conversation, %{title: title}),
+      else: error(:invalid_argument)
+  end
+
+  defp parse_known(%{name: "profile"} = item, "", _),
+    do: ok(item, :apply_profile, %{profile: nil})
+
+  # A profile name is what the project file allows: word characters and `-`,
+  # 1 to 32 bytes (`SwarmCode.Domain.ProjectConfig`); anything else names none.
+  defp parse_known(%{name: "profile"} = item, name, _) do
+    if Regex.match?(~r/\A[\w-]{1,32}\z/, name),
+      do: ok(item, :apply_profile, %{profile: name}),
       else: error(:invalid_argument)
   end
 

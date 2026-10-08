@@ -30,6 +30,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   def desktop_running(server, running) when is_boolean(running),
     do: GenServer.call(server, {:desktop_running, running})
 
+  @doc "cli021 C2: tell every client the shown conversation's vitals (a reading)."
+  def vitals(server, %DTO.Vitals{} = vitals), do: GenServer.call(server, {:vitals, vitals})
+
   def metadata(server), do: GenServer.call(server, :metadata)
   def unwatch(server, client_id, ref), do: GenServer.call(server, {:unwatch, client_id, ref})
 
@@ -90,6 +93,24 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
     }
 
     state = %{state | script: %{state.script | sequence: sequence, revision: revision}}
+    broadcast(state, [delta])
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:vitals, %DTO.Vitals{} = vitals}, _, state) do
+    revision = state.script.revision + 1
+    sequence = state.script.sequence + 1
+
+    delta = %Delta{
+      kind: :vitals,
+      conversation_id: vitals.conversation_id,
+      body: vitals,
+      sequence: sequence,
+      revision: revision
+    }
+
+    script = Session.apply_delta(delta, state.script)
+    state = %{state | script: %{script | sequence: sequence, revision: revision}}
     broadcast(state, [delta])
     {:reply, :ok, state}
   end

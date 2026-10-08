@@ -46,6 +46,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @terminal [:completed, :failed, :cancelled, :interrupted, :superseded]
   @stream_events [:assistant_delta, :assistant_reset, :reasoning_delta, :reasoning_reset]
   alias SwarmCode.Daemon.Service.AgentStatus
+  alias SwarmCode.Daemon.Service.ContextWindow
+  alias SwarmCode.Daemon.Service.Vitals
   alias SwarmCode.Daemon.Service.PanelFacts
   alias SwarmCode.Daemon.Service.Settings.Deltas, as: SettingsDeltas
   alias SwarmCode.Daemon.Service.Settings.Jobs, as: SettingsJobs
@@ -103,6 +105,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       Events.subscribe(opts[:conversation_id])
       Events.ui_subscribe()
+      # cli021 C2: the side panel's vitals, measured only while a shell watch
+      # exists (`sync_vitals/1`); it stops with this process.
+      {:ok, vitals} =
+        Vitals.start_link(
+          subscriber: self(),
+          conversation_id: opts[:conversation_id],
+          task_supervisor: Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor)
+        )
+
       # pass70 C5 (arch F10): what happens outside this conversation.
       SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "notifications")
       SwarmCode.Domain.MCP.subscribe()
@@ -185,6 +196,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # cli020 C4 (bugs-6): whether the ncode app is open on this database
         # (`DesktopWatch` tells; the launcher refused to start while it was).
         desktop_running: false,
+        # cli021 C2: the vitals process (model speeds and memory of the shown
+        # conversation).
+        vitals: vitals,
         # cli020 C3 (bugs-19): the ledger prune this backend started (owned
         # work under the job supervisor, never the init callback itself).
         # cli020 C14: the clipboard image slots this session opened.
@@ -293,7 +307,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         end
 
       state = %{state | revision: max(state.revision, revision)}
-      {:reply, {:watch, 0, revision, kind, body}, put_in(state.watches[key], entry)}
+      state = state |> put_in([Access.key(:watches), key], entry) |> sync_vitals()
+      {:reply, {:watch, 0, revision, kind, body}, state}
     else
       _ -> {:reply, wire_error(:invalid_request), state}
     end
@@ -438,6 +453,28 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         })
 
       {:noreply, refresh(state)}
+    end
+  end
+
+  # cli021 C2: a reading of the vitals process, for the shell watch. One of a
+  # conversation this session left behind is dropped.
+  def handle_info({:vitals, %{"conversation_id" => id} = body}, state) do
+    if id == state.opts[:conversation_id] do
+      {:noreply,
+       broadcast(state, %{
+         "kind" => "vitals",
+         "entity_id" => nil,
+         "run_id" => nil,
+         "conversation_id" => nil,
+         "channel" => nil,
+         "attempt_id" => nil,
+         "text" => nil,
+         "body" => body,
+         "sequence" => 0,
+         "revision" => state.revision
+       })}
+    else
+      {:noreply, state}
     end
   end
 
@@ -960,11 +997,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
             window =
               if is_binary(model),
-                do:
-                  SwarmCode.Domain.Engine.Context.budget(
-                    model,
-                    SwarmCode.Domain.Settings.get_cached()
-                  )
+                do: ContextWindow.window(model, SwarmCode.Domain.Settings.get_cached())
 
             body =
               SwarmCode.Daemon.Service.AgentDetail.build(rows,
@@ -1580,6 +1613,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
            notice("Conversation", "Renamed “#{title}”.")
          ), refresh(state)}
 
+      # cli021 P1: /profile answers a sentence for the notice line.
+      {:ok, %{type: :profile, text: text}} ->
+        {accepted(id, [state.opts[:conversation_id]], notice("Profile", text)), refresh(state)}
+
       {:ok, %{type: :updated, mode: mode}} ->
         {accepted(id, [state.opts[:conversation_id]], notice_feedback(mode)), refresh(state)}
 
@@ -1962,6 +1999,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # cli020 C1 (bugs-7): its queue waits behind its own live turn, or
       # drains now when none runs.
       |> tap(fn _ -> send(self(), {:drain_queue, id}) end)
+      |> tap(fn state -> with pid when is_pid(pid) <- state.vitals, do: Vitals.focus(pid, id) end)
+      |> sync_vitals()
     end
   end
 
@@ -4483,7 +4522,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "rate_limit",
                 "settings_update",
                 "settings_task",
-                "desktop_running"
+                "desktop_running",
+                "vitals"
               ]
 
             _other when settings_delta? ->
@@ -4493,7 +4533,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               delta["kind"] == "activity_upsert"
 
             "workspace" ->
-              delta["kind"] not in ["activity_upsert", "toast", "rate_limit", "desktop_running"]
+              delta["kind"] not in [
+                "activity_upsert",
+                "toast",
+                "rate_limit",
+                "desktop_running",
+                "vitals"
+              ]
 
             # pass70 C6: background commands belong to the workspace and the
             # run inspector, not to the transcript or pending windows.
@@ -4503,7 +4549,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "workspace_metadata",
                 "toast",
                 "rate_limit",
-                "desktop_running"
+                "desktop_running",
+                "vitals"
               ]
 
             _ ->
@@ -4515,6 +4562,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "background_upsert",
                 "background_remove",
                 "desktop_running",
+                "vitals",
                 "shell_upsert",
                 "shell_remove"
               ]
@@ -4657,9 +4705,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       {entry, watches} ->
         Process.demonitor(entry.monitor, [:flush])
-        %{state | watches: watches}
+        sync_vitals(%{state | watches: watches})
     end
   end
+
+  # cli021 C2: the vitals measure and send only while a client watches the
+  # shell (the TUI always does); the process is told after every watch change.
+  defp sync_vitals(%{vitals: vitals} = state) when is_pid(vitals) do
+    Vitals.demand(vitals, Enum.any?(state.watches, fn {_key, entry} -> entry.slot == "shell" end))
+    state
+  end
+
+  defp sync_vitals(state), do: state
 
   defp snapshot(params, scope, request_id, state) do
     case snapshot(params, scope, request_id, state, @reply_bytes) do
@@ -4720,6 +4777,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
               Map.merge(base, %{
                 "rate_limits" =>
                   state.rate_limits |> Map.values() |> Enum.sort_by(& &1["provider"]),
+                "vitals" => vitals_body(state),
                 "runs" => selected,
                 "connection" => %{
                   "state" => "connected",
@@ -4832,6 +4890,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     }
   end
 
+  defp vitals_body(%{vitals: pid}) when is_pid(pid), do: Vitals.body(pid)
+  defp vitals_body(_state), do: nil
+
   defp approval_mode(%{project: %{approval_mode: mode}})
        when mode in ["read_only", "auto", "full_access"],
        do: mode
@@ -4849,11 +4910,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp provider_usable?({:ok, %{provider: provider}}), do: SessionConfiguration.usable?(provider)
   defp provider_usable?(_), do: false
 
-  # The window the harness works in: the point where `Context.trim/2` starts
-  # dropping history (75 % of the model's configured window, or the default
-  # budget for its family).
+  # cli021 C3: the model's context window (the configured one, else the
+  # default), not the 75 % trim budget the engine spends of it.
   defp context_window({:ok, %{model: model}}) when is_binary(model),
-    do: SwarmCode.Domain.Engine.Context.budget(model, SwarmCode.Domain.Settings.get_cached())
+    do: ContextWindow.window(model, SwarmCode.Domain.Settings.get_cached())
 
   defp context_window(_), do: nil
 
@@ -5233,7 +5293,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     no_project: "This conversation's project is gone; open another with /resume.",
     database_busy: "The database was busy; send it again.",
     nothing_to_stop: "Nothing is running in this conversation.",
-    not_resumable: "Only a stopped, failed or interrupted run can be resumed.",
+    # cli021 P3: the desktop's sentence (also for a run already resumed or rewound away).
+    not_resumable: "Nothing to resume.",
     not_running: "That run is not running any more.",
     not_paused: "That run is not paused.",
     not_found: "That was not found.",

@@ -105,7 +105,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :queue_paused,
       :queue_revision
     ],
-    DTO.ShellSnapshot => [:rate_limits],
+    DTO.ShellSnapshot => [:rate_limits, :vitals],
     # cli020 C8/C9/C18: structured command answers.
     DTO.Feedback => [:subject, :rows],
     DTO.Approval => [
@@ -414,7 +414,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
               :rate_limit,
               :settings_update,
               :settings_task,
-              :desktop_running
+              :desktop_running,
+              :vitals
             ],
        do: true
 
