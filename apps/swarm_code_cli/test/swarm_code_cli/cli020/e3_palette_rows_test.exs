@@ -16,9 +16,9 @@ defmodule SwarmCodeCLI.Cli020.E3PaletteRowsTest do
     assert row("undo").client
     assert row("delete").desc == "Delete this conversation (asks first)"
     assert row("delete").client
-    assert %{args: "[low|medium|high|max]", client: true} = row("effort")
+    assert %{args: "[default|low|medium|high|max]", client: true} = row("effort")
     assert row("effort").desc =~ "Reasoning effort of this conversation's chat model"
-    assert %{args: "[low|medium|high|max]", client: true} = row("worker_effort")
+    assert %{args: "[default|low|medium|high|max]", client: true} = row("worker_effort")
     assert row("worker_effort").desc =~ "Reasoning effort of this conversation's worker model"
   end
 

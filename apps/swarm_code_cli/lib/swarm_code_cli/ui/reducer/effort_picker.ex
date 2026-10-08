@@ -7,6 +7,12 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
   ticked and nil shown as `default`. Enter sends `/effort <level>` (or
   `/worker_effort <level>`) the way a typed command goes; Esc closes. The
   cursor is `state.selection["effort_picker"]`.
+
+  cli022 F2: the `default` row is always there. Picking it while a level is
+  set sends `/effort default` (`/worker_effort default`), which clears the
+  conversation's value so it follows the global default; while nothing is set
+  it only closes the picker. `effective/2` is the level in effect (the
+  daemon's F4 fact), shown beside the ticked `default` row.
   """
 
   alias SwarmCodeCLI.UI.Reducer.Remote
@@ -26,16 +32,14 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
   end
 
   @doc """
-  The rows the picker draws: the daemon's levels, with a leading `default`
-  row while no effort is set (fix round U4), so the tick and the cursor have
-  a row to sit on. Choosing it changes nothing (the model's own default is
-  already in use) and closes the picker.
+  The rows the picker draws: `default` first (cli022 F2: always, so a level can
+  be given back to the global default), then the daemon's levels.
   """
   @spec rows(map(), :chat | :swarm) :: [binary()]
   def rows(state, target) do
     case levels(state, target) do
       [] -> []
-      levels -> if is_nil(current(state, target)), do: ["default" | levels], else: levels
+      levels -> ["default" | levels]
     end
   end
 
@@ -46,6 +50,28 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
     case Map.get(state.read_model.snapshots, :workspace) do
       %{} = workspace -> Map.get(workspace, field)
       _ -> nil
+    end
+  end
+
+  @doc """
+  The level in effect for `target`: the conversation's value, else the
+  environment's, else the global default (cli022 F4, the workspace's
+  `effective_effort` / `effective_swarm_effort`); nil while the daemon does
+  not say.
+  """
+  @spec effective(map(), :chat | :swarm) :: binary() | nil
+  def effective(state, target) do
+    field = if target == :chat, do: :effective_effort, else: :effective_swarm_effort
+
+    case Map.get(state.read_model.snapshots, :workspace) do
+      %{} = workspace ->
+        case Map.get(workspace, field) do
+          level when is_binary(level) and level != "" -> level
+          _ -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 
@@ -92,7 +118,7 @@ defmodule SwarmCodeCLI.UI.Reducer.EffortPicker do
 
   @doc "The command Enter sends for `level`, or nil when the level is not offered."
   def command(%{layers: [{:effort_picker, target} | _]} = state, level) do
-    if level in levels(state, target),
+    if level == "default" or level in levels(state, target),
       do: if(target == :chat, do: "/effort ", else: "/worker_effort ") <> level
   end
 

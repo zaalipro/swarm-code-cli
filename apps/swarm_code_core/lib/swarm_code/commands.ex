@@ -16,8 +16,9 @@ defmodule SwarmCode.Commands do
     {"plan", "[task]",
      "Toggle plan mode; with a task, plan it now as a read-only run beside the others"},
     {"review", "", "Review the uncommitted changes and report problems"},
-    {"effort", "[low|medium|high|max]", "Reasoning effort of this conversation's chat model"},
-    {"worker_effort", "[low|medium|high|max]",
+    {"effort", "[default|low|medium|high|max]",
+     "Reasoning effort of this conversation's chat model"},
+    {"worker_effort", "[default|low|medium|high|max]",
      "Reasoning effort of this conversation's worker model"},
     {"model", "<model | provider_id|model>", "Switch this conversation's chat model"},
     {"worker_model", "<model | provider_id|model>", "Switch the model the workers use"},
@@ -244,6 +245,14 @@ defmodule SwarmCode.Commands do
 
       not is_list(allowed) ->
         error(:invalid_options)
+
+      # cli022 F2: `default` clears the conversation's effort (nil follows the
+      # global default), whatever levels the model offers.
+      String.downcase(args) == "default" ->
+        ok(item, :set_effort, %{
+          effort: nil,
+          target: if(name == "effort", do: :chat, else: :swarm)
+        })
 
       effort == nil ->
         error(:invalid_effort)

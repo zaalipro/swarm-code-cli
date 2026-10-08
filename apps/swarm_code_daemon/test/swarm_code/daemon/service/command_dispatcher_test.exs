@@ -98,6 +98,26 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcherTest do
     assert id == goal.id
   end
 
+  test "cli022 F2: /effort default and /worker_effort default clear the stored effort", %{
+    conversation: c
+  } do
+    assert {:ok, %{value: :high}} = Dispatcher.dispatch(c.id, "/effort high")
+    assert {:ok, %{value: :max}} = Dispatcher.dispatch(c.id, "/worker_effort max")
+    assert %{effort: "high", swarm_effort: "max"} = Conversations.get!(c.id)
+
+    assert {:ok, %{type: :updated, fields: %{effort: nil}, value: nil}} =
+             Dispatcher.dispatch(c.id, "/effort default")
+
+    assert %{effort: nil, swarm_effort: "max"} = Conversations.get!(c.id)
+
+    assert {:ok, %{type: :updated, fields: %{swarm_effort: nil}}} =
+             Dispatcher.dispatch(c.id, "/swarm_effort default")
+
+    assert %{effort: nil, swarm_effort: nil} = Conversations.get!(c.id)
+    # already cleared: still accepted
+    assert {:ok, %{type: :updated}} = Dispatcher.dispatch(c.id, "/effort default")
+  end
+
   test "mode flags are normalized on every pick and effort is persisted", %{conversation: c} do
     assert {:ok, %{mode: :plan}} = Dispatcher.dispatch(c.id, "/plan")
     assert {:ok, %{value: :high}} = Dispatcher.dispatch(c.id, "/effort high")

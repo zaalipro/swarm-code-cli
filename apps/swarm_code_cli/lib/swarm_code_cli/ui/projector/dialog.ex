@@ -1412,9 +1412,12 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         _ -> @classic_efforts
       end
 
-    # fix round U4: no effort set reads as a `default` row, ticked.
-    levels = if is_nil(current), do: ["default" | levels], else: levels
+    # fix round U4 / cli022 F2: a `default` row is always there (picking it
+    # gives the level back to the global default); it is ticked while no
+    # effort is set, and then names the level in effect when the daemon says.
+    levels = ["default" | levels]
     current = current || "default"
+    effective = SwarmCodeCLI.UI.Reducer.EffortPicker.effective(state, scope)
 
     mark = SafeText.value(Support.glyph(:check, state))
 
@@ -1423,13 +1426,15 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
       |> Enum.map(fn level ->
         id = "effort-" <> level
         current? = level == current
-        label = if(current?, do: mark, else: " ") <> " " <> level
+        # The ticked `default` row names the level in effect ("default · medium").
+        words = effort_words(level, current?, effective)
+        label = if(current?, do: mark, else: " ") <> " " <> level <> words
 
         {{id, Density.safe(label, state, rect.width * 4), effort_target(level)},
          {id,
           %{
             title: level,
-            detail: nil,
+            detail: String.trim_leading(words, " "),
             query: "",
             current?: current?,
             marks?: true,
@@ -1459,6 +1464,9 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
      [control("cancel", SafeText.chrome(:cancel), {:local, :close_top_layer})], focus,
      Map.new(decor)}
   end
+
+  defp effort_words("default", true, level) when is_binary(level), do: " · " <> level
+  defp effort_words(_level, _current?, _effective), do: ""
 
   # cli020 E25 (tui-code-21): the levels in words; the atom is what is stored.
   defp research_level(:low), do: "Fastest · about a minute"

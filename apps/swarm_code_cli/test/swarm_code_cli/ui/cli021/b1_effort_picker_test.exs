@@ -55,7 +55,10 @@ defmodule SwarmCodeCLI.UI.Cli021.B1EffortPickerTest do
     assert focused(state) == "effort-high"
     state = arrow(state, :up) |> arrow(:up)
     assert focused(state) == "effort-low"
-    assert arrow(state, :up) |> focused() == "effort-low"
+    # cli022 F2: `default` is always the first row.
+    state = arrow(state, :up)
+    assert focused(state) == "effort-default"
+    assert arrow(state, :up) |> focused() == "effort-default"
   end
 
   test "the worker picker starts on its default row and walks the levels" do
