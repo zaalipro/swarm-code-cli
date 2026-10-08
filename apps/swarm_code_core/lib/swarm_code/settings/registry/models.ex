@@ -127,7 +127,7 @@ defmodule SwarmCode.Settings.Registry.Models do
       validate: @effort_checks,
       applies: :next_spawn,
       shared: true,
-      synonyms: ["swarm effort"],
+      synonyms: ["worker effort", "swarm effort"],
       parity: "D§1b"
     ),
     global("efforts.validator", :models_effort, "Validator effort",

@@ -38,7 +38,8 @@ defmodule SwarmCodeCLI.Cli020.E4EffortTest do
       base() |> put_workspace(swarm_effort_levels: ["low", "high", "max"]) |> picker(:swarm)
 
     text = screen_text(state)
-    assert text =~ "Effort · workers"
+    # cli021 U4: the worker slot's words (B2).
+    assert text =~ "Effort · worker model"
     assert text =~ ~r/✓ high/
     refute text =~ "xhigh"
   end

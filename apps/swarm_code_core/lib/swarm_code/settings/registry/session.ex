@@ -60,7 +60,7 @@ defmodule SwarmCode.Settings.Registry.Session do
     session("session.sub_agent_model", :models_effort, "Worker model · this conversation",
       group: "this conversation",
       description:
-        "The model of this conversation's workers. A write also ends a --model launch override, as /swarm_model does.",
+        "The model of this conversation's workers. A write also ends a --model launch override, as /worker_model does.",
       storage: {:conversation_pair, :swarm_provider_id, :swarm_model},
       type: :model,
       nullable: true,
@@ -72,7 +72,7 @@ defmodule SwarmCode.Settings.Registry.Session do
       validate: [{:svc, :provider_exists}],
       messages: @model_msg,
       applies: :next_spawn,
-      parity: "CLI /swarm_model"
+      parity: "CLI /worker_model"
     ),
     session("session.sub_agent_effort", :models_effort, "Worker effort · this conversation",
       group: "this conversation",
@@ -86,7 +86,7 @@ defmodule SwarmCode.Settings.Registry.Session do
       follows: "efforts.sub_agent",
       validate: @effort_format ++ [{:svc, :effort_of_model}],
       applies: :next_spawn,
-      parity: "CLI /swarm_effort"
+      parity: "CLI /worker_effort"
     ),
     # cli020 E1: the conversation's mission validator (desktop spec 75).
     session("session.validator_model", :models_effort, "Validator model · this conversation",

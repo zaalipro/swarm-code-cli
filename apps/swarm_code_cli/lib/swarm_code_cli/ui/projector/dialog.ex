@@ -1403,7 +1403,7 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
         :swarm ->
           {Map.get(workspace, :swarm_effort_levels), Map.get(workspace, :swarm_effort),
-           "Effort · workers"}
+           "Effort · worker model"}
       end
 
     levels =
