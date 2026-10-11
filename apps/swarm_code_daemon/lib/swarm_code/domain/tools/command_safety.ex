@@ -193,6 +193,7 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
     # A substitution can never leave the segment `:safe` (what it expands to is
     # not knowable here), and whatever it runs counts as part of the command.
     own = if Regex.match?(@substitution, text), do: strictest([own, :normal]), else: own
+    own = if own == :safe and safe_words(text) == :unknown, do: :normal, else: own
 
     strictest([own | Enum.map(substitutions(text, @max_depth), &classify_at(&1, depth + 1))])
   end
@@ -687,7 +688,92 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
 
   # spec 74 BUGS-2: `awk` left — `awk 'BEGIN{system(…)}'` runs anything — and
   # every admitted command checks its flags and operands, not just its name.
-  defp safe?(argv0, rest, text), do: not redirects?(rest, text) and command_safe?(argv0, rest)
+  defp safe?(argv0, rest, text) do
+    with {:ok, _original_words} <- safe_words(text),
+         {:ok, words} <- normalize_words([argv0 | rest]),
+         [normalized_argv0 | normalized_rest] <- words,
+         true <- normalized_argv0 == argv0 do
+      "tee" not in normalized_rest and command_safe?(argv0, normalized_rest)
+    else
+      _unknown -> false
+    end
+  end
+
+  defp normalize_words(words) do
+    Enum.reduce_while(words, {:ok, []}, fn token, {:ok, acc} ->
+      case safe_words(token) do
+        {:ok, [normalized]} -> {:cont, {:ok, [normalized | acc]}}
+        _unknown -> {:halt, :unknown}
+      end
+    end)
+    |> case do
+      {:ok, words} -> {:ok, Enum.reverse(words)}
+      :unknown -> :unknown
+    end
+  end
+
+  # Normalize only the literal-argv language used by the safe classifier. It
+  # deliberately does not parse or evaluate shell syntax: uncertain input is
+  # simply not eligible for :safe.
+  defp safe_words(text), do: safe_words(text, :plain, [], [], false)
+
+  defp safe_words(<<>>, :plain, current, words, false),
+    do:
+      Enum.reverse([word(current) | words])
+      |> Enum.reject(&is_nil/1)
+      |> then(fn words ->
+        if Enum.any?(words, &brace_expansion?/1), do: :unknown, else: {:ok, words}
+      end)
+
+  defp safe_words(<<>>, _state, _current, _words, _escaped), do: :unknown
+
+  defp safe_words(<<char, rest::binary>>, state, current, words, escaped) do
+    cond do
+      escaped and char == ?\n ->
+        :unknown
+
+      escaped and state == :double and char not in [?", ?\\, ?$, ?`] ->
+        safe_words(rest, state, [char, ?\\ | current], words, false)
+
+      escaped ->
+        safe_words(rest, state, [char | current], words, false)
+
+      char == ?\\ and state != :single ->
+        safe_words(rest, state, current, words, true)
+
+      state == :single and char == ?' ->
+        safe_words(rest, :plain, current, words, false)
+
+      state == :double and char == ?" ->
+        safe_words(rest, :plain, current, words, false)
+
+      state == :plain and char == ?' ->
+        safe_words(rest, :single, ["" | current], words, false)
+
+      state == :plain and char == ?" ->
+        safe_words(rest, :double, ["" | current], words, false)
+
+      state == :plain and char in [?\s, ?\t, ?\n, ?\r] ->
+        safe_words(rest, :plain, [], [word(current) | words], false)
+
+      state == :plain and char in [?<, ?>, ?`, ?;, ?|, ?&, ?(, ?), ?~, ?#, ?!] ->
+        :unknown
+
+      state != :single and char in [?$, ?`] ->
+        :unknown
+
+      state == :plain and char in [?*, ??, ?[] ->
+        :unknown
+
+      true ->
+        safe_words(rest, state, [char | current], words, false)
+    end
+  end
+
+  defp word([]), do: nil
+  defp word(chars), do: chars |> Enum.reverse() |> IO.iodata_to_binary()
+
+  defp brace_expansion?(word), do: Regex.match?(~r/\{[^{}]*(,|\.\.)[^{}]*\}/, word)
 
   defp command_safe?(argv0, rest) when argv0 in @read_only,
     do: flags_safe?(argv0, rest) and operands_inside?(argv0, rest)
@@ -696,9 +782,6 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
   defp command_safe?("sed", rest), do: sed_safe?(rest)
   defp command_safe?("git", rest), do: git_safe?(rest)
   defp command_safe?(_argv0, _rest), do: false
-
-  defp redirects?(rest, text),
-    do: String.contains?(text, ">") or String.contains?(text, "|&") or "tee" in rest
 
   # spec 74 BUGS-2: the flags that make a reader write a file or run a program.
   defp flags_safe?("rg", rest),
