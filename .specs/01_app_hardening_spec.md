@@ -763,7 +763,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/workflows.ex `builtins/0`; apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex `errors/1`, `check/3`.
   - _Requirements:_ 2.1, 2.2, 2.3
 
-- [ ] 6. Carry the override through StartSwarm
+- [x] 6. Carry the override through StartSwarm
   - Files: `apps/swarm_code_daemon/lib/swarm_code/domain/tools/start_swarm.ex`; `provenance/patches/apps/swarm_code_daemon/lib/swarm_code/domain/tools/start_swarm.ex.diff`; `provenance/extracted-files.json`
   - Purpose: Preserve the parent operation authority at the existing child swarm boundary.
   - Do:
@@ -776,7 +776,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/tools/start_swarm.ex `run/3`, `launch/4`, `do_launch/4`; apps/swarm_code_daemon/lib/swarm_code/domain/engine.ex `start_swarm/3`.
   - _Requirements:_ 3.1, 3.3
 
-- [ ] 7. Carry the override through WorkflowRun
+- [x] 7. Carry the override through WorkflowRun
   - Files: `apps/swarm_code_daemon/lib/swarm_code/domain/tools/workflow_tools.ex`; `provenance/patches/apps/swarm_code_daemon/lib/swarm_code/domain/tools/workflow_tools.ex.diff`; `provenance/extracted-files.json`
   - Purpose: Use Workflows.launch/1’s already-supported override instead of falling back to project mode.
   - Do:
@@ -789,7 +789,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/tools/workflow_tools.ex:358-394 and apps/swarm_code_daemon/lib/swarm_code/domain/workflows.ex `launch/1`.
   - _Requirements:_ 3.2, 3.3
 
-- [ ] 8. Regress child operation approval, not just arguments
+- [x] 8. Regress child operation approval, not just arguments
   - Files: `apps/swarm_code_daemon/test/swarm_code/daemon/service/cli021_int_workflow_approval_test.exs`
   - Purpose: Show that read-only inheritance reaches actual child writes even when the project itself allows writes.
   - Do:

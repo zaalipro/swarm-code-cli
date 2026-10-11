@@ -365,7 +365,8 @@ defmodule SwarmCode.Domain.Tools.WorkflowRun do
       carry: args["carry"] || %{},
       budget: args["budget"],
       created_by: "model",
-      auto_continue: Map.get(args, "continue", true)
+      auto_continue: Map.get(args, "continue", true),
+      approval_mode: ctx[:approval_override]
     }
 
     attrs =

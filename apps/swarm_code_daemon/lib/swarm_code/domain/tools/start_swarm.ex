@@ -73,17 +73,17 @@ defmodule SwarmCode.Domain.Tools.StartSwarm do
         {:error, "no conversation to start a swarm in"}
 
       true ->
-        launch(task, agents(args), conversation, ctx[:run_id])
+        launch(task, agents(args), conversation, ctx[:run_id], ctx[:approval_override])
     end
   end
 
-  defp launch(task, agents, conversation, caller_run_id) do
+  defp launch(task, agents, conversation, caller_run_id, approval_override) do
     # Spec 51 §5.9 (d): `max_concurrent_agents` is per run — a second swarm in
     # the conversation would double the fan-out, not share it.
     if swarm_running?(conversation.id) do
       {:error, "a swarm is already running in this conversation — wait for it or stop it"}
     else
-      do_launch(task, agents, conversation, caller_run_id)
+      do_launch(task, agents, conversation, caller_run_id, approval_override)
     end
   end
 
@@ -93,7 +93,7 @@ defmodule SwarmCode.Domain.Tools.StartSwarm do
     end)
   end
 
-  defp do_launch(task, agents, conversation, caller_run_id) do
+  defp do_launch(task, agents, conversation, caller_run_id, approval_override) do
     label = SwarmCode.Domain.Engine.sanitize_label("", task)
     max_agents = agents || SwarmCode.Domain.Settings.get_cached().max_concurrent_agents
 
@@ -103,7 +103,8 @@ defmodule SwarmCode.Domain.Tools.StartSwarm do
       prompt: prompt(task, agents),
       # Spec 17 §2.6: this swarm has no user message of its own — it belongs to
       # the run whose agent asked for it.
-      launched_by_run_id: caller_run_id
+      launched_by_run_id: caller_run_id,
+      approval_mode: approval_override
     ]
 
     case SwarmCode.Domain.Engine.start_swarm(conversation, task, opts) do
