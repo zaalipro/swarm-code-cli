@@ -183,11 +183,29 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
         {:error, problems}
 
       {:ok, cast} ->
-        # spec 68 T30: lint/1 removed (always returned [])
-        warnings = []
-        {:ok, run_canned(definition, cast, warnings, opts)}
+        case validate_data(cast) do
+          :ok ->
+            # spec 68 T30: lint/1 removed (always returned [])
+            warnings = []
+            {:ok, run_canned(definition, cast, warnings, opts)}
+
+          {:error, _problem} ->
+            {:error, [unsafe_value_problem(binding_line(definition))]}
+        end
     end
   end
+
+  defp binding_line(%Definition{source: source}) when is_binary(source) do
+    case Code.string_to_quoted(source) do
+      {:ok, {:__block__, _, [first | _]}} -> expression_line(first)
+      {:ok, first} -> expression_line(first)
+      _ -> 0
+    end
+  end
+
+  defp binding_line(_definition), do: 0
+  defp expression_line({_form, meta, _args}) when is_list(meta), do: line(meta)
+  defp expression_line(_expression), do: 0
 
   # A shape preview has to work before anyone types an argument: required args
   # with no default get a canned value (§4.4 step 4 uses the same `Schema`
@@ -311,9 +329,14 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
   error with its source line.
   """
   @spec errors(Definition.t()) :: [String.t()]
-  def errors(%Definition{ast: nil}), do: []
+  def errors(%Definition{} = definition) do
+    binding_problems =
+      if safe_data?(definition.meta),
+        do: [],
+        else: [unsafe_value_problem(binding_line(definition))]
 
-  def errors(%Definition{ast: ast}), do: validate_ast(ast)
+    binding_problems ++ validate_ast(definition.ast)
+  end
 
   @doc "The allow-list walk on its own; `:ok` or every problem, in source order."
   @spec validate_ast(Macro.t()) :: [String.t()]
@@ -338,8 +361,17 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
     context_problem(node, parents, acc)
   end
 
-  defp context_problem({:|>, _, [left, right]}, _parents, acc) do
-    call_problem(Macro.pipe(left, right, 0), acc)
+  defp context_problem({:|>, meta, [left, right]}, _parents, acc) do
+    case safe_pipe(left, right) do
+      {:ok, piped} ->
+        call_problem(piped, acc)
+
+      :error ->
+        case validate_ast(right) do
+          [] -> [unsafe_value_problem(line(meta)) | acc]
+          problems -> Enum.reverse(problems) ++ acc
+        end
+    end
   end
 
   defp context_problem({{:., _, [_module, _name]}, _, _args} = node, parents, acc) do
@@ -416,6 +448,12 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
   end
 
   defp context_problem(_node, _parents, acc), do: acc
+
+  defp safe_pipe(left, right) do
+    {:ok, Macro.pipe(left, right, 0)}
+  rescue
+    ArgumentError -> :error
+  end
 
   defp call_problem({{:., _, [receiver, name]}, meta, args}, acc) do
     module = module_name(receiver)

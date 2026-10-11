@@ -107,6 +107,80 @@ defmodule SwarmCode.Daemon.Hardening.WorkflowSmokeTest do
     end
   end
 
+  test "source metadata and defaults are checked before protocol use", %{canary: canary} do
+    forged =
+      "%{__struct__: :\"Elixir.File.Stream\", path: #{inspect(canary)}, " <>
+        "modes: [:write], raw: true, line_or_bytes: :line, node: :nonode@nohost}"
+
+    for binding <- [
+          "extra: %{nested: [#{forged}]}",
+          "extra: :\"Elixir.Enum\"",
+          "args: %{target: %{type: :map, default: %{nested: [#{forged}]}}}",
+          "args: %{target: %{type: :list, default: [:\"Elixir.File.Stream\"]}}"
+        ] do
+      fixture = """
+      meta = %{name: "smoke-fixture", description: "fixture", #{binding}}
+      1
+      """
+
+      assert {:ok, definition} = Workflows.parse(fixture)
+
+      assert "line 1: unsafe workflow data is not allowed in a workflow" in Smoke.errors(
+               definition
+             )
+
+      assert {:error, problems} = Smoke.check(definition)
+      assert "line 1: unsafe workflow data is not allowed in a workflow" in problems
+      refute File.exists?(canary)
+    end
+  end
+
+  test "final cast JSON arguments cannot introduce forged nested values", %{canary: canary} do
+    fixture = """
+    meta = %{name: "smoke-fixture", description: "fixture",
+      args: %{target: %{type: :map}}}
+    Enum.to_list(args.target["nested"])
+    """
+
+    forged = %{"nested" => %{"__struct__" => "Elixir.File.Stream", "path" => canary}}
+
+    assert {:ok, definition} = Workflows.parse(fixture)
+    assert Smoke.errors(definition) == []
+
+    assert {:error, ["line 1: unsafe workflow data is not allowed in a workflow"]} =
+             Smoke.check(definition, %{"target" => Jason.encode!(forged)})
+
+    assert {:error, ["unsafe workflow data is not allowed in a workflow"]} =
+             Smoke.check(definition, %{"carry" => %{nested: [{%{__struct__: URI}}]}})
+
+    refute File.exists?(canary)
+
+    assert {:ok, %Smoke{ended: :complete}} =
+             Smoke.check(definition, %{"target" => ~s|{"nested": [1, 2]}|})
+  end
+
+  test "unsupported pipeline targets return source-line admission errors" do
+    for {body, message} <- [
+          {"\"{}\" |> (&Jason.decode/2)",
+           "Jason decode options must be literal string-key options —"},
+          {"\"{}\" |> (&Jason.decode!(&1, []))",
+           "Jason decode options must be literal string-key options —"},
+          {"[1] |> (&Enum.into/2)", "unsafe workflow data"},
+          {"[1] |> (&Enum.map/2)", "unsafe workflow data"},
+          {"1 |> %{}", "unsafe workflow data"},
+          {"1 |> 2", "unsafe workflow data"}
+        ] do
+      assert "line 1: #{message} is not allowed in a workflow" in Smoke.validate_ast(
+               Code.string_to_quoted!(body)
+             )
+
+      assert {:ok, definition} = Workflows.parse(source(body))
+      assert Enum.any?(Smoke.errors(definition), &String.contains?(&1, message))
+      assert {:error, problems} = Smoke.check(definition)
+      assert Enum.any?(problems, &String.contains?(&1, message))
+    end
+  end
+
   test "admits only literal string-key Jason options in direct and piped calls" do
     for body <- [
           "Jason.decode!(\"{}\")",
