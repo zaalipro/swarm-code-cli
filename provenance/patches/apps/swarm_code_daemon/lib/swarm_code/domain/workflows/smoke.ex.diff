@@ -1,0 +1,227 @@
+# CLI-local change to lib/swarm_code/workflows/smoke.ex at a93d6d8, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex
+@@ -168,9 +168,12 @@
+     do: {:error, problems}
+ 
+   def check(%Definition{} = definition, args, opts) do
+-    case errors(definition) do
+-      [] -> cast_and_run(definition, args, opts)
+-      problems -> {:error, problems}
++    with :ok <- validate_data(args),
++         [] <- errors(definition) do
++      cast_and_run(definition, args, opts)
++    else
++      {:error, problem} -> {:error, [problem]}
++      problems when is_list(problems) -> {:error, problems}
+     end
+   end
+ 
+@@ -317,30 +320,145 @@
+   def validate_ast(nil), do: []
+ 
+   def validate_ast(ast) do
+-    {_ast, problems} = Macro.prewalk(ast, [], &check_node/2)
++    {_ast, {problems, _parents}} =
++      Macro.traverse(
++        ast,
++        {[], []},
++        fn node, {acc, parents} ->
++          {node, {check_context(node, parents, acc), [node | parents]}}
++        end,
++        fn node, {_acc, [_parent | parents]} = state -> {node, put_elem(state, 1, parents)} end
++      )
++
+     problems |> Enum.reverse() |> Enum.uniq()
+   end
+ 
+-  # spec 60 T34: `Jason.decode(_, keys: :atoms)` interns every key of model output.
+-  defp check_node({{:., _, [{:__aliases__, _, [:Jason]}, name]}, meta, args} = node, acc)
+-       when name in [:decode, :decode!] and is_list(args) do
+-    atoms? =
+-      Enum.any?(args, fn arg ->
+-        is_list(arg) and Keyword.keyword?(arg) and Keyword.get(arg, :keys) in [:atoms, :atoms!]
+-      end)
++  defp check_context(node, parents, acc) do
++    {_node, acc} = check_node(node, acc)
++    context_problem(node, parents, acc)
++  end
+ 
+-    if atoms? do
+-      {node,
+-       [
+-         "line #{line(meta)}: Jason.#{name} with keys: :atoms creates atoms from text — " <>
+-           @denied
+-         | acc
+-       ]}
++  defp context_problem({:|>, _, [left, right]}, _parents, acc) do
++    call_problem(Macro.pipe(left, right, 0), acc)
++  end
++
++  defp context_problem({{:., _, [_module, _name]}, _, _args} = node, parents, acc) do
++    case parents do
++      [{:|>, _, [_left, ^node]} | _] -> acc
++      _ -> call_problem(node, acc)
++    end
++  end
++
++  defp context_problem({:%{}, meta, pairs}, _parents, acc) do
++    if Enum.any?(pairs, fn
++         {key, _value} when key in [:__struct__, "__struct__"] -> true
++         _ -> false
++       end) do
++      [unsafe_value_problem(line(meta)) | acc]
+     else
+-      {node, remote(Jason, name, length(args), line(meta), acc)}
++      acc
+     end
+   end
+ 
++  defp context_problem({:%, meta, _parts}, _parents, acc),
++    do: [unsafe_value_problem(line(meta)) | acc]
++
++  defp context_problem({:__aliases__, meta, _parts} = node, parents, acc) do
++    # Aliases are valid only as the statically checked receiver of a remote
++    # call. Everywhere else they are module values, not workflow data.
++    receiver? =
++      case parents do
++        [{:., _, [^node, _name]} | _] -> true
++        _ -> false
++      end
++
++    if receiver?, do: acc, else: [unsafe_value_problem(line(meta)) | acc]
++  end
++
++  defp context_problem({:&, meta, [{:/, _, [call, _arity]}]}, _parents, acc) do
++    case call do
++      {{:., _, [module, name]}, _, _} ->
++        cond do
++          module_name(module) == Jason and name in [:decode, :decode!] ->
++            [json_problem(line(meta)) | acc]
++
++          admission_sensitive_call?(call) ->
++            [unsafe_value_problem(line(meta)) | acc]
++
++          true ->
++            acc
++        end
++
++      _ ->
++        acc
++    end
++  end
++
++  defp context_problem(node, parents, acc) when is_atom(node) do
++    receiver? =
++      case parents do
++        [{:., _, [^node, _name]} | _] -> true
++        _ -> false
++      end
++
++    if node == :__struct__ or (module_atom?(node) and not receiver?),
++      do: [unsafe_value_problem(parent_line(parents)) | acc],
++      else: acc
++  end
++
++  defp context_problem(_node, _parents, acc), do: acc
++
++  defp call_problem({{:., _, [receiver, name]}, meta, args}, acc) do
++    module = module_name(receiver)
++
++    cond do
++      module == Enum and name == :into ->
++        if length(args) in [2, 3] and literal_collectable?(Enum.at(args, 1)),
++          do: acc,
++          else: [unsafe_value_problem(line(meta)) | acc]
++
++      module == Jason and name in [:decode, :decode!] ->
++        if length(args) == 1 or
++             (length(args) == 2 and json_options?(Enum.at(args, 1))),
++           do: acc,
++           else: [json_problem(line(meta)) | acc]
++
++      module in [String, List] and name in [:to_atom, :to_existing_atom] ->
++        [unsafe_value_problem(line(meta)) | acc]
++
++      true ->
++        acc
++    end
++  end
++
++  defp call_problem(_call, acc), do: acc
++
++  defp literal_collectable?([]), do: true
++
++  defp literal_collectable?({:%{}, _, pairs}) do
++    Enum.all?(pairs, fn
++      {key, _value} when key in [:__struct__, "__struct__"] -> false
++      {_key, _value} -> true
++      _ -> false
++    end)
++  end
++
++  defp literal_collectable?(_value), do: false
++
++  defp parent_line([{_name, meta, _args} | _]) when is_list(meta), do: line(meta)
++  defp parent_line([_parent | parents]), do: parent_line(parents)
++  defp parent_line([]), do: 0
++
++  defp admission_sensitive_call?({{:., _, [module, name]}, _, _args}) do
++    module_name(module) == Enum and name == :into
++  end
++
++  defp admission_sensitive_call?(_call), do: false
++
++  defp module_name({:__aliases__, _, parts}), do: Module.concat(parts)
++  defp module_name(module) when is_atom(module), do: module
++  defp module_name(_module), do: nil
++
+   # A remote call on a literal alias: `Enum.map(...)`, `Jason.encode!(...)`.
+   defp check_node({{:., _, [{:__aliases__, _, mods}, name]}, meta, args} = node, acc)
+        when is_atom(name) and is_list(args) do
+@@ -442,6 +560,44 @@
+     "line #{line}: dynamic invocation #{name}/#{arity} #{@denied}"
+   end
+ 
++  defp json_options?([]), do: true
++
++  defp json_options?([{:keys, :strings}]), do: true
++
++  defp json_options?(_options), do: false
++
++  defp json_problem(line),
++    do: "line #{line}: Jason decode options must be literal string-key options — #{@denied}"
++
++  defp unsafe_value_problem(line),
++    do: "line #{line}: unsafe workflow data #{@denied}"
++
++  defp validate_data(value) do
++    if safe_data?(value), do: :ok, else: {:error, "unsafe workflow data #{@denied}"}
++  end
++
++  defp safe_data?(value)
++       when is_nil(value) or is_boolean(value) or is_number(value) or is_binary(value),
++       do: true
++
++  defp safe_data?(value) when is_atom(value) do
++    not module_atom?(value)
++  end
++
++  defp safe_data?(value) when is_list(value), do: Enum.all?(value, &safe_data?/1)
++
++  defp safe_data?(value) when is_tuple(value), do: value |> Tuple.to_list() |> safe_data?()
++
++  defp safe_data?(value) when is_map(value) do
++    not Map.has_key?(value, :__struct__) and not Map.has_key?(value, "__struct__") and
++      Enum.all?(value, fn {key, item} -> safe_data?(key) and safe_data?(item) end)
++  end
++
++  defp safe_data?(_value), do: false
++
++  defp module_atom?(value),
++    do: String.starts_with?(Atom.to_string(value), "Elixir.")
++
+   defp line(meta), do: Keyword.get(meta, :line, 0)
+ 
+   # spec 68 T30: lint/1, caught_by_errors?/2 and walk/2 removed — lint always
