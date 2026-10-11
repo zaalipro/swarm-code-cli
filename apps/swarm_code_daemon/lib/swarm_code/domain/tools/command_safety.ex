@@ -715,46 +715,53 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
   # Normalize only the literal-argv language used by the safe classifier. It
   # deliberately does not parse or evaluate shell syntax: uncertain input is
   # simply not eligible for :safe.
-  defp safe_words(text), do: safe_words(text, :plain, [], [], false)
+  defp safe_words(text), do: safe_words(text, :plain, [], [], false, [], false)
 
-  defp safe_words(<<>>, :plain, current, words, false),
+  defp safe_words(<<>>, :plain, current, words, false, _braces, _dot_pending),
     do:
       Enum.reverse([word(current) | words])
       |> Enum.reject(&is_nil/1)
-      |> then(fn words ->
-        if Enum.any?(words, &brace_expansion?/1), do: :unknown, else: {:ok, words}
-      end)
+      |> then(&{:ok, &1})
 
-  defp safe_words(<<>>, _state, _current, _words, _escaped), do: :unknown
+  defp safe_words(<<>>, _state, _current, _words, _escaped, _braces, _dot_pending),
+    do: :unknown
 
-  defp safe_words(<<char, rest::binary>>, state, current, words, escaped) do
+  defp safe_words(
+         <<char, rest::binary>>,
+         state,
+         current,
+         words,
+         escaped,
+         braces,
+         dot_pending
+       ) do
     cond do
       escaped and char == ?\n ->
         :unknown
 
       escaped and state == :double and char not in [?", ?\\, ?$, ?`] ->
-        safe_words(rest, state, [char, ?\\ | current], words, false)
+        safe_words(rest, state, [char, ?\\ | current], words, false, braces, false)
 
       escaped ->
-        safe_words(rest, state, [char | current], words, false)
+        safe_words(rest, state, [char | current], words, false, braces, false)
 
       char == ?\\ and state != :single ->
-        safe_words(rest, state, current, words, true)
+        safe_words(rest, state, current, words, true, braces, false)
 
       state == :single and char == ?' ->
-        safe_words(rest, :plain, current, words, false)
+        safe_words(rest, :plain, current, words, false, braces, false)
 
       state == :double and char == ?" ->
-        safe_words(rest, :plain, current, words, false)
+        safe_words(rest, :plain, current, words, false, braces, false)
 
       state == :plain and char == ?' ->
-        safe_words(rest, :single, ["" | current], words, false)
+        safe_words(rest, :single, ["" | current], words, false, braces, false)
 
       state == :plain and char == ?" ->
-        safe_words(rest, :double, ["" | current], words, false)
+        safe_words(rest, :double, ["" | current], words, false, braces, false)
 
       state == :plain and char in [?\s, ?\t, ?\n, ?\r] ->
-        safe_words(rest, :plain, [], [word(current) | words], false)
+        safe_words(rest, :plain, [], [word(current) | words], false, [], false)
 
       state == :plain and char in [?<, ?>, ?`, ?;, ?|, ?&, ?(, ?), ?~, ?#, ?!] ->
         :unknown
@@ -765,15 +772,39 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
       state == :plain and char in [?*, ??, ?[] ->
         :unknown
 
+      # Only plain braces and separators can expand. Quotes and escapes above
+      # retain the open brace context but cannot introduce expansion syntax.
+      state == :plain and char == ?{ ->
+        safe_words(rest, state, [char | current], words, false, [false | braces], false)
+
+      state == :plain and char == ?} ->
+        case braces do
+          [true | _] ->
+            :unknown
+
+          [_ | rest_braces] ->
+            safe_words(rest, state, [char | current], words, false, rest_braces, false)
+
+          [] ->
+            safe_words(rest, state, [char | current], words, false, [], false)
+        end
+
+      state == :plain and char == ?, and braces != [] ->
+        safe_words(rest, state, [char | current], words, false, [true | tl(braces)], false)
+
+      state == :plain and char == ?. and braces != [] and dot_pending ->
+        safe_words(rest, state, [char | current], words, false, [true | tl(braces)], false)
+
+      state == :plain and char == ?. and braces != [] ->
+        safe_words(rest, state, [char | current], words, false, braces, true)
+
       true ->
-        safe_words(rest, state, [char | current], words, false)
+        safe_words(rest, state, [char | current], words, false, braces, false)
     end
   end
 
   defp word([]), do: nil
   defp word(chars), do: chars |> Enum.reverse() |> IO.iodata_to_binary()
-
-  defp brace_expansion?(word), do: Regex.match?(~r/\{[^{}]*(,|\.\.)[^{}]*\}/, word)
 
   defp command_safe?(argv0, rest) when argv0 in @read_only,
     do: flags_safe?(argv0, rest) and operands_inside?(argv0, rest)

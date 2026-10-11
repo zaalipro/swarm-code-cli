@@ -1852,7 +1852,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/tools/command_safety.ex",
-      "sha256": "1a6bf541c56d86fc3ee1fe3e446308140d01243f1cef6676c8c672f089a453b4",
+      "sha256": "9162bccbf5c1ee2b3590bfec624bbeec916aa6acce00e066dbbb2266d35088fd",
       "upstream_commit": "a93d6d8ee74358749e157e91dea46ad8c0d66722",
       "upstream_path": "lib/swarm_code/tools/command_safety.ex",
       "upstream_sha256": "47cc010774e4ef72af4e62aaa70a8ff979a1fa41edc4aecd78eee94cba339845"
