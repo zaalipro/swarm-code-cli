@@ -343,9 +343,18 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
   end
 
   defp context_problem({{:., _, [_module, _name]}, _, _args} = node, parents, acc) do
-    case parents do
-      [{:|>, _, [_left, ^node]} | _] -> acc
-      _ -> call_problem(node, acc)
+    {_, _, [receiver, name]} = elem(node, 0)
+
+    cond do
+      module_name(receiver) == Jason and name in [:decode, :decode!] and
+          Enum.any?(parents, &match?({:&, _, _}, &1)) ->
+        [json_problem(line(elem(node, 1))) | acc]
+
+      match?([{:|>, _, [_left, ^node]} | _], parents) ->
+        acc
+
+      true ->
+        call_problem(node, acc)
     end
   end
 
@@ -581,12 +590,14 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
        do: true
 
   defp safe_data?(value) when is_atom(value) do
-    not module_atom?(value)
+    value != :__struct__ and not module_atom?(value)
   end
 
-  defp safe_data?(value) when is_list(value), do: Enum.all?(value, &safe_data?/1)
+  defp safe_data?([]), do: true
 
-  defp safe_data?(value) when is_tuple(value), do: value |> Tuple.to_list() |> safe_data?()
+  defp safe_data?([head | tail]), do: safe_data?(head) and safe_list?(tail)
+
+  defp safe_data?(value) when is_tuple(value), do: value |> Tuple.to_list() |> safe_list?()
 
   defp safe_data?(value) when is_map(value) do
     not Map.has_key?(value, :__struct__) and not Map.has_key?(value, "__struct__") and
@@ -594,6 +605,10 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
   end
 
   defp safe_data?(_value), do: false
+
+  defp safe_list?([]), do: true
+  defp safe_list?([head | tail]), do: safe_data?(head) and safe_list?(tail)
+  defp safe_list?(_tail), do: false
 
   defp module_atom?(value),
     do: String.starts_with?(Atom.to_string(value), "Elixir.")
