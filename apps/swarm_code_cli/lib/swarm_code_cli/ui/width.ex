@@ -68,12 +68,241 @@ defmodule SwarmCodeCLI.UI.Width do
     |> elem(0)
   end
 
+  @doc "Lazy grapheme-aligned units whose contextual cell widths are additive."
+  @spec units(binary(), :narrow | :wide) :: Enumerable.t()
+  def units(binary, ambiguous) when is_binary(binary) and ambiguous in [:narrow, :wide] do
+    Stream.unfold(binary, fn rest ->
+      case next_unit(rest, ambiguous) do
+        nil -> nil
+        {unit, tail} -> {{unit, cells(unit, ambiguous)}, tail}
+      end
+    end)
+  end
+
+  defp next_unit("", _mode), do: nil
+
+  defp next_unit(binary, mode) do
+    {first, rest} = String.next_grapheme(binary)
+    join_unit(rest, mode, forward_state(first, :none, mode), [first])
+  end
+
+  defp join_unit("", _mode, _state, parts),
+    do: {parts |> Enum.reverse() |> IO.iodata_to_binary(), ""}
+
+  defp join_unit(rest, mode, state, parts) do
+    <<cp::utf8, _::binary>> = rest
+
+    if continues?(state, cp, mode) do
+      {grapheme, tail} = String.next_grapheme(rest)
+      join_unit(tail, mode, forward_state(grapheme, state, mode), [grapheme | parts])
+    else
+      {parts |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+    end
+  end
+
+  defp forward_state("", state, _mode), do: state
+
+  defp forward_state(<<cp::utf8, rest::binary>>, state, mode) do
+    next = advance_dependencies(state, cp, mode)
+    forward_state(rest, next, mode)
+  end
+
+  defp advance_dependencies(:none, cp, mode), do: forward_step(cp, :none, mode)
+
+  defp advance_dependencies(states, cp, mode) when is_list(states) do
+    states
+    |> Enum.map(&forward_step(cp, &1, mode))
+    |> merge_dependencies(forward_step(cp, :none, mode))
+  end
+
+  defp advance_dependencies(state, cp, mode) do
+    next = forward_step(cp, state, mode)
+
+    if next == state,
+      do: merge_dependencies([next], forward_step(cp, :none, mode)),
+      else: next
+  end
+
+  defp merge_dependencies(states, seed) do
+    case Enum.uniq([seed | states]) -- [:none] do
+      [] -> :none
+      [state] -> state
+      states -> states
+    end
+  end
+
+  defp forward_step(cp, state, mode) do
+    next =
+      cond do
+        state == :lam and Table.transparent_zero_width?(cp) ->
+          :lam
+
+        state == :solidus and Table.solidus_transparent?(cp) ->
+          :solidus
+
+        state in [:hebrew, :buginese_i, :tifinagh, :turkic] and cp == 0x200D ->
+          {:joined, state}
+
+        state in [
+          :hebrew,
+          :buginese,
+          :buginese_i,
+          :tifinagh,
+          :tifinagh_joiner,
+          :turkic,
+          :khmer,
+          :lisu
+        ] and
+            Table.ligature_transparent?(cp) ->
+          state
+
+        match?({:joined, _}, state) and Table.ligature_transparent?(cp) ->
+          state
+
+        state == :buginese and cp == 0x1A17 ->
+          :buginese_i
+
+        state in [:tifinagh, {:joined, :tifinagh}] and cp == 0x2D7F ->
+          :tifinagh_joiner
+
+        state in [:emoji, :regional] and cp == 0x200D ->
+          :emoji_join
+
+        state == :emoji and
+            (cp in [0xFE0F, 0x20E3, 0xE007F] or
+               emoji_modifier?(cp) or tag_letter?(cp) or tag_digit?(cp)) ->
+          :emoji
+
+        state == :kirat and cp == 0x16D67 ->
+          :kirat
+
+        regional_indicator?(cp) ->
+          :regional
+
+        cp < 0x300 ->
+          cond do
+            mode == :wide and cp in [?<, ?=, ?>] -> :solidus
+            keycap_base?(cp) -> :emoji
+            true -> :none
+          end
+
+        lam?(cp) ->
+          :lam
+
+        cp == 0x5D0 ->
+          :hebrew
+
+        cp == 0x1A15 ->
+          :buginese
+
+        tifinagh_consonant?(cp) ->
+          :tifinagh
+
+        cp == 0x10C32 ->
+          :turkic
+
+        cp == 0x17D2 ->
+          :khmer
+
+        cp in 0xA4F8..0xA4FB ->
+          :lisu
+
+        cp in [0x16D63, 0x16D67, 0x16D68, 0x16D69] ->
+          :kirat
+
+        emoji_start?(cp, mode) ->
+          :emoji
+
+        true ->
+          :none
+      end
+
+    next
+  end
+
+  # Forward counterparts of width_in_string/match_state's reverse dependencies.
+  # Transparent runs stay attached, but an unrelated next scalar is not scanned.
+  defp continues?(:none, _cp, _mode), do: false
+
+  defp continues?(states, cp, mode) when is_list(states),
+    do: Enum.any?(states, &continues?(&1, cp, mode))
+
+  defp continues?(state, cp, mode) do
+    cond do
+      state == :lam ->
+        Table.transparent_zero_width?(cp) or
+          elem(Table.width_info(cp, mode), 1) == @joining_group_alef
+
+      state == :solidus ->
+        cp == 0x338 or Table.solidus_transparent?(cp)
+
+      state in [
+        :hebrew,
+        :buginese,
+        :buginese_i,
+        :tifinagh,
+        :tifinagh_joiner,
+        :turkic,
+        :khmer,
+        :lisu
+      ] and
+          Table.ligature_transparent?(cp) ->
+        true
+
+      match?({:joined, _}, state) and Table.ligature_transparent?(cp) ->
+        true
+
+      state == {:joined, :hebrew} ->
+        cp == 0x5DC
+
+      state == :buginese ->
+        cp == 0x1A17
+
+      state == {:joined, :buginese_i} ->
+        cp == 0x1A10
+
+      state in [:tifinagh, {:joined, :tifinagh}] ->
+        cp == 0x2D7F or
+          (state == {:joined, :tifinagh} and tifinagh_consonant?(cp))
+
+      state == :tifinagh_joiner ->
+        tifinagh_consonant?(cp)
+
+      state == {:joined, :turkic} ->
+        cp == 0x10C03
+
+      state == :khmer ->
+        elem(Table.width_info(cp, mode), 1) == @khmer_coeng_eligible_letter
+
+      state == :lisu ->
+        cp in 0xA4FC..0xA4FD
+
+      state == :kirat ->
+        cp == 0x16D67
+
+      state == :emoji_join ->
+        emoji_start?(cp, mode)
+
+      state == :regional ->
+        regional_indicator?(cp) or cp == 0x200D
+
+      true ->
+        false
+    end
+  end
+
+  defp emoji_start?(cp, mode),
+    do:
+      regional_indicator?(cp) or emoji_modifier?(cp) or keycap_base?(cp) or
+        Table.starts_emoji_presentation_seq?(cp) or
+        elem(Table.width_info(cp, mode), 1) == @emoji_presentation
+
   @spec take_cells(binary(), non_neg_integer(), :narrow | :wide) ::
           {binary(), binary(), non_neg_integer()}
   def take_cells(binary, limit, ambiguous)
       when is_binary(binary) and is_integer(limit) and limit >= 0 and
              ambiguous in [:narrow, :wide] do
-    take_prefix(binary, limit, ambiguous, "", 0)
+    take_prefix(binary, limit, ambiguous, [], 0)
   end
 
   @spec wrap(binary(), pos_integer(), :narrow | :wide) :: [binary()]
@@ -87,7 +316,7 @@ defmodule SwarmCodeCLI.UI.Width do
       |> String.split(["\r\n", "\n"])
       |> Enum.flat_map(fn
         "" -> [""]
-        line -> do_wrap(line, width, ambiguous, [])
+        line -> do_wrap(line, width, ambiguous)
       end)
     end
   end
@@ -110,35 +339,41 @@ defmodule SwarmCodeCLI.UI.Width do
   end
 
   defp take_prefix(remaining, limit, ambiguous, prefix, used) do
-    case String.next_grapheme(remaining) do
+    case next_unit(remaining, ambiguous) do
       nil ->
-        {prefix, "", used}
+        {prefix |> Enum.reverse() |> IO.iodata_to_binary(), "", used}
 
-      {grapheme, tail} ->
-        # pass72 G14 (QA Q7): a grapheme's cells do not depend on the one
-        # after it, so the prefix is measured one grapheme at a time, not
-        # again from its start for every grapheme (quadratic on a long line).
-        candidate = prefix <> grapheme
-        candidate_width = used + cells(grapheme, ambiguous)
+      {unit, tail} ->
+        candidate = [unit | prefix]
+        candidate_width = used + cells(unit, ambiguous)
 
         if candidate_width <= limit,
           do: take_prefix(tail, limit, ambiguous, candidate, candidate_width),
-          else: {prefix, remaining, used}
+          else: {prefix |> Enum.reverse() |> IO.iodata_to_binary(), remaining, used}
     end
   end
 
-  defp do_wrap(<<>>, _width, _ambiguous, acc), do: Enum.reverse(acc)
+  defp do_wrap(binary, width, ambiguous) do
+    {parts, _used, rows} =
+      Enum.reduce(units(binary, ambiguous), {[], 0, []}, fn {unit, cells}, {parts, used, rows} ->
+        cond do
+          used + cells <= width ->
+            {[unit | parts], used + cells, rows}
 
-  defp do_wrap(binary, width, ambiguous, acc) do
-    {head, tail, _} = take_cells(binary, width, ambiguous)
+          cells > width ->
+            rows = flush_row(parts, rows)
+            {[], 0, [unit | rows]}
 
-    if head == "" do
-      {first, rest} = String.next_grapheme(binary)
-      do_wrap(rest, width, ambiguous, [first | acc])
-    else
-      do_wrap(tail, width, ambiguous, [head | acc])
-    end
+          true ->
+            {[unit], cells, flush_row(parts, rows)}
+        end
+      end)
+
+    parts |> flush_row(rows) |> Enum.reverse()
   end
+
+  defp flush_row([], rows), do: rows
+  defp flush_row(parts, rows), do: [parts |> Enum.reverse() |> IO.iodata_to_binary() | rows]
 
   defp end_elide(binary, available, ambiguous) do
     {head, _, _} = take_cells(binary, available, ambiguous)

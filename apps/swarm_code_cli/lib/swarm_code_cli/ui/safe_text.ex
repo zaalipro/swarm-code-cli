@@ -1599,7 +1599,7 @@ defmodule SwarmCodeCLI.UI.SafeText do
     else
       binary
       |> repair_invalid_utf8()
-      |> scan(limit, tabs, width, 0, [])
+      |> scan(limit, tabs, width, {0, []}, [])
     end
   end
 
@@ -1620,7 +1620,8 @@ defmodule SwarmCodeCLI.UI.SafeText do
 
       n ->
         <<run::binary-size(n), rest::binary>> = binary
-        scan(rest, remaining - n, tabs, width, column + n, [run | acc])
+        {base, parts} = column
+        scan(rest, remaining - n, tabs, width, {base, [run | parts]}, [run | acc])
     end
   end
 
@@ -1643,6 +1644,12 @@ defmodule SwarmCodeCLI.UI.SafeText do
     end
   end
 
+  # Each sanitized run is measured once, only when its column is needed.
+  defp run_column({base, parts}, width) do
+    run = parts |> Enum.reverse() |> IO.iodata_to_binary()
+    Enum.reduce(Width.units(run, width), base, fn {_unit, cells}, column -> column + cells end)
+  end
+
   defp repair_invalid_utf8(binary) do
     case :unicode.characters_to_binary(binary, :utf8, :utf8) do
       ^binary ->
@@ -1661,15 +1668,16 @@ defmodule SwarmCodeCLI.UI.SafeText do
   defp split_invalid_byte(<<byte, rest::binary>>), do: {byte, rest}
   defp split_invalid_byte(<<>>), do: {0, <<>>}
 
-  defp sanitize_grapheme("\t", remaining, tabs, _width, column) do
+  defp sanitize_grapheme("\t", remaining, tabs, width, run) do
+    column = run_column(run, width)
     spaces = tabs - rem(column, tabs)
 
     if spaces > remaining,
       do: {:error, :escaped_output_too_large},
-      else: {:ok, String.duplicate(" ", spaces), remaining - spaces, column + spaces}
+      else: {:ok, String.duplicate(" ", spaces), remaining - spaces, {column + spaces, []}}
   end
 
-  defp sanitize_grapheme(grapheme, remaining, _tabs, width, column) do
+  defp sanitize_grapheme(grapheme, remaining, _tabs, _width, {base, run}) do
     context = grapheme_context(grapheme)
     # Only source-bounded grapheme context is inspected ahead of time. The
     # expanded representation is produced one scalar/invalid byte at a time,
@@ -1681,13 +1689,10 @@ defmodule SwarmCodeCLI.UI.SafeText do
         next_column =
           case :binary.matches(visible, "\n") |> List.last() do
             nil ->
-              column + Width.cells(visible, width)
+              {base, [visible | run]}
 
             {offset, 1} ->
-              Width.cells(
-                binary_part(visible, offset + 1, byte_size(visible) - offset - 1),
-                width
-              )
+              {0, [binary_part(visible, offset + 1, byte_size(visible) - offset - 1)]}
           end
 
         {:ok, visible, remaining, next_column}

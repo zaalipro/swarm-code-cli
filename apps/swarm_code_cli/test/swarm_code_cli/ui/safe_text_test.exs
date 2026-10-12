@@ -22,6 +22,48 @@ defmodule SwarmCodeCLI.UI.SafeTextTest do
     assert SafeText.value(safe) == "界      é       👩‍💻      \na       "
   end
 
+  test "tabs after lam-alef use contextual columns under both policies" do
+    for mode <- [:narrow, :wide] do
+      limits =
+        struct!(Limits, input_bytes: 100, escaped_bytes: 200, tab_width: 8, ambiguous_width: mode)
+
+      assert {:ok, safe} = SafeText.external("لا\tx", limits)
+      assert SafeText.value(safe) == "لا" <> String.duplicate(" ", 7) <> "x"
+    end
+  end
+
+  test "contextual runs reset across repeated tabs and newlines" do
+    for mode <- [:narrow, :wide], unit <- ["لا", "\uA4F9\uA4FC", "\u2D4F\u2D7F\u2D3E"] do
+      limits =
+        struct!(Limits, input_bytes: 200, escaped_bytes: 300, tab_width: 8, ambiguous_width: mode)
+
+      assert {:ok, safe} =
+               SafeText.external("a" <> unit <> "\t\t" <> unit <> "\n" <> unit <> "\tx", limits)
+
+      assert SafeText.value(safe) ==
+               "a" <>
+                 unit <>
+                 String.duplicate(" ", 14) <>
+                 unit <>
+                 "\n" <>
+                 unit <> String.duplicate(" ", 7) <> "x"
+    end
+  end
+
+  test "contextual tab expansion admits the exact escaped byte ceiling" do
+    for mode <- [:narrow, :wide] do
+      limits =
+        struct!(Limits, input_bytes: 100, escaped_bytes: 12, tab_width: 8, ambiguous_width: mode)
+
+      assert {:ok, safe} = SafeText.external("لا\tx", limits)
+      assert byte_size(SafeText.value(safe)) == 12
+      assert {:error, :escaped_output_too_large} = SafeText.external("لا\txx", limits)
+
+      assert {:error, :escaped_output_too_large} =
+               SafeText.external("لا\tx", %{limits | escaped_bytes: 11})
+    end
+  end
+
   test "invalid bytes and standalone invisible marks are exposed" do
     assert {:ok, safe} =
              SafeText.external(<<0xFF, 0xC0, 0xAF>> <> "\u0301\u200d\ufe0f", Limits.content())

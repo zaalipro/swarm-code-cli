@@ -89,6 +89,105 @@ defmodule SwarmCodeCLI.UI.WidthTest do
     assert Width.take_cells(text, 3, :narrow) == {"é👩‍💻", "X", 3}
   end
 
+  test "take_cells and wrap keep lam-alef contextual units together" do
+    for mode <- [:narrow, :wide] do
+      assert Width.take_cells("لاx", 1, mode) == {"لا", "x", 1}
+      assert Width.wrap("لاx", 1, mode) == ["لا", "x"]
+    end
+  end
+
+  test "all reverse-state dependency families form additive contextual units" do
+    sequences = [
+      {"ل\u0651ا", 1},
+      {"א\u200Dל", 1},
+      {"\u1A15\u1A17\u200D\u1A10", 1},
+      {"\u2D4F\u2D7F\u2D3E", 1},
+      {"\u2D4F\u2D7F\u034F\u2D3E", 1},
+      {"\u2D4F\u200D\u2D3E", 1},
+      {"\u{10C32}\u200D\u{10C03}", 1},
+      {"\u17D2\u1780", 0},
+      {"\u17D2\u034F\u1780", 0},
+      {"\uA4F9\uA4FC", 1},
+      {"\uA4F9\u034F\uA4FC", 1},
+      {"\u{16D63}\u{16D67}", 1},
+      {"👩‍💻", 2},
+      {"🏻‍👩", 2},
+      {"1️⃣‍👩", 2},
+      {"🇬🇪‍👩", 2}
+    ]
+
+    for mode <- [:narrow, :wide], {unit, expected} <- sequences do
+      assert Enum.to_list(Width.units(unit <> "x", mode)) == [{unit, expected}, {"x", 1}]
+      assert Width.take_cells(unit <> "x", expected, mode) == {unit, "x", expected}
+
+      assert Width.wrap(unit <> "x", 1, mode) ==
+               if(expected == 0, do: [unit <> "x"], else: [unit, "x"])
+    end
+  end
+
+  test "emoji chains retain regional-indicator parity across grapheme boundaries" do
+    for mode <- [:narrow, :wide], count <- 1..7 do
+      chain = String.duplicate("🇬", count) <> "‍👩"
+      units = Enum.to_list(Width.units(chain, mode))
+      assert Enum.sum(Enum.map(units, &elem(&1, 1))) == Width.cells(chain, mode)
+      assert Width.wrap(chain, 1, mode) == [chain]
+    end
+  end
+
+  test "unit sums and every returned prefix agree with the unchanged width oracle" do
+    texts = Enum.map(WidthFixtures.vectors(), & &1["text"])
+    pairs = for a <- texts, b <- texts, do: a <> b
+
+    for text <- texts ++ pairs, mode <- [:narrow, :wide] do
+      units = Enum.to_list(Width.units(text, mode))
+      assert Enum.map_join(units, &elem(&1, 0)) == text
+
+      assert Enum.sum(Enum.map(units, &elem(&1, 1))) == Width.cells(text, mode),
+             inspect({text, mode, units})
+
+      Enum.reduce(units, {"", 0}, fn {unit, cells}, {prefix, used} ->
+        prefix = prefix <> unit
+        assert used + cells == Width.cells(prefix, mode), inspect({text, prefix, mode})
+        {prefix, used + cells}
+      end)
+    end
+  end
+
+  test "a transparent scalar may start another overlapping contextual dependency" do
+    for mode <- [:narrow, :wide] do
+      text = "ل\u17D2\u1780x"
+      assert Enum.to_list(Width.units(text, mode)) == [{"ل\u17D2\u1780", 1}, {"x", 1}]
+      assert Width.take_cells(text, 1, mode) == {"ل\u17D2\u1780", "x", 1}
+    end
+  end
+
+  test "wrapping every vector preserves units and fits non-forced rows" do
+    for %{"text" => text} <- WidthFixtures.vectors(),
+        mode <- [:narrow, :wide],
+        width <- 1..4 do
+      for source <- String.split(text, ["\r\n", "\n"]), source != "" do
+        units = Enum.map(Width.units(source, mode), &elem(&1, 0))
+        rows = Width.wrap(source, width, mode)
+        assert Enum.join(rows) == source
+
+        assert Enum.reduce(rows, units, fn row, remaining ->
+                 {row_units, rest} = row_units(row, remaining, [])
+                 assert Enum.join(row_units) == row
+                 assert Width.cells(row, mode) <= width or row_units == [row]
+                 rest
+               end) == []
+      end
+    end
+  end
+
+  defp row_units("", rest, acc), do: {Enum.reverse(acc), rest}
+
+  defp row_units(row, [unit | rest], acc) do
+    assert String.starts_with?(row, unit)
+    tail = binary_part(row, byte_size(unit), byte_size(row) - byte_size(unit))
+    row_units(tail, rest, [unit | acc])
+  end
+
   test "take_cells is exact below, at, and above each grapheme boundary" do
     text = "A·界👩‍💻éZ"
 
@@ -162,10 +261,8 @@ defmodule SwarmCodeCLI.UI.WidthTest do
     {result, after_count - before}
   end
 
-  # pass72 G14 (QA Q7): take_cells measures one grapheme at a time; it must
-  # cut exactly where measuring the whole prefix again did, for every vector,
-  # every joined pair of vectors, every limit and both policies.
-  test "take_cells cuts where the whole-prefix measure cut" do
+  # Measure whole prefixes only in the reference, at independent unit boundaries.
+  test "take_cells cuts where the whole-unit-prefix measure cut" do
     texts = Enum.map(WidthFixtures.vectors(), & &1["text"])
     pairs = for a <- Enum.take(texts, 40), b <- Enum.take(texts, 40), do: a <> b
 
@@ -183,6 +280,21 @@ defmodule SwarmCodeCLI.UI.WidthTest do
     assert long < 1_000_000
   end
 
+  test "contextual traversal is linear and lazy in the consumed prefix" do
+    short = String.duplicate("لا", 1_000)
+    long = String.duplicate("لا", 2_000)
+    short_work = reductions(fn -> Width.take_cells(short, 1_000, :narrow) end)
+    long_work = reductions(fn -> Width.take_cells(long, 2_000, :narrow) end)
+    assert long_work < 3 * short_work
+
+    small = "لاx" <> String.duplicate("א\u200Dל", 100)
+    large = "لاx" <> String.duplicate("א\u200Dל", 10_000)
+    small_work = reductions(fn -> Enum.take(Width.units(small, :wide), 1) end)
+    large_work = reductions(fn -> Enum.take(Width.units(large, :wide), 1) end)
+    assert large_work < 4 * small_work
+    assert Enum.take(Width.units(large, :wide), 1) == [{"لا", 1}]
+  end
+
   defp reductions(fun) do
     fun.()
     {:reductions, before} = Process.info(self(), :reductions)
@@ -192,11 +304,14 @@ defmodule SwarmCodeCLI.UI.WidthTest do
   end
 
   defp reference(remaining, limit, policy, prefix, used) do
-    case String.next_grapheme(remaining) do
-      nil ->
+    case Enum.take(Width.units(remaining, policy), 1) do
+      [] ->
         {prefix, "", used}
 
-      {grapheme, tail} ->
+      [{grapheme, _}] ->
+        tail =
+          binary_part(remaining, byte_size(grapheme), byte_size(remaining) - byte_size(grapheme))
+
         candidate = prefix <> grapheme
         width = Width.cells(candidate, policy)
 

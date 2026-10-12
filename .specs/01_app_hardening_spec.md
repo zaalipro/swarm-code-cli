@@ -985,7 +985,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ ui/draft_paste_test.exs Pass73Helpers; Draft.clear/1; Commands.invoke/3 and expand_pastes/3; reducer external_editor/external_edit_done transitions; Pastes.expanded_bytes/2 and tagged expand/2 from task 20.
   - _Requirements:_ 8.1, 8.2, 8.3, 8.4
 
-- [ ] 23. Use contextual units for cell prefix and wrap
+- [x] 23. Use contextual units for cell prefix and wrap
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/ui/width.ex`; `apps/swarm_code_cli/test/swarm_code_cli/ui/width_test.exs`
   - Purpose: Preserve the existing reverse Unicode state machine without assuming independent grapheme widths.
   - Do:
@@ -998,7 +998,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_cli/lib/swarm_code_cli/ui/width.ex `unicode_cells/2`, `width_in_string/3`, `match_state/3`; existing WidthFixtures vectors.
   - _Requirements:_ 9.1, 9.2, 9.4
 
-- [ ] 24. Measure SafeText tab columns from contextual runs
+- [x] 24. Measure SafeText tab columns from contextual runs
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/ui/safe_text.ex`; `apps/swarm_code_cli/test/swarm_code_cli/ui/safe_text_test.exs`
   - Purpose: Fix the remaining additive-width tab bug after the width traversal is corrected.
   - Do:
