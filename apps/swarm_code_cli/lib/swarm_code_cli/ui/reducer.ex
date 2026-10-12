@@ -422,12 +422,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
                 _ -> "the agent"
               end
 
-            steers = Enum.take([{run, String.trim(text), node, name} | state.steers], 50)
+            {next, effects} =
+              transition(state, {:invoke, intent, elem(State.next_id(state, :request), 0)})
 
-            transition(
-              %{state | steers: steers},
-              {:invoke, intent, elem(State.next_id(state, :request), 0)}
-            )
+            if effects == [] do
+              {next, effects}
+            else
+              steers = Enum.take([{run, String.trim(text), node, name} | next.steers], 50)
+              {%{next | steers: steers}, effects}
+            end
         end
 
       :band ->
@@ -3375,6 +3378,9 @@ defmodule SwarmCodeCLI.UI.Reducer do
           refused ->
             refused
         end
+
+      Pastes.too_large?(rest, Drafts.fetch(state.drafts, key).pastes) ->
+        feedback(state, "The message is over 256 KiB.")
 
       true ->
         {state, replaced} = replace_draft(state, key, rest)

@@ -428,6 +428,82 @@ defmodule SwarmCodeCLI.UI.DraftPasteTest do
     assert [%{kind: {:steer, "r", "agent", ^expected, []}}] = requests(effects)
   end
 
+  test "/queue Enter refuses 262145 expanded bytes without changing the draft or effects" do
+    state = ready() |> bracketed(String.duplicate("x", 262_144))
+    state = replace_fixture(state, "/queue " <> text(state) <> "x")
+    {state, _} = Reducer.update(state, {:editor, key(), :select_all})
+
+    assert materializations(fn ->
+             {next, effects} = send(state)
+             assert effects == []
+             assert_refusal(state, next, "The message is over 256 KiB.")
+           end) == 0
+  end
+
+  test "/queue Enter admits 262144 expanded bytes and strips only the command prefix" do
+    payload = String.duplicate("x\n", 131_072)
+    state = ready() |> bracketed(payload)
+    marker = text(state)
+    state = replace_fixture(state, "  /queue   " <> marker)
+
+    assert materializations(fn ->
+             {next, effects} = send(state)
+             assert [%{kind: {:dispatch, :queue, ^payload, :main, []}}] = requests(effects)
+             assert text(next) == marker
+             assert next.steers == state.steers
+           end) == 1
+  end
+
+  test "overlay Enter repeatedly refuses 262145 bytes without evicting 50 existing steers" do
+    state = overlay_fixture(String.duplicate("x\n", 131_072), "x")
+
+    assert materializations(fn ->
+             Enum.reduce(1..3, state, fn _, before ->
+               {next, effects} = press(before, Input.key(:enter))
+               assert effects == []
+               assert_refusal(before, next, "The message is over 256 KiB.")
+               assert next.steers == state.steers
+               next
+             end)
+           end) == 0
+  end
+
+  test "overlay Enter admits 262144 bytes and records exactly one steer after admission" do
+    payload = String.duplicate("x", 262_144)
+    state = overlay_fixture(payload)
+    marker = Editor.text(Drafts.fetch(state.drafts, state.overlay.draft_key).editor)
+
+    assert materializations(fn ->
+             {next, effects} = press(state, Input.key(:enter))
+             assert [%{kind: {:steer, "r", "agent", ^payload, []}}] = requests(effects)
+
+             assert next.steers ==
+                      Enum.take([{"r", marker, "agent", "Worker"} | state.steers], 50)
+
+             assert Editor.text(Drafts.fetch(next.drafts, state.overlay.draft_key).editor) ==
+                      marker
+
+             assert text(next) == text(state)
+           end) == 1
+  end
+
+  defp overlay_fixture(payload, suffix \\ "") do
+    state = ready([run("r", :streaming)]) |> bracketed(payload)
+    state = replace_fixture(state, text(state) <> suffix)
+    {state, _} = Reducer.update(state, {:editor, key(), :select_all})
+    agent_key = {"c", {:agent, "agent"}}
+    draft = %{Drafts.fetch(state.drafts, key()) | key: agent_key}
+    agent = %DTO.AgentSummary{id: "agent", run_id: "r", state: :running, name: "Worker"}
+
+    %{
+      state
+      | drafts: Drafts.put(state.drafts, draft),
+        overlay: %{run_id: "r", node_id: "agent", draft_key: agent_key, focus: :composer},
+        read_model: %{state.read_model | agents: %{"agent" => agent}},
+        steers: Enum.map(1..50, &{"r", "existing #{&1}", "agent", "Worker"})
+    }
+  end
+
   defp materializations(fun) do
     parent = self()
 
