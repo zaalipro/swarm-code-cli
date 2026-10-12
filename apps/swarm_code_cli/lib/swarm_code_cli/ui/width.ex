@@ -284,7 +284,8 @@ defmodule SwarmCodeCLI.UI.Width do
         emoji_start?(cp, mode)
 
       state == :regional ->
-        regional_indicator?(cp) or cp == 0x200D
+        # String.next_grapheme already pairs RIs; only ZWJ joins the next grapheme.
+        cp == 0x200D
 
       true ->
         false

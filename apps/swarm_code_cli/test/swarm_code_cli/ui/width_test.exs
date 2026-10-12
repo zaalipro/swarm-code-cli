@@ -129,8 +129,61 @@ defmodule SwarmCodeCLI.UI.WidthTest do
     for mode <- [:narrow, :wide], count <- 1..7 do
       chain = String.duplicate("🇬", count) <> "‍👩"
       units = Enum.to_list(Width.units(chain, mode))
+      preceding = List.duplicate({"🇬🇬", 2}, div(count - 1, 2))
+      terminal = if rem(count, 2) == 0, do: {"🇬🇬‍👩", 2}, else: {"🇬‍👩", 3}
+      assert units == preceding ++ [terminal]
       assert Enum.sum(Enum.map(units, &elem(&1, 1))) == Width.cells(chain, mode)
-      assert Width.wrap(chain, 1, mode) == [chain]
+      assert Width.wrap(chain, 1, mode) == Enum.map(units, &elem(&1, 0))
+    end
+  end
+
+  test "complete regional-indicator pairs remain independent units" do
+    for mode <- [:narrow, :wide] do
+      text = "🇬🇪🇺🇸x"
+
+      assert Enum.to_list(Width.units(text, mode)) == [
+               {"🇬🇪", 2},
+               {"🇺🇸", 2},
+               {"x", 1}
+             ]
+
+      assert Width.take_cells(text, 2, mode) == {"🇬🇪", "🇺🇸x", 2}
+      assert Width.take_cells(text, 1, mode) == {"", text, 0}
+      assert Width.take_cells(text, 3, mode) == {"🇬🇪", "🇺🇸x", 2}
+      assert Width.take_cells(text, 4, mode) == {"🇬🇪🇺🇸", "x", 4}
+      assert Width.wrap("🇬🇪🇺🇸", 2, mode) == ["🇬🇪", "🇺🇸"]
+    end
+  end
+
+  test "odd regional-indicator tails and ZWJ continuations retain additive boundaries" do
+    cases = [
+      {"🇬🇪🇺", [{"🇬🇪", 2}, {"🇺", 1}]},
+      {"🇬🇪🇺🇸🇬", [{"🇬🇪", 2}, {"🇺🇸", 2}, {"🇬", 1}]},
+      {"🇬🇪‍👩", [{"🇬🇪‍👩", 2}]},
+      {"🇬‍👩", [{"🇬‍👩", 3}]},
+      {"🇬🇪‍🇺🇸", [{"🇬🇪‍🇺🇸", 2}]},
+      {"👩‍🇬🇪🇺🇸", [{"👩‍🇬🇪", 2}, {"🇺🇸", 2}]},
+      {"🇬‍🇪", [{"🇬‍🇪", 2}]}
+    ]
+
+    for mode <- [:narrow, :wide], {text, expected} <- cases do
+      assert Enum.to_list(Width.units(text, mode)) == expected
+      assert Enum.sum(Enum.map(expected, &elem(&1, 1))) == Width.cells(text, mode)
+
+      Enum.reduce(expected, {"", 0}, fn {unit, cells}, {prefix, used} ->
+        prefix = prefix <> unit
+        used = used + cells
+        assert Width.cells(prefix, mode) == used
+
+        assert Width.take_cells(text <> "x", used, mode) ==
+                 {prefix,
+                  binary_part(text, byte_size(prefix), byte_size(text) - byte_size(prefix)) <>
+                    "x", used}
+
+        {prefix, used}
+      end)
+
+      assert Width.wrap(text, 2, mode) == Enum.map(expected, &elem(&1, 0))
     end
   end
 
@@ -293,6 +346,36 @@ defmodule SwarmCodeCLI.UI.WidthTest do
     large_work = reductions(fn -> Enum.take(Width.units(large, :wide), 1) end)
     assert large_work < 4 * small_work
     assert Enum.take(Width.units(large, :wide), 1) == [{"لا", 1}]
+  end
+
+  test "plain flag traversal does not scan hidden flags and is linear when consumed" do
+    small = "🇬🇪" <> String.duplicate("🇺🇸", 100)
+    large = "🇬🇪" <> String.duplicate("🇺🇸", 10_000)
+    short = String.duplicate("🇬🇪", 1_000)
+    long = String.duplicate("🇬🇪", 2_000)
+
+    for mode <- [:narrow, :wide] do
+      for text <- [small, large] do
+        assert Enum.take(Width.units(text, mode), 1) == [{"🇬🇪", 2}]
+
+        assert Width.take_cells(text, 2, mode) ==
+                 {"🇬🇪", binary_part(text, 8, byte_size(text) - 8), 2}
+      end
+
+      small_unit_work = reductions(fn -> Enum.take(Width.units(small, mode), 1) end)
+      large_unit_work = reductions(fn -> Enum.take(Width.units(large, mode), 1) end)
+      assert large_unit_work < 4 * small_unit_work
+
+      small_take_work = reductions(fn -> Width.take_cells(small, 2, mode) end)
+      large_take_work = reductions(fn -> Width.take_cells(large, 2, mode) end)
+      assert large_take_work < 4 * small_take_work
+
+      assert Width.take_cells(short, 2_000, mode) == {short, "", 2_000}
+      assert Width.take_cells(long, 4_000, mode) == {long, "", 4_000}
+      short_work = reductions(fn -> Width.take_cells(short, 2_000, mode) end)
+      long_work = reductions(fn -> Width.take_cells(long, 4_000, mode) end)
+      assert long_work < 3 * short_work
+    end
   end
 
   defp reductions(fun) do
