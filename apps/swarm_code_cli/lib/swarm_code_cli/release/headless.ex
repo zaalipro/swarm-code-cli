@@ -226,6 +226,7 @@ defmodule SwarmCodeCLI.Release.Headless do
         source_epoch: epoch,
         conversation_id: conversation,
         now: System.system_time(:millisecond),
+        clock: fn -> System.system_time(:millisecond) end,
         input: :standard_io,
         output: :standard_io,
         error: :standard_error,

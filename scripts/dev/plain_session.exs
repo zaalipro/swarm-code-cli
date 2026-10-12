@@ -94,6 +94,7 @@ defmodule SwarmCode.Development.PlainSession do
           source_epoch: source_epoch,
           conversation_id: session.conversation.id,
           now: System.system_time(:millisecond),
+          clock: fn -> System.system_time(:millisecond) end,
           input: :standard_io,
           output: :standard_io,
           error: :standard_error,

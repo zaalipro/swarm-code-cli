@@ -288,10 +288,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
     assert :ok = DataSource.close(client)
   end
 
-  # pass71 S1: producers stamp deadlines with the wall clock (`state.now`); the
-  # source used to compare them with the monotonic clock, so no request ever
-  # expired. One injected clock drives both sides here.
-  test "a deadline fires on the monotonic clock and a late reply is ignored" do
+  test "plain wall corrections leave admitted monotonic expiry and late replies independent" do
+    alias SwarmCodeCLI.Demo.FiniteInput
+    alias SwarmCodeCLI.Plain.{Options, Session}
+
     clock = start_supervised!({Agent, fn -> %{system: 1_790_000_000_000, monotonic: -5_000} end})
     tick = fn kind -> Agent.get(clock, &Map.fetch!(&1, kind)) end
     advance = fn kind, ms -> Agent.update(clock, &Map.update!(&1, kind, fn v -> v + ms end)) end
@@ -309,31 +309,60 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
         clock: tick
       )
 
-    assert {:ok, "bind-1"} = DataSource.bind_owner(client, self(), "bind-1")
+    input = start_supervised!(FiniteInput)
+    {:ok, output} = StringIO.open("")
 
-    request = %{command_request("late-1", "late") | deadline: tick.(:system) + 30_000}
-    assert :ok = DataSource.command(client, request)
+    session =
+      start_supervised!(
+        {Session,
+         options: %Options{},
+         data_source: client,
+         input: input,
+         output: output,
+         error: output,
+         source_epoch: @epoch,
+         conversation_id: @scope.id,
+         now: 0,
+         clock: fn -> tick.(:system) end,
+         observer: self()}
+      )
+
+    assert_receive {:plain_session, ^session, :ready}, 2_000
+    advance.(:system, 31_000)
+    advance.(:monotonic, 31_000)
+    assert :ok = FiniteInput.release_line(input, "send -- late\n")
+    assert_receive {:plain_session, ^session, {:command, request}}, 2_000
+    assert request.deadline == 1_790_000_061_000
+    id = request.request_id
 
     assert_receive {:late, ^server, socket, %Message{body: %{"timeout_ms" => 30_000}} = sent},
                    1_000
 
-    # A wall-clock step alone expires nothing.
+    admitted = :sys.get_state(client).requests[sent.request_id].deadline
+    assert admitted == 56_000
+
+    # Forward and backward wall corrections neither expire nor extend the
+    # request already admitted against the independent monotonic clock.
     advance.(:system, 3_600_000)
-    refute_receive {:swarm_code_ui_data, _, _, _}, 250
+    assert :sys.get_state(client).requests[sent.request_id].deadline == admitted
+    advance.(:system, -7_200_000)
+    assert :sys.get_state(client).requests[sent.request_id].deadline == admitted
+    refute_receive {:plain_session, ^session, {:delivery, %{request_id: ^id}}}, 250
 
     advance.(:monotonic, 30_001)
 
-    assert_receive {:swarm_code_ui_data, @epoch, receipt,
-                    %Delivery{
-                      body: %DTO.Outcome{
-                        request_id: "late-1",
-                        status: :outcome_unknown,
-                        error: %AdmissionError{code: :deadline_expired}
-                      }
-                    }},
+    assert_receive {:plain_session, ^session,
+                    {:delivery,
+                     %Delivery{
+                       body: %DTO.Outcome{
+                         request_id: ^id,
+                         status: :outcome_unknown,
+                         error: %AdmissionError{code: :deadline_expired}
+                       }
+                     }}},
                    1_000
 
-    assert :ok = DataSource.consume(client, receipt, :applied)
+    assert Session.snapshot(session).phase == :ready
 
     body = %{
       "status" => "accepted",
@@ -350,17 +379,27 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
         body: %{"op" => "result", "response_kind" => "outcome", "value" => body}
     })
 
-    refute_receive {:swarm_code_ui_data, _, _, _}, 250
+    refute_receive {:plain_session, ^session, {:delivery, %{request_id: ^id}}}, 250
 
-    # The connection survived the late reply.
-    next = %{command_request("after-late", "fix") | deadline: tick.(:system) + 30_000}
-    assert :ok = DataSource.command(client, next)
+    # A genuinely fresh plain request is still admitted after the wall moved
+    # backwards and the previous request expired.
+    assert :ok = FiniteInput.release_line(input, "send -- fix\n")
+    assert_receive {:plain_session, ^session, {:command, next}}, 1_000
+    assert next.deadline == 1_789_996_461_000
+    next_id = next.request_id
 
-    assert_receive {:swarm_code_ui_data, @epoch, _,
-                    %Delivery{body: %DTO.Outcome{request_id: "after-late", status: :accepted}}},
+    assert_receive {:request, ^server,
+                    %Message{body: %{"op" => "dispatch", "text" => "fix", "timeout_ms" => 30_000}}},
                    1_000
 
-    assert :ok = DataSource.close(client)
+    assert_receive {:plain_session, ^session,
+                    {:delivery,
+                     %Delivery{body: %DTO.Outcome{request_id: ^next_id, status: :accepted}}}},
+                   1_000
+
+    assert Session.snapshot(session).phase == :ready
+    assert :ok = Session.close(session, :detach)
+    assert_receive {:plain_session, ^session, {:closed, :detach}}, 1_000
   end
 
   # pass72 F (P's request 3): a real session closed with "the daemon connection
@@ -1080,7 +1119,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
 
     value =
       Map.merge(page, %{
-        "allowed_actions" => [],
+        "allowed_actions" => ["send", "queue"],
         "revision" => 1,
         "seen_revision" => 0,
         "runs_page" => page,

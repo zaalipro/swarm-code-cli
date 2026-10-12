@@ -842,7 +842,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/test/support/loopback_http.ex and apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex.
   - _Requirements:_ 4.1, 4.2, 4.3, 4.4
 
-- [ ] 12. Refresh Plain.Session wall deadlines at the owner
+- [x] 12. Refresh Plain.Session wall deadlines at the owner
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/plain/session.ex`; `apps/swarm_code_cli/lib/swarm_code_cli/release/headless.ex`; `scripts/dev/plain_session.exs`
   - Purpose: Fix frozen startup deadlines in the clock domain the daemon adapter actually admits, without changing OneShot or reading time in pure presentation functions.
   - Do:
@@ -855,7 +855,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_cli/lib/swarm_code_cli/plain/session.ex:397,477,492,574; apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/daemon.ex clock contract; apps/swarm_code_cli/lib/swarm_code_cli/ui/data_source/daemon/codec.ex:440-448.
   - _Requirements:_ 5.1, 5.2, 5.3
 
-- [ ] 13. Regress independent wall and monotonic clock steps
+- [x] 13. Regress independent wall and monotonic clock steps
   - Files: `apps/swarm_code_cli/test/swarm_code_cli/plain/clock_test.exs` (new); `apps/swarm_code_cli/test/swarm_code_cli/ui/data_source/daemon_test.exs`; `apps/swarm_code_cli/test/swarm_code_cli/plain/session_test.exs`
   - Purpose: Verify new plain requests follow fresh wall time while the real adapter preserves an admitted request’s monotonic timeout, including wall-clock corrections.
   - Do:

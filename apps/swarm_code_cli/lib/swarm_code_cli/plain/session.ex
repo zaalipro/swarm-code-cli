@@ -24,7 +24,9 @@ defmodule SwarmCodeCLI.Plain.Session do
   def init(options) do
     epoch = Keyword.fetch!(options, :source_epoch)
     conversation = Keyword.fetch!(options, :conversation_id)
+    # Startup compatibility only; outward requests read the owner's wall clock.
     now = Keyword.fetch!(options, :now)
+    clock = Keyword.get(options, :clock, fn -> System.system_time(:millisecond) end)
     presenter_options = Keyword.fetch!(options, :options)
     output_timeout = Keyword.get(options, :output_timeout, 1000)
     # cli020 B7: a consumer slower than `output_timeout` is backpressure; a
@@ -33,6 +35,7 @@ defmodule SwarmCodeCLI.Plain.Session do
     eof_mode = Keyword.get(options, :eof, :close)
 
     if Intent.valid_id?(epoch) and Intent.valid_id?(conversation) and is_integer(now) and now >= 0 and
+         is_function(clock, 0) and
          match?(%Options{}, presenter_options) and eof_mode in [:close, :wait] and
          is_integer(output_timeout) and
          output_timeout in 1..5000 and is_integer(output_deadline) and
@@ -65,6 +68,7 @@ defmodule SwarmCodeCLI.Plain.Session do
         watch: nil,
         sequence: 0,
         now: now,
+        clock: clock,
         requests: %{},
         detail: nil,
         ready_notified?: false,
@@ -394,7 +398,7 @@ defmodule SwarmCodeCLI.Plain.Session do
         scope: state.scope,
         generation: state.scope.generation,
         origin: {:watch, state.watch.watch_ref},
-        deadline: state.now + 30_000,
+        deadline: request_deadline(state),
         expected_response: :watch_snapshot
       }
 
@@ -474,7 +478,7 @@ defmodule SwarmCodeCLI.Plain.Session do
       scope: state.scope,
       generation: state.scope.generation,
       origin: {:query, slot},
-      deadline: state.now + 30_000,
+      deadline: request_deadline(state),
       expected_response: Request.query_response(slot)
     }
 
@@ -489,7 +493,7 @@ defmodule SwarmCodeCLI.Plain.Session do
 
     with {:ok, context} <- Presenter.context(state.presenter, intent, state.scope),
          {:ok, request} <-
-           RequestResolver.resolve(intent, context, request_id, state.now + 30_000),
+           RequestResolver.resolve(intent, context, request_id, request_deadline(state)),
          :ok <- DataSource.command(state.client, request) do
       notify(state, {:command, request})
       %{state | phase: :awaiting_outcome, requests: Map.put(state.requests, request_id, request)}
@@ -571,7 +575,7 @@ defmodule SwarmCodeCLI.Plain.Session do
       expected_response: :detail_window,
       scope: state.scope,
       generation: state.scope.generation,
-      deadline: state.now + 30_000
+      deadline: request_deadline(state)
     }
 
     case DataSource.query(state.client, request) do
@@ -639,6 +643,9 @@ defmodule SwarmCodeCLI.Plain.Session do
     sequence = state.sequence + 1
     {"plain-" <> kind <> "-" <> Integer.to_string(sequence), %{state | sequence: sequence}}
   end
+
+  @spec request_deadline(map()) :: non_neg_integer()
+  defp request_deadline(state), do: state.clock.() + 30_000
 
   defp request_read(%{phase: :ready, saved_input: result} = state) when result != nil do
     send(self(), {:plain_input, state.reader, result})

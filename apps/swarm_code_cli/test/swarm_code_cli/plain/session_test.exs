@@ -30,7 +30,8 @@ defmodule SwarmCodeCLI.Plain.SessionTest do
          source_epoch: "plain-epoch",
          observer: self(),
          conversation_id: Script.id(:a),
-         now: Script.clock_ms()}
+         now: Script.clock_ms(),
+         clock: &Script.clock_ms/0}
       )
 
     assert_receive {:plain_session, ^session, :ready}, 2000
@@ -85,7 +86,8 @@ defmodule SwarmCodeCLI.Plain.SessionTest do
          source_epoch: "plain-epoch",
          observer: self(),
          conversation_id: Script.id(:a),
-         now: Script.clock_ms()}
+         now: Script.clock_ms(),
+         clock: &Script.clock_ms/0}
       )
 
     assert_receive {:plain_session, ^session, :ready}, 2000
@@ -203,6 +205,28 @@ defmodule SwarmCodeCLI.Plain.SessionTest do
 
     await_event(session, &match?({:delivery, %{kind: :response, body: %{status: :accepted}}}, &1))
     assert Session.snapshot(session).requests == %{}
+  end
+
+  test "fresh wall clock stamps a command after startup time advances" do
+    clock = start_supervised!({Agent, fn -> Script.clock_ms() end})
+    tick = fn -> Agent.get(clock, & &1) end
+    {source, _client, input, session, _output} = start_session(nil, clock: tick)
+    assert_receive {:plain_session, ^session, :ready}, 2000
+
+    Agent.update(clock, &(&1 + 31_000))
+    :sys.suspend(source)
+
+    try do
+      :ok = FiniteInput.release_line(input, "send -- fresh deadline\n")
+      assert_receive {:plain_session, ^session, {:command, request}}, 2000
+      assert request.deadline == Script.clock_ms() + 61_000
+    after
+      :sys.resume(source)
+    end
+
+    await_event(session, &match?({:delivery, %{kind: :response, body: %{status: :accepted}}}, &1))
+    assert Session.snapshot(session).phase == :ready
+    assert Session.snapshot(session).now == Script.clock_ms()
   end
 
   test "unresponsive output is bounded and detaches its client" do
@@ -430,7 +454,8 @@ defmodule SwarmCodeCLI.Plain.SessionTest do
           source_epoch: "plain-epoch",
           observer: self(),
           conversation_id: Script.id(:a),
-          now: Script.clock_ms()
+          now: Script.clock_ms(),
+          clock: &Script.clock_ms/0
         ],
         overrides
       )
