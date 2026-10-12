@@ -869,7 +869,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ Existing plain/session_test.exs and plain/session_eof_test.exs fixtures; ui/data_source/daemon_test.exs:291-357 independently stepped clock/socket fixture; DataSource.Daemon.Codec.request/4.
   - _Requirements:_ 5.1, 5.2, 5.3
 
-- [ ] 14. Create a bounded config human-cell renderer
+- [x] 14. Create a bounded config human-cell renderer
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/release/config_output.ex` (new); `apps/swarm_code_cli/test/swarm_code_cli/entry/config_output_test.exs` (new)
   - Purpose: Centralize terminal inertness without changing SafeText’s general multiline contract or stored values.
   - Do:
@@ -881,7 +881,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_cli/lib/swarm_code_cli/ui/safe_text.ex `external/2`, `value/1`; apps/swarm_code_cli/lib/swarm_code_cli/ui/safe_text/limits.ex `content/0`.
   - _Requirements:_ 6.1, 6.3
 
-- [ ] 15. Route every config human sink through safe cells
+- [x] 15. Route every config human sink through safe cells
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/release/config_command.ex`; `apps/swarm_code_cli/test/swarm_code_cli/entry/c74_config_command_test.exs`
   - Purpose: Fix import-preview injection and equivalent record/error/summary sinks while preserving JSON semantic values.
   - Do:
@@ -894,7 +894,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_cli/lib/swarm_code_cli/release/config_command.ex `table/1`, `show/1`, `err/1`, `print_json/1`; apps/swarm_code_daemon/lib/swarm_code/daemon/service/settings/transfer.ex preview rows.
   - _Requirements:_ 6.1, 6.2, 6.3
 
-- [ ] 16. Fetch complete records before field CAS
+- [x] 16. Fetch complete records before field CAS
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/release/config_command.ex`; `apps/swarm_code_cli/test/swarm_code_cli/entry/c74_config_command_test.exs`
   - Purpose: Stop using provider/MCP list summaries as full mutable records, eliminating nil-versus-empty-list conflicts.
   - Do:
@@ -906,7 +906,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/daemon/service/settings/providers.ex:98-118; apps/swarm_code_daemon/lib/swarm_code/daemon/service/settings/mcp.ex:95-124; apps/swarm_code_cli/lib/swarm_code_cli/release/config_command.ex `find_record/5`, `run_record/6`.
   - _Requirements:_ 7.1, 7.4
 
-- [ ] 17. Use the selected MCP secret mask and slot
+- [x] 17. Use the selected MCP secret mask and slot
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/release/config_command.ex`; `apps/swarm_code_cli/test/swarm_code_cli/entry/c74_config_command_test.exs`
   - Purpose: Fix both the false expected-value conflict and the wrong value slot in headless MCP secret writes.
   - Do:
@@ -918,7 +918,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/daemon/service/settings/mcp.ex `set_secret/1`; apps/swarm_code_daemon/lib/swarm_code/daemon/service/settings/secrets.ex `masked_entries/1`, `mask/1`.
   - _Requirements:_ 7.2, 7.4, 6.3
 
-- [ ] 18. Reject invalid expect values without tuple crashes
+- [x] 18. Reject invalid expect values without tuple crashes
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/release/config_command.ex`; `apps/swarm_code_cli/test/swarm_code_cli/entry/c74_config_command_test.exs`
   - Purpose: Keep malformed command input on the usage path before any mutation.
   - Do:

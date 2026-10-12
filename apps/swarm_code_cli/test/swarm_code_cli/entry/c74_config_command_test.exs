@@ -397,4 +397,306 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     assert out =~ "database"
     assert out =~ "cli.json"
   end
+
+  test "human sinks escape fields and paths while JSON and stored values stay semantic", c do
+    hostile = "日本語\e]52;c;payload\a\r\nnext"
+    provider = Enum.find(Providers.list(), &(&1.name == "DeepSeek"))
+
+    {:ok, _} =
+      Providers.update(provider, %{name: hostile, base_url: "https://example.test/" <> hostile})
+
+    for args <- [
+          ["records", "provider"],
+          ["record", "get", "provider:" <> hostile],
+          ["record", "get", "provider:" <> hostile <> ".base_url"],
+          ["doctor"],
+          ["get", hostile],
+          ["record", "delete", "provider:" <> hostile]
+        ] do
+      {_code, out, err} = config(c, args)
+      assert_inert(out <> err)
+      refute out <> err =~ "\nnext"
+    end
+
+    assert {0, json, ""} = config(c, ["records", "provider", "--json"])
+    assert hd(Jason.decode!(json))["fields"]["name"] == hostile
+    assert {0, json, ""} = config(c, ["record", "get", "provider:" <> hostile, "--json"])
+    assert Jason.decode!(json)["name"] == hostile
+    assert Jason.decode!(json)["api_key"] == %{"set" => true, "hint" => "a1b2"}
+
+    file = Path.join(c.base, hostile <> ".json")
+    assert {0, out, ""} = config(c, ["export", file, "--include-records"])
+    assert_inert(out)
+    assert File.exists?(file)
+    assert {0, out, ""} = config(c, ["import", file])
+    assert_inert(out)
+    assert out =~ "\\n"
+    assert Providers.get(provider.id).name == hostile
+
+    assert {0, out, ""} = config(c, ["path"], cwd: Path.join(c.root, hostile))
+    assert_inert(out)
+    assert out =~ "\\n"
+
+    failure = fn _ ->
+      {:error,
+       %{
+         code: :fixture_failure,
+         status: 3,
+         message: hostile,
+         action: hostile,
+         reason: :provider_required
+       }}
+    end
+
+    assert {3, "", err} = config(c, ["get", "models.chat"], foundation: failure)
+    assert_inert(err)
+    refute err =~ "\nnext"
+    assert {1, json, ""} = config(c, ["doctor", "--json"], foundation: failure)
+    assert hd(Jason.decode!(json))["message"] == hostile
+  end
+
+  test "human oversized fields use the display marker without changing JSON", c do
+    text = "https://example.test/" <> String.duplicate("a", 65_537)
+    Repo.query!("UPDATE providers SET base_url = ?", [text])
+    assert {0, out, ""} = config(c, ["record", "get", "provider:DeepSeek.base_url"])
+    assert out =~ "[value exceeds display limit]"
+    assert {0, json, ""} = config(c, ["record", "get", "provider:DeepSeek.base_url", "--json"])
+    assert Jason.decode!(json) == text
+  end
+
+  test "provider model reads and automatic CAS use the complete stored list", c do
+    for models <- [[], ["deepseek-v4-pro", "日本語-model"]] do
+      provider = Enum.find(Providers.list(), &(&1.name == "DeepSeek"))
+      {:ok, _} = Providers.update(provider, %{models: models})
+      assert {0, json, ""} = config(c, ["record", "get", "provider:DeepSeek.models", "--json"])
+      assert Jason.decode!(json) == models
+      assert {0, out, ""} = config(c, ["record", "get", "provider:DeepSeek.models"])
+      assert String.trim(out) == Jason.encode!(models)
+      assert {0, json, ""} = config(c, ["record", "get", "provider:DeepSeek", "--json"])
+      assert Jason.decode!(json)["models"] == models
+      assert Jason.decode!(json)["api_key"] == %{"set" => true, "hint" => "a1b2"}
+
+      assert {0, _, ""} = config(c, ["record", "set", "provider:DeepSeek.models", "new-model"])
+      assert Providers.get(provider.id).models == ["new-model"]
+
+      assert {4, "", _} =
+               config(c, [
+                 "record",
+                 "set",
+                 "provider:DeepSeek.models",
+                 "other",
+                 "--expect",
+                 "stale"
+               ])
+
+      assert Providers.get(provider.id).models == ["new-model"]
+
+      assert {0, _, ""} =
+               config(c, [
+                 "record",
+                 "set",
+                 "provider:DeepSeek.models",
+                 "other",
+                 "--expect",
+                 "new-model"
+               ])
+
+      assert Providers.get(provider.id).models == ["other"]
+    end
+  end
+
+  test "MCP secret commands set absent slots and replace exact secret and plain entry masks", c do
+    {:ok, server} =
+      SwarmCode.Domain.MCP.create(%{
+        name: "slots",
+        transport: "stdio",
+        command: "unused-fixture-command",
+        enabled: false,
+        env: %{"API_TOKEN" => "old-fixture-secret-1234", "PLAIN" => "ordinary"},
+        headers: %{"Authorization" => "Bearer old-fixture-secret-5678"}
+      })
+
+    for {slot, map, name} <- [
+          {"env.NEW_TOKEN", :env, "NEW_TOKEN"},
+          {"headers.X-Api-Key", :headers, "X-Api-Key"},
+          {"env.API_TOKEN", :env, "API_TOKEN"},
+          {"headers.Authorization", :headers, "Authorization"},
+          {"env.PLAIN", :env, "PLAIN"}
+        ] do
+      {:ok, stdin} = StringIO.open(@canary <> "\n")
+
+      assert {0, _, ""} =
+               config(c, ["secret", "mcp_server:slots." <> slot, "--stdin"], stdin: stdin)
+
+      assert Map.fetch!(Map.fetch!(SwarmCode.Domain.MCP.get(server.id), map), name) == @canary
+
+      {:ok, stdin} = StringIO.open("replacement-fixture-secret-9abc\n")
+
+      assert {0, _, ""} =
+               config(c, ["secret", "mcp_server:slots." <> slot, "--stdin"], stdin: stdin)
+
+      assert Map.fetch!(Map.fetch!(SwarmCode.Domain.MCP.get(server.id), map), name) ==
+               "replacement-fixture-secret-9abc"
+    end
+
+    assert {0, json, ""} = config(c, ["record", "get", "mcp_server:slots", "--json"])
+    fields = Jason.decode!(json)
+
+    assert Enum.find(fields["env"], &(&1["name"] == "API_TOKEN")) ==
+             %{"name" => "API_TOKEN", "secret" => true, "value" => nil, "hint" => "9abc"}
+
+    assert {0, _, ""} = config(c, ["record", "get", "mcp_server:slots"])
+    {:ok, stdin} = StringIO.open(@canary <> "\n")
+
+    assert {3, "", _} =
+             config(c, ["secret", "mcp_server:slots.env.API_TOKEN", "--stdin"],
+               stdin: stdin,
+               foundation: c.held
+             )
+  end
+
+  test "provider and search keys use their authoritative api_key masks", c do
+    for ref <- ["provider:DeepSeek", "search_provider:tavily"] do
+      for value <- [@canary, "replacement-fixture-secret-9abc"] do
+        {:ok, stdin} = StringIO.open(value <> "\n")
+        assert {0, _, ""} = config(c, ["secret", ref, "--stdin", "--no-test"], stdin: stdin)
+        assert {0, json, ""} = config(c, ["record", "get", ref <> ".api_key", "--json"])
+        assert Jason.decode!(json) == %{"set" => true, "hint" => String.slice(value, -4, 4)}
+      end
+    end
+  end
+
+  test "a stale MCP mask conflicts without overwriting the intervening secret", c do
+    {:ok, server} =
+      SwarmCode.Domain.MCP.create(%{
+        name: "racing",
+        transport: "stdio",
+        command: "unused-fixture-command",
+        enabled: false,
+        env: %{"API_TOKEN" => "old-fixture-secret-1234"}
+      })
+
+    handler = {__MODULE__, make_ref()}
+    event = Repo.config()[:telemetry_prefix] ++ [:query]
+    peer = "peer-fixture-secret-5678"
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        event,
+        &__MODULE__.replace_after_read/4,
+        {self(), server.id, peer}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    {:ok, stdin} = StringIO.open(@canary <> "\n")
+
+    assert {4, "", err} =
+             config(c, ["secret", "mcp_server:racing.env.API_TOKEN", "--stdin"], stdin: stdin)
+
+    assert err =~ "changed"
+    assert Process.get(:config_mask_replaced)
+    :telemetry.detach(handler)
+    assert SwarmCode.Domain.MCP.get(server.id).env["API_TOKEN"] == peer
+  end
+
+  test "invalid typed record expectations are usage errors before mutation", c do
+    cases = [
+      {"provider:DeepSeek.models", "replacement", "["},
+      {"provider:DeepSeek.models", "replacement", ~s(["ok", 1])},
+      {"provider:DeepSeek.fallbacks", "off", "maybe"},
+      {"provider:DeepSeek.kind", "anthropic", "gemini"},
+      {"provider:DeepSeek.model_effort_levels", "{}", "not-json"},
+      {"search_provider:tavily.position", "7", "lots"}
+    ]
+
+    results =
+      for {ref, value, expect} <- cases do
+        assert {0, before, ""} = config(c, ["record", "get", ref, "--json"])
+        result = config(c, ["record", "set", ref, value, "--expect", expect])
+        assert {0, ^before, ""} = config(c, ["record", "get", ref, "--json"])
+        {ref, result}
+      end
+
+    for {ref, result} <- results do
+      assert {2, "", err} = result
+
+      assert err ==
+               "ncode: invalid --expect value for #{ref}. Run 'ncode config help'.\n"
+    end
+
+    assert Providers.get(Enum.find(Providers.list(), &(&1.name == "DeepSeek")).id).models ==
+             ["deepseek-v4-pro"]
+
+    assert {2, "", _} =
+             config(c, ["record", "set", "provider:DeepSeek.models", "new", "--expect", "["],
+               foundation: c.held
+             )
+  end
+
+  test "explicit false, null and JSON list expectations are not automatic expectations", c do
+    assert {4, "", _} =
+             config(c, ["record", "set", "provider:DeepSeek.fallbacks", "off", "--expect", "off"])
+
+    assert {4, "", _} =
+             config(c, [
+               "record",
+               "set",
+               "provider:DeepSeek.default_model",
+               "other",
+               "--expect",
+               "null"
+             ])
+
+    assert {0, _, ""} =
+             config(c, [
+               "record",
+               "set",
+               "provider:DeepSeek.models",
+               "other",
+               "--expect",
+               ~s(["deepseek-v4-pro"])
+             ])
+
+    assert {3, "", _} =
+             config(
+               c,
+               ["record", "set", "provider:DeepSeek.models", "other", "--expect", "other"],
+               foundation: c.held
+             )
+
+    assert {0, _, ""} = config(c, ["record", "set", "provider:DeepSeek.fallbacks", "off"])
+
+    assert {0, _, ""} =
+             config(c, ["record", "set", "provider:DeepSeek.fallbacks", "on", "--expect", "off"])
+  end
+
+  test "invalid scalar expectations leave integer enum and list values unchanged", c do
+    for {key, value, expect} <- [
+          {"limits.max_concurrent_agents", "7", "lots"},
+          {"terminal.panel", "full", "nope"},
+          {"terminal.status_items", "model", "not-a-status-item"}
+        ] do
+      assert {0, before, ""} = config(c, ["get", key, "--json"])
+      assert {2, "", _} = config(c, ["set", key, value, "--expect", expect])
+      assert {0, ^before, ""} = config(c, ["get", key, "--json"])
+    end
+  end
+
+  def replace_after_read(_event, _measurements, metadata, {owner, id, peer}) do
+    if self() == owner and String.starts_with?(metadata.query, "SELECT") and
+         String.contains?(metadata.query, ~s(FROM "mcp_servers")) and
+         id in metadata.params and not Process.get(:config_mask_replaced, false) do
+      Process.put(:config_mask_replaced, true)
+
+      Repo.query!("UPDATE mcp_servers SET env = ? WHERE id = ?", [
+        Jason.encode!(%{"API_TOKEN" => peer}),
+        id
+      ])
+    end
+  end
+
+  defp assert_inert(text) do
+    for control <- ["\e", "\a", "\r"], do: refute(text =~ control)
+  end
 end

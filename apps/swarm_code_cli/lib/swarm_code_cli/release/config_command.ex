@@ -22,6 +22,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
               SwarmCode.Daemon.Service.Settings.Headless,
               SwarmCode.Daemon.Service.Settings.Transfer,
               SwarmCode.Daemon.Service.Settings.Values,
+              SwarmCode.Daemon.Service.Settings.Secrets,
               SwarmCode.Domain.Providers
             ]}
 
@@ -32,6 +33,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   @result SwarmCode.Daemon.Service.Settings.Result
   @error SwarmCode.Daemon.Service.Settings.Error
   alias SwarmCode.Settings.{CliFile, Entry, RecordKind, Registry, Sections, TextValue}
+  alias SwarmCodeCLI.Release.ConfigOutput
   alias SwarmCodeCLI.Release.PersistedSession
 
   @ok 0
@@ -267,7 +269,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
           if db?, do: session_open(), else: @ok
 
         {:error, failure} ->
-          PersistedSession.report(failure)
+          refused(failure)
       end
     end
   end
@@ -290,7 +292,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
             session_open()
 
           {:error, failure} ->
-            PersistedSession.report(failure)
+            refused(failure)
         end
       end
     end
@@ -340,7 +342,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
       case CliFile.write_changes(env.cli_path, %{name => change}, expectations) do
         {:ok, _snapshot} ->
-          IO.puts("#{entry.key} = #{TextValue.format(entry, wire)}")
+          out("#{entry.key} = #{TextValue.format(entry, wire)}")
           @ok
 
         {:conflict, current} ->
@@ -510,11 +512,11 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
     case status do
       :accepted ->
-        IO.puts("#{entry.key} = #{TextValue.format(entry, row.value, providers: names)}")
+        out("#{entry.key} = #{TextValue.format(entry, row.value, providers: names)}")
         @ok
 
       :unchanged ->
-        IO.puts("#{entry.key} is already #{TextValue.format(entry, row.value, providers: names)}")
+        out("#{entry.key} is already #{TextValue.format(entry, row.value, providers: names)}")
         @ok
 
       :conflict ->
@@ -643,7 +645,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
     case with_db(env, fn -> fetch_records(kind, flags, env) end) do
       {:ok, {:ok, items}} ->
         if flags["--json"],
-          do: print_json(Enum.map(items, &masked/1)),
+          do: print_json(items),
           else: table(Enum.map(items, &[&1["id"] || "", summary(&1["fields"])]))
 
         @ok
@@ -684,18 +686,27 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
     with {:ok, kind, name, field} <- parse_ref(ref) do
       {plural, key, _prefix} = @kinds[kind]
 
-      case with_db(env, fn -> find_record(plural, key, name, flags, env) end) do
+      work = fn ->
+        with {:ok, item} <- find_record(plural, key, name, flags, env) do
+          full_record(kind, item, record_context(flags, env))
+        end
+      end
+
+      case with_db(env, work) do
         {:ok, {:ok, item}} ->
-          fields = masked(item)["fields"]
+          fields = item["fields"]
 
           cond do
             field == nil and flags["--json"] -> print_json(fields)
             field == nil -> table(Enum.map(fields, fn {k, v} -> [k, show(v)] end))
             flags["--json"] -> print_json(fields[field])
-            true -> IO.puts(show(fields[field]))
+            true -> out(show(fields[field]))
           end
 
           @ok
+
+        {:ok, {:error, error}} ->
+          error_code(name, error)
 
         {:ok, code} when is_integer(code) ->
           code
@@ -725,16 +736,14 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
          %{} = spec <-
            RecordKind.field(record_kind, field) || usage_error("#{kind} has no field #{field}."),
          :ok <- if(spec.secret, do: secret_in_argv(), else: :ok),
-         {:ok, value} <- parse_field(spec, text, ref) do
+         {:ok, value} <- parse_field(spec, text, ref),
+         {:ok, expected_text} <- parse_expected(spec, flags["--expect"], ref) do
       {plural, key, prefix} = @kinds[kind]
 
       run_record(env, flags, plural, key, name, fn item, ctx ->
         current = get_in(item, ["fields", field])
 
-        expected =
-          if flags["--expect"],
-            do: elem(parse_field(spec, flags["--expect"], ref), 1),
-            else: current
+        expected = if expected_text == :current, do: current, else: expected_text
 
         record_command(
           prefix,
@@ -748,6 +757,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
       end)
     else
       {:ok, _kind, _name, nil} -> usage_error("name the field: KIND:NAME.FIELD.")
+      {:error, :usage} -> usage_error("invalid --expect value for #{ref}.")
       code when is_integer(code) -> code
     end
   end
@@ -769,7 +779,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
           )
         end)
       else
-        IO.puts("This would delete #{kind} #{name}. Add --yes to delete it.")
+        out("This would delete #{kind} #{name}. Add --yes to delete it.")
         @usage_code
       end
     else
@@ -856,10 +866,10 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
             {"search.set_key", %{}, "api_key"}
 
           {"mcp_server", "env." <> var} ->
-            {"mcp.set_secret", %{"map" => "env", "name" => var}, "value"}
+            {"mcp.set_secret", %{"map" => "env", "name" => var}, "env:" <> var}
 
           {"mcp_server", "headers." <> var} ->
-            {"mcp.set_secret", %{"map" => "headers", "name" => var}, "value"}
+            {"mcp.set_secret", %{"map" => "headers", "name" => var}, "header:" <> var}
 
           _ ->
             {nil, nil, nil}
@@ -878,7 +888,9 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
                   do: %{},
                   else: %{"test_first" => flags["--no-test"] != true}
                 ),
-              expected: %{"key" => get_in(item, ["fields", "api_key"])},
+              expected: %{
+                "key" => secret_expected(item, target_extra["map"], target_extra["name"])
+              },
               secrets: [%{slot: secret_slot, value: value}]
             })
 
@@ -947,7 +959,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
     case Enum.find_index(Enum.zip(current, target), fn {a, b} -> a != b end) do
       nil ->
-        IO.puts("search order: #{Enum.join(current, ", ")}")
+        out("search order: #{Enum.join(current, ", ")}")
         @ok
 
       index ->
@@ -998,14 +1010,14 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
   defp run_record(env, flags, plural, key, name, fun) do
     work = fn ->
-      with {:ok, item} <- find_record(plural, key, name, flags, env) do
-        ctx =
-          case project(flags, env, quiet: true) do
-            {:ok, project} -> Headless.context(project, nil)
-            _ -> Headless.context(nil, nil)
-          end
+      ctx = record_context(flags, env)
 
+      with {:ok, summary} <- find_record(plural, key, name, flags, env),
+           {:ok, item} <- full_record(RecordKind.for_query_kind(plural), summary, ctx) do
         {:done, fun.(item, ctx)}
+      else
+        {:error, error} -> error_code(name, error)
+        code when is_integer(code) -> code
       end
     end
 
@@ -1015,6 +1027,18 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
       {:error, failure} -> refused(failure)
     end
   end
+
+  defp record_context(flags, env) do
+    case project(flags, env, quiet: true) do
+      {:ok, project} -> Headless.context(project, nil)
+      _ -> Headless.context(nil, nil)
+    end
+  end
+
+  defp full_record("pricing_row", item, _ctx), do: {:ok, item}
+
+  defp full_record(kind, item, ctx),
+    do: Settings.query("record", %{"kind" => kind, "id" => item["id"]}, ctx)
 
   defp record_command(prefix, verb, item, kind, attributes, expected, ctx) do
     Headless.command(
@@ -1030,6 +1054,21 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
   defp target_of("search_provider", item), do: %{"kind" => get_in(item, ["fields", "kind"])}
   defp target_of(_kind, item), do: %{"id" => item["id"]}
+
+  defp secret_expected(item, nil, nil), do: get_in(item, ["fields", "api_key"])
+
+  defp secret_expected(item, map, name) do
+    case Enum.find(get_in(item, ["fields", map]) || [], &(&1["name"] == name)) do
+      %{"secret" => true, "hint" => hint} ->
+        %{"set" => true, "hint" => hint}
+
+      %{"value" => value} ->
+        SwarmCode.Daemon.Service.Settings.Secrets.mask(value)
+
+      nil ->
+        %{"set" => false, "hint" => nil}
+    end
+  end
 
   defp plain_command(env, flags, action, target, attributes, expected) do
     work = fn ->
@@ -1060,7 +1099,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   defp answer_code({:ok, %{__struct__: @result, status: status, message: message}}, name) do
     case status do
       s when s in [:accepted, :unchanged] ->
-        IO.puts(message || "#{name}: #{status}")
+        out(message || "#{name}: #{status}")
         @ok
 
       :conflict ->
@@ -1074,7 +1113,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   end
 
   defp answer_code({:task, _result, {:ok, value}}, name) do
-    IO.puts("#{name}: done#{task_words(value)}")
+    out("#{name}: done#{task_words(value)}")
     @ok
   end
 
@@ -1129,6 +1168,42 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
     end
   end
 
+  defp parse_expected(_field, nil, _ref), do: {:ok, :current}
+
+  defp parse_expected(field, text, _ref) do
+    case TextValue.parse(field, text) do
+      {:ok, value} ->
+        expected_value(field, text, value)
+
+      {:error, _message} ->
+        {:error, :usage}
+    end
+  end
+
+  # Lists normally use comma-separated typed text. A JSON-looking list must
+  # be a valid string array, not malformed JSON compared as literal model IDs.
+  defp expected_value(%RecordKind.Field{type: :list} = field, text, value) do
+    parsed =
+      if String.starts_with?(String.trim(text), "["),
+        do: Jason.decode(text),
+        else: {:ok, value}
+
+    case parsed do
+      {:ok, nil} ->
+        {:ok, nil}
+
+      {:ok, items} when is_list(items) ->
+        if length(items) <= RecordKind.list_max(field) and Enum.all?(items, &is_binary/1),
+          do: {:ok, items},
+          else: {:error, :usage}
+
+      _ ->
+        {:error, :usage}
+    end
+  end
+
+  defp expected_value(_field, _text, value), do: {:ok, value}
+
   ## ------------------------------------------------------ export and import
 
   defp export(file, flags, env) do
@@ -1168,7 +1243,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
     case with_db(env, work) do
       {:ok, {:done, {:task, _, {:ok, %{"path" => path, "bytes" => bytes}}}}} ->
-        IO.puts("Exported to #{path} (#{bytes} bytes).")
+        out("Exported to #{path} (#{bytes} bytes).")
         @ok
 
       {:ok, {:done, answer}} ->
@@ -1214,14 +1289,14 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
     case with_db(env, work) do
       {:ok, {:planned, _rows}} ->
-        IO.puts("Nothing was changed; add --apply to import.")
+        out("Nothing was changed; add --apply to import.")
         @ok
 
       {:ok, {:applied, {:ok, %{"rows" => results, "terminal" => terminal}}}} ->
         cli = apply_terminal(terminal, env)
         failed = Enum.count(results, &(&1["status"] in ["rejected", "conflict"]))
 
-        IO.puts(
+        out(
           "Imported: #{Enum.count(results, &(&1["status"] == "accepted"))} changed, #{failed} not."
         )
 
@@ -1442,7 +1517,15 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
     @refused
   end
 
-  defp refused(failure), do: PersistedSession.report(failure)
+  defp refused(%{message: message, action: action} = failure) do
+    safe_failure = %{
+      failure
+      | message: ConfigOutput.cell(message),
+        action: ConfigOutput.cell(action)
+    }
+
+    PersistedSession.report(safe_failure, ConfigOutput.cell(PersistedSession.log_path(nil)))
+  end
 
   defp invalid(entry, message) do
     err("#{entry.key}: #{message}")
@@ -1450,19 +1533,15 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   end
 
   defp usage_error(words) do
-    IO.puts(:stderr, "ncode: #{words} Run 'ncode config help'.")
+    err("#{words} Run 'ncode config help'.")
     @usage_code
   end
 
-  defp err(words), do: IO.puts(:stderr, "ncode: " <> words)
+  defp out(words), do: IO.puts(ConfigOutput.cell(words))
+  defp err(words), do: IO.puts(:stderr, "ncode: " <> ConfigOutput.cell(words))
 
   defp format_current(_entry, :absent), do: "not set"
   defp format_current(entry, value), do: TextValue.format(entry, value)
-
-  defp masked(%{"fields" => fields} = item),
-    do: %{item | "fields" => Map.new(fields, fn {k, v} -> {k, mask(v)} end)}
-
-  defp masked(item), do: item
 
   defp mask(%{"set" => set, "hint" => hint}) when map_size(%{"set" => set, "hint" => hint}) == 2,
     do: if(set, do: "set · ends #{hint || "…"}", else: "not set")
@@ -1485,6 +1564,8 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   defp print_json(value), do: IO.puts(Jason.encode!(value, pretty: true))
 
   defp table(rows) do
+    rows = Enum.map(rows, fn row -> Enum.map(row, &ConfigOutput.cell(to_string(&1))) end)
+
     widths =
       rows
       |> Enum.flat_map(&Enum.with_index/1)
