@@ -224,6 +224,11 @@ impl InputParser {
         Self::default()
     }
 
+    /// True only when no partial input or discard state is retained.
+    pub fn is_ground(&self) -> bool {
+        matches!(self.state, State::Ground)
+    }
+
     /// Returns at most one event and the exact consumed prefix. A malformed
     /// incomplete UTF-8 scalar may reject with zero consumed bytes: its state is
     /// reset first, so the next call processes the valid byte at the boundary.

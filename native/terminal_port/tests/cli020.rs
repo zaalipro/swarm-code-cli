@@ -199,6 +199,31 @@ fn an_arrow_burst_in_one_read_is_the_wheel() {
 }
 
 #[test]
+fn arrow_paste_wire_preserves_bytes_and_single_mixed_arrows_stay_keys() {
+    let payload = "\x1b[A\x1b[A\x1bOB\x1bOB";
+    let mut parser = InputParser::new();
+    assert!(feed(&mut parser, b"\x1b[200~").is_empty());
+    assert!(!parser.is_ground());
+    assert!(feed(&mut parser, payload.as_bytes()).is_empty());
+    let events = feed(&mut parser, b"\x1b[201~");
+    assert_eq!(events, vec![Event::Paste(payload.into())]);
+    let packet = encode_event(1, 2, &events[0]).unwrap();
+    assert_eq!(packet[22], 2);
+    assert_eq!(&packet[27..], payload.as_bytes());
+    assert!(parser.is_ground());
+    for bytes in [b"\x1b[A".as_slice(), b"\x1b[A\x1b[B"] {
+        assert!(arrow_burst(bytes).is_none());
+        let events = feed(&mut parser, bytes);
+        assert_eq!(events.len(), bytes.len() / 3);
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, Event::Key { .. }))
+        );
+    }
+}
+
+#[test]
 fn scroll_encodes_as_input_kind_seven() {
     let packet = encode_event(1, 2, &Event::Scroll { up: true, count: 3 }).unwrap();
     assert_eq!(&packet[packet.len() - 3..], &[7, 1, 3]);

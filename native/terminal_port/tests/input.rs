@@ -30,6 +30,47 @@ fn feed(p: &mut InputParser, mut bytes: &[u8]) -> Vec<Event> {
     out
 }
 #[test]
+fn ground_query_excludes_every_partial_and_discard_state() {
+    let prefixes: &[&[u8]] = &[
+        b"\x1b",
+        b"\x1b(",
+        b"\xc2",
+        b"\x1b\xc2",
+        b"\xff",
+        b"\x1b[",
+        b"\x1bO",
+        b"\x1b[200",
+        b"\x1b]control",
+        b"\x1bPcontrol\x1b",
+        b"\x1b[200~",
+        b"\x1b[200~payload\x1b[201",
+    ];
+    for prefix in prefixes {
+        let mut p = InputParser::new();
+        assert!(p.is_ground());
+        feed(&mut p, prefix);
+        assert!(!p.is_ground(), "{prefix:?}");
+        p.finish();
+        assert!(p.is_ground());
+    }
+    let mut p = InputParser::new();
+    feed(&mut p, b"\x1b[");
+    feed(&mut p, &[b'1'; MAX_SEQUENCE_BYTES + 1]);
+    assert!(!p.is_ground());
+    feed(&mut p, b"A");
+    assert!(p.is_ground());
+    feed(&mut p, b"\x1b[200~");
+    feed(&mut p, &vec![b'p'; MAX_PASTE_BYTES + 1]);
+    assert!(!p.is_ground());
+    feed(&mut p, b"\x1b[201~");
+    assert!(p.is_ground());
+    feed(&mut p, b"\x1b");
+    p.expire_escape();
+    assert!(p.is_ground());
+    feed(&mut p, "界\x1b[A\x1b]done\x07".as_bytes());
+    assert!(p.is_ground());
+}
+#[test]
 fn all_scalar_and_navigation_splits() {
     let bytes = "a界\x1b[A".as_bytes();
     for a in 0..=bytes.len() {

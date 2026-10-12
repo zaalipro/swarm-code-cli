@@ -1010,7 +1010,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_cli/lib/swarm_code_cli/ui/safe_text.ex `sanitize_grapheme/5`; apps/swarm_code_cli/lib/swarm_code_cli/ui/safe_text/limits.ex tab_width 8.
   - _Requirements:_ 9.1, 9.3, 9.4
 
-- [ ] 25. Gate native burst detection on parser state
+- [x] 25. Gate native burst detection on parser state
   - Files: `native/terminal_port/src/input.rs`; `native/terminal_port/src/session.rs`; `native/terminal_port/tests/input.rs`
   - Purpose: Prevent the pre-parser scroll heuristic from stealing bytes retained by bracketed-paste/control parsing.
   - Do:
@@ -1022,7 +1022,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ native/terminal_port/src/input.rs State/InputParser/arrow_burst; src/session.rs:508-533.
   - _Requirements:_ 10.1, 10.3
 
-- [ ] 26. Pin native session split-paste admission
+- [x] 26. Pin native session split-paste admission
   - Files: `native/terminal_port/src/session.rs`; `native/terminal_port/tests/cli020.rs`
   - Purpose: Exercise the exact session gate as well as the parser across read/credit boundaries.
   - Do:

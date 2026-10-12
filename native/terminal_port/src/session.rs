@@ -404,6 +404,19 @@ impl Session<'_> {
         }
         Ok(false)
     }
+    fn admit_input(&mut self, n: usize) {
+        self.cooked = crate::input::typeahead_enter(&mut self.input[..n], self.cooked);
+        self.start = 0;
+        self.end = n;
+        // With no mouse reports, alternate scroll sends identical arrows.
+        if self.parser.is_ground() && self.flags & 1 != 0 && self.flags & protocol::FLAG_MOUSE == 0
+        {
+            if let Some((up, count)) = crate::input::arrow_burst(&self.input[..n]) {
+                self.pending_scroll = Some(Event::Scroll { up, count });
+                self.end = 0;
+            }
+        }
+    }
     fn input(&mut self) -> Result<(), u8> {
         let Some(token) = self.credit else {
             return Ok(());
@@ -520,18 +533,7 @@ impl Session<'_> {
                         return Ok(());
                     }
                     Some(n) => {
-                        self.cooked =
-                            crate::input::typeahead_enter(&mut self.input[..n], self.cooked);
-                        self.start = 0;
-                        self.end = n;
-                        // cli020 D5: with no mouse reports, alternate scroll
-                        // sends the wheel as a burst of identical arrows.
-                        if self.flags & 1 != 0 && self.flags & protocol::FLAG_MOUSE == 0 {
-                            if let Some((up, count)) = crate::input::arrow_burst(&self.input[..n]) {
-                                self.pending_scroll = Some(Event::Scroll { up, count });
-                                self.end = 0;
-                            }
-                        }
+                        self.admit_input(n);
                     }
                 }
             }
@@ -549,10 +551,7 @@ impl Session<'_> {
                 match read_fd(self.tty, &mut self.input).map_err(|_| 4)? {
                     Some(0) => return Ok(()),
                     Some(n) => {
-                        self.cooked =
-                            crate::input::typeahead_enter(&mut self.input[..n], self.cooked);
-                        self.start = 0;
-                        self.end = n;
+                        self.admit_input(n);
                     }
                     None => {
                         if let Some(event) = self.parser.expire_escape() {
@@ -622,5 +621,194 @@ pub fn run(guard: &mut UnixStream, tty: RawFd) -> i32 {
         1
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io::Read, os::fd::AsRawFd};
+
+    fn fixture<'a>(guard: &'a mut UnixStream, output: &UnixStream) -> Session<'a> {
+        Session {
+            guard,
+            tty: -1,
+            stdout: FdWriter::new(output.as_raw_fd(), true),
+            output: BufferedWriter::new(FdWriter::patient(-1)),
+            generation: Some(1),
+            flags: 1,
+            active: true,
+            externally_suspended: false,
+            awaiting_resume: false,
+            token: 0,
+            sequence: 0,
+            credit: None,
+            painter: Painter::new(),
+            parser: InputParser::new(),
+            input: [0; 4096],
+            start: 0,
+            end: 0,
+            escape_since: None,
+            dimensions: (80, 24),
+            pending_resize: None,
+            cooked: 0,
+            probe: None,
+            probed: true,
+            kitty_seen: false,
+            enhanced: false,
+            title: None,
+            title_saved: false,
+            pending_scroll: None,
+            tmux: false,
+        }
+    }
+
+    fn admit(session: &mut Session<'_>, bytes: &[u8]) {
+        assert_eq!(session.start, session.end);
+        session.input[..bytes.len()].copy_from_slice(bytes);
+        session.admit_input(bytes.len());
+    }
+
+    fn drain(session: &mut Session<'_>, reader: &mut UnixStream) -> Vec<Vec<u8>> {
+        let mut packets = Vec::new();
+        while session.start < session.end || session.pending_scroll.is_some() {
+            session.token += 1;
+            session.credit = Some(session.token);
+            session.input().unwrap();
+            if session.credit.is_none() {
+                let suffix = session.input[session.start..session.end].to_vec();
+                let positions = (session.start, session.end);
+                session.input().unwrap();
+                assert_eq!((session.start, session.end), positions);
+                assert_eq!(&session.input[session.start..session.end], suffix);
+                let mut header = [0; 4];
+                reader.read_exact(&mut header).unwrap();
+                let mut packet = vec![0; u32::from_be_bytes(header) as usize];
+                reader.read_exact(&mut packet).unwrap();
+                packets.push([header.to_vec(), packet].concat());
+            }
+        }
+        packets
+    }
+
+    #[test]
+    fn every_split_paste_read_preserves_arrows_and_suffix_with_credit_pauses() {
+        let payload = "界\x1b[A\x1b[A\x1b[B\x1b[B\x1bOA\x1bOA\x1bOB\x1bOB";
+        let bytes = format!("\x1b[200~{payload}\x1b[201~x").into_bytes();
+        for split in 0..=bytes.len() {
+            let (mut guard, _guard_peer) = UnixStream::pair().unwrap();
+            let (output, mut reader) = UnixStream::pair().unwrap();
+            let mut session = fixture(&mut guard, &output);
+            let mut packets = Vec::new();
+            for read in [&bytes[..split], &bytes[split..]] {
+                admit(&mut session, read);
+                let (start, end) = (session.start, session.end);
+                session.credit = None;
+                session.input().unwrap();
+                assert_eq!((session.start, session.end), (start, end));
+                assert!(session.pending_scroll.is_none());
+                packets.extend(drain(&mut session, &mut reader));
+            }
+            // Each emitted packet bears its actual credit token.
+            let events = [
+                Event::Paste(payload.into()),
+                Event::Text {
+                    phase: crate::input::Phase::Press,
+                    text: "x".into(),
+                    modifiers: crate::input::Modifiers::NONE,
+                },
+            ];
+            assert_eq!(packets.len(), events.len(), "split {split}");
+            for (packet, event) in packets.iter().zip(events) {
+                let token = u64::from_be_bytes(packet[14..22].try_into().unwrap());
+                assert_eq!(*packet, protocol::encode_event(1, token, &event).unwrap());
+            }
+            assert!(session.parser.is_ground());
+        }
+    }
+
+    #[test]
+    fn three_read_paste_arrow_adversary_never_becomes_scroll() {
+        for arrows in [b"\x1b[A".as_slice(), b"\x1b[B", b"\x1bOA", b"\x1bOB"] {
+            let (mut guard, _guard_peer) = UnixStream::pair().unwrap();
+            let (output, mut reader) = UnixStream::pair().unwrap();
+            let mut session = fixture(&mut guard, &output);
+            let payload = arrows.repeat(40);
+            let mut packets = Vec::new();
+            for read in [b"\x1b[200~".as_slice(), &payload, b"\x1b[201~"] {
+                admit(&mut session, read);
+                session.credit = None;
+                session.input().unwrap();
+                assert!(session.pending_scroll.is_none());
+                packets.extend(drain(&mut session, &mut reader));
+            }
+            assert_eq!(packets.len(), 1);
+            assert_eq!(
+                packets[0],
+                protocol::encode_event(
+                    1,
+                    session.token,
+                    &Event::Paste(String::from_utf8(payload).unwrap())
+                )
+                .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn admission_respects_partial_states_flags_and_ground_bursts() {
+        let (mut guard, _guard_peer) = UnixStream::pair().unwrap();
+        let (output, _reader) = UnixStream::pair().unwrap();
+        let mut session = fixture(&mut guard, &output);
+        for prefix in [
+            b"\x1b".as_slice(),
+            b"\x1b[12",
+            b"\xc2",
+            b"\xff",
+            b"\x1b]control",
+            b"\x1bPcontrol",
+            b"\x1b[200~",
+        ] {
+            session.parser.finish();
+            session.parser.advance(prefix);
+            admit(&mut session, b"\x1b[A\x1b[A");
+            assert!(session.pending_scroll.is_none(), "{prefix:?}");
+            assert_eq!(&session.input[session.start..session.end], b"\x1b[A\x1b[A");
+            session.start = session.end;
+        }
+        session.parser.finish();
+        for (bytes, expected) in [
+            (b"\x1b[A".to_vec(), None),
+            (b"\x1b[A\x1b[B".to_vec(), None),
+            (
+                b"\x1bOA\x1bOA".to_vec(),
+                Some(Event::Scroll { up: true, count: 2 }),
+            ),
+            (
+                b"\x1b[B".repeat(40),
+                Some(Event::Scroll {
+                    up: false,
+                    count: 32,
+                }),
+            ),
+        ] {
+            admit(&mut session, &bytes);
+            assert_eq!(session.pending_scroll.take(), expected);
+            assert_eq!(
+                session.end,
+                if expected.is_some() { 0 } else { bytes.len() }
+            );
+            session.start = session.end;
+        }
+        for flags in [0, 1 | protocol::FLAG_MOUSE] {
+            session.flags = flags;
+            admit(&mut session, b"\x1b[A\x1b[A");
+            assert!(session.pending_scroll.is_none());
+            session.start = session.end;
+        }
+        session.cooked = 2;
+        admit(&mut session, b"\na\n");
+        assert_eq!(&session.input[..session.end], b"\ra\n");
+        assert_eq!(session.cooked, 0);
     }
 }
