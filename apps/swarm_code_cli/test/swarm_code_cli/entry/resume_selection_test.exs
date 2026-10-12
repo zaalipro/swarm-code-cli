@@ -51,7 +51,7 @@ defmodule SwarmCodeCLI.Release.ResumeSelectionTest do
   end
 
   test "too short, unknown and ambiguous values say so", c do
-    for n <- 1..7, do: conversation!(c, "Same title")
+    for _n <- 1..7, do: conversation!(c, "Same title")
 
     assert {:error, %{status: 2, message: message, action: action}} =
              PersistedSession.resolve_resume(c.root, "Same title")
