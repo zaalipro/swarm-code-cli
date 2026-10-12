@@ -671,6 +671,66 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
              config(c, ["record", "set", "provider:DeepSeek.fallbacks", "on", "--expect", "off"])
   end
 
+  test "parsed wrong-shape expectations are refused before foundation admission", c do
+    foundation = fn _ ->
+      send(self(), :unexpected_foundation)
+      c.held.(nil)
+    end
+
+    for {ref, value, expectations} <- [
+          {"provider:DeepSeek.model_effort_levels", "{}", ["[]", ~s("ordinary"), "true", "7"]},
+          {"search_provider:tavily.position", "7", ["1.5"]},
+          {"provider:DeepSeek.fallbacks", "off", ["null", "unset", "default"]},
+          {"provider:DeepSeek.kind", "anthropic", ["null"]},
+          {"provider:DeepSeek.name", "replacement", ["null"]},
+          {"provider:DeepSeek.base_url", "https://example.test", ["null", ""]}
+        ] do
+      assert {0, before, ""} = config(c, ["record", "get", ref, "--json"])
+
+      for expect <- expectations do
+        assert {2, "", err} =
+                 config(c, ["record", "set", ref, value, "--expect", expect],
+                   foundation: foundation
+                 )
+
+        assert err ==
+                 "ncode: invalid --expect value for #{ref}. Run 'ncode config help'.\n"
+
+        refute_received :unexpected_foundation
+        assert {0, ^before, ""} = config(c, ["record", "get", ref, "--json"])
+      end
+    end
+  end
+
+  test "valid expectation shapes retain lease refusal and integer CAS compatibility", c do
+    for {ref, value, expectations} <- [
+          {"provider:DeepSeek.model_effort_levels", "{}",
+           ["{}", ~s({"model": ["high"]}), "null"]},
+          {"search_provider:tavily.position", "7", ["7", "7.0", "null", "default"]},
+          {"provider:DeepSeek.default_model", "other", ["ordinary", "null", "default"]},
+          {"provider:DeepSeek.fallbacks", "off", ["off", "false", "on"]},
+          {"provider:DeepSeek.kind", "anthropic", ["anthropic", "openai_compatible"]},
+          {"provider:DeepSeek.models", "other", ["", "[]", "one,two", ~s(["one"]), "null"]}
+        ],
+        expect <- expectations do
+      assert {3, "", _} =
+               config(c, ["record", "set", ref, value, "--expect", expect], foundation: c.held)
+    end
+
+    assert {0, _, ""} = config(c, ["set", "limits.max_concurrent_agents", "7"])
+
+    assert {0, _, ""} =
+             config(c, ["set", "limits.max_concurrent_agents", "8", "--expect", "7.0"])
+
+    assert {0, json, ""} = config(c, ["get", "limits.max_concurrent_agents", "--json"])
+    assert [%{"key" => "limits.max_concurrent_agents", "value" => 8}] = Jason.decode!(json)
+
+    assert {4, "", _} =
+             config(c, ["set", "limits.max_concurrent_agents", "9", "--expect", "7.0"])
+
+    assert {0, ^json, ""} = config(c, ["get", "limits.max_concurrent_agents", "--json"])
+  end
+
   test "invalid scalar expectations leave integer enum and list values unchanged", c do
     for {key, value, expect} <- [
           {"limits.max_concurrent_agents", "7", "lots"},

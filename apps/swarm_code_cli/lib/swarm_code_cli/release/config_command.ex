@@ -32,7 +32,7 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
   @command SwarmCode.Daemon.Service.Settings.Command
   @result SwarmCode.Daemon.Service.Settings.Result
   @error SwarmCode.Daemon.Service.Settings.Error
-  alias SwarmCode.Settings.{CliFile, Entry, RecordKind, Registry, Sections, TextValue}
+  alias SwarmCode.Settings.{CliFile, Entry, RecordKind, Registry, Sections, TextValue, WireValue}
   alias SwarmCodeCLI.Release.ConfigOutput
   alias SwarmCodeCLI.Release.PersistedSession
 
@@ -1182,6 +1182,18 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
 
   # Lists normally use comma-separated typed text. A JSON-looking list must
   # be a valid string array, not malformed JSON compared as literal model IDs.
+  defp expected_value(%RecordKind.Field{nullable: true}, _text, nil), do: {:ok, nil}
+  defp expected_value(%RecordKind.Field{}, _text, nil), do: {:error, :usage}
+
+  defp expected_value(%RecordKind.Field{type: :map}, _text, value) do
+    if is_map(value), do: {:ok, value}, else: {:error, :usage}
+  end
+
+  defp expected_value(%RecordKind.Field{type: :integer}, _text, value) do
+    value = WireValue.canonical(value)
+    if is_integer(value), do: {:ok, value}, else: {:error, :usage}
+  end
+
   defp expected_value(%RecordKind.Field{type: :list} = field, text, value) do
     parsed =
       if String.starts_with?(String.trim(text), "["),
@@ -1189,9 +1201,6 @@ defmodule SwarmCodeCLI.Release.ConfigCommand do
         else: {:ok, value}
 
     case parsed do
-      {:ok, nil} ->
-        {:ok, nil}
-
       {:ok, items} when is_list(items) ->
         if length(items) <= RecordKind.list_max(field) and Enum.all?(items, &is_binary/1),
           do: {:ok, items},
