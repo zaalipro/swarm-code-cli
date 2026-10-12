@@ -672,7 +672,7 @@ No schema/table/wire migrations. All new state is process-local; existing DTO sh
 
 Baseline evidence was supplied by the review owner, not rerun while writing this spec: full `env -u MIX_QUIET SWARM_CODE_UPSTREAM=/Users/zaali/dev/swarm-code mise exec -- mix precommit` exited 0, with 217 core +1486 daemon +3198 CLI =4901 ExUnit tests, plus 10 properties. Native gate: 73 Rust tests. PTY: 24 native +11 demo. Synthetic plain demo passed. Findings bypass existing tests; green baseline is not remediation acceptance.
 
-No release/install, saved-real, browser or external-provider validation was performed. TUI-06 was source-confirmed; its attempted custom PTY probe was denied, so the spec does not claim an end-to-end reproduction. All tasks/tests below are future work, currently unchecked.
+No release/install, saved-real, browser or external-provider validation was performed. TUI-06 was source-confirmed; its attempted custom PTY probe was denied, so the spec does not claim an end-to-end reproduction. MCP tasks 9–11 were validated with 15 local stdio/HTTP queue tests plus the existing 18-test MCP settings suite; remaining tasks/tests below are future work.
 
 - Unit: every pure policy/parser/width/paste/helper criterion is pinned in the exact task test files. The existing width reductions tests stay; no platform-relative performance SLA is introduced.
 - Integration: use actual Engine operation approvals, real queued MCP boundary, fixture ConfigCommand foundation, real event producer broadcasts, backend A/B navigation, live detail service requests and owned local subprocess reapers. No credentials or canonical user database.
@@ -801,7 +801,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/test/support/c020_backend.ex; apps/swarm_code_daemon/lib/swarm_code/domain/engine/operation.ex `current_mode/1`.
   - _Requirements:_ 3.1, 3.2, 3.3
 
-- [ ] 9. Centralize MCP admission lifetime
+- [x] 9. Centralize MCP admission lifetime
   - Files: `apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex`; `provenance/patches/apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex.diff`; `provenance/extracted-files.json`
   - Purpose: Give each accepted tool call one identity before it can enter either queue or transport.
   - Do:
@@ -815,7 +815,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex `monitor_caller/1`, `reply_pending/3`, `dispatch_http/6`, `down/3`.
   - _Requirements:_ 4.1, 4.2, 4.3
 
-- [ ] 10. Fence MCP dispatch, retry and disconnect by admission
+- [x] 10. Fence MCP dispatch, retry and disconnect by admission
   - Files: `apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex`; `provenance/patches/apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex.diff`; `provenance/extracted-files.json`
   - Purpose: Prevent a late handshake from executing an abandoned or expired caller’s tool request.
   - Do:
@@ -829,7 +829,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex `drain_*`, `handshake_done/1`, `fail_*`, `cancel_at_server/3`.
   - _Requirements:_ 4.1, 4.2, 4.3
 
-- [ ] 11. Test MCP queues against a local transport
+- [x] 11. Test MCP queues against a local transport
   - Files: `apps/swarm_code_daemon/test/swarm_code/daemon/hardening/mcp_queue_test.exs` (new)
   - Purpose: Exercise both handshake waiting and HTTP session-establishment queues, not invented mailbox-only state.
   - Do:

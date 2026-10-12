@@ -500,7 +500,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex",
-      "sha256": "01977f1ce1036ad5043b4c968c16845c6cfa9df220d0af4af113124a63d13396",
+      "sha256": "70a602c290639c19380b0796b80b4d9b4417c9775d0d98f206c7df7800a61744",
       "upstream_commit": "a93d6d8ee74358749e157e91dea46ad8c0d66722",
       "upstream_path": "lib/swarm_code/mcp/client.ex",
       "upstream_sha256": "031af4ca749ebd2878a3bf3f0de5182d1e93312c75722bddce31a43b60b53a39"
