@@ -326,7 +326,10 @@ defmodule SwarmCodeCLI.Release.C74ConfigCommandTest do
     end
 
     {:ok, stdin} = StringIO.open(@canary <> "\n")
-    {code, _out, _err} = config(c, ["secret", "provider:DeepSeek", "--stdin"], stdin: stdin)
+
+    {code, _out, _err} =
+      config(c, ["secret", "provider:DeepSeek", "--stdin", "--no-test"], stdin: stdin)
+
     assert code in [0, 1]
   end
 
