@@ -93,6 +93,21 @@ defmodule SwarmCodeCLI.UI.Editor do
   @spec register(t()) :: register()
   def register(editor), do: editor.register
 
+  @doc "Annotate the current undo record with retained paste IDs, never payloads."
+  def tag_undo(%{undo: []} = editor, _ids), do: editor
+
+  def tag_undo(%{undo: [record | rest]} = editor, ids) do
+    tags = MapSet.union(Map.get(record, :paste_ids, MapSet.new()), ids)
+    %{editor | undo: [Map.put(record, :paste_ids, tags) | rest]}
+  end
+
+  @doc "Paste IDs owned by bounded undo and redo records."
+  def retained_tags(editor) do
+    Enum.reduce(editor.undo ++ editor.redo, MapSet.new(), fn record, ids ->
+      MapSet.union(ids, Map.get(record, :paste_ids, MapSet.new()))
+    end)
+  end
+
   defp text_range(_editor, from, to) when from >= to, do: ""
 
   defp text_range(editor, from, to) do
@@ -395,6 +410,10 @@ defmodule SwarmCodeCLI.UI.Editor do
 
       records ->
         record = %{
+          paste_ids:
+            Enum.reduce(records, MapSet.new(), fn record, ids ->
+              MapSet.union(ids, Map.get(record, :paste_ids, MapSet.new()))
+            end),
           patches: Enum.flat_map(records, & &1.patches),
           bytes: Enum.reduce(records, 0, &(&1.bytes + &2)),
           before: mark(editor),

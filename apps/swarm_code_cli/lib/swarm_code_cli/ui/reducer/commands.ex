@@ -61,15 +61,14 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
        )
        when kind == :dispatch do
     case Drafts.fetch(state.drafts, key).pastes do
-      pastes when map_size(pastes) == 0 ->
-        {:ok, intent, context}
-
       pastes ->
-        if Pastes.too_large?(text, pastes) do
-          {:too_large, intent}
+        with {:ok, _} <- Pastes.expanded_bytes(text, pastes),
+             {:ok, _} <- Pastes.expanded_bytes(context.editor_text, pastes),
+             {:ok, expanded} <- Pastes.expand(text, pastes),
+             {:ok, editor_text} <- expand_context(text, context.editor_text, expanded, pastes) do
+          {:ok, {kind, operation, expanded, target, refs}, %{context | editor_text: editor_text}}
         else
-          {:ok, {kind, operation, Pastes.expand(text, pastes), target, refs},
-           %{context | editor_text: Pastes.expand(context.editor_text, pastes)}}
+          {:error, :too_large} -> {:too_large, intent}
         end
     end
   end
@@ -80,19 +79,24 @@ defmodule SwarmCodeCLI.UI.Reducer.Commands do
          %{origin: {:draft, key}} = context
        ) do
     case Drafts.fetch(state.drafts, key).pastes do
-      pastes when map_size(pastes) == 0 ->
-        {:ok, intent, context}
-
       pastes ->
-        if Pastes.too_large?(text, pastes),
-          do: {:too_large, intent},
-          else:
-            {:ok, {:steer, run, node, Pastes.expand(text, pastes), refs},
-             %{context | editor_text: Pastes.expand(context.editor_text, pastes)}}
+        with {:ok, _} <- Pastes.expanded_bytes(text, pastes),
+             {:ok, _} <- Pastes.expanded_bytes(context.editor_text, pastes),
+             {:ok, expanded} <- Pastes.expand(text, pastes),
+             {:ok, editor_text} <- expand_context(text, context.editor_text, expanded, pastes) do
+          {:ok, {:steer, run, node, expanded, refs}, %{context | editor_text: editor_text}}
+        else
+          {:error, :too_large} -> {:too_large, intent}
+        end
     end
   end
 
   defp expand_pastes(_state, intent, context), do: {:ok, intent, context}
+
+  defp expand_context(text, text, expanded, _pastes), do: {:ok, expanded}
+
+  defp expand_context(_text, editor_text, _expanded, pastes),
+    do: Pastes.expand(editor_text, pastes)
 
   # pass70 Q1: what you send is what you look at next. A prompt or a steer
   # sent while the transcript was scrolled up puts the view back on the

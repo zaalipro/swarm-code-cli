@@ -1097,8 +1097,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
     if key == State.current_draft_key(state) do
       # cli020 D8: the editor gets the pastes expanded.
       draft = Drafts.fetch(state.drafts, key)
-      text = Pastes.expand(Editor.text(draft.editor), draft.pastes)
-      {%{state | lifecycle: :suspend_requested}, [{:edit_externally, key, text}]}
+
+      case Pastes.expand(Editor.text(draft.editor), draft.pastes) do
+        {:ok, text} ->
+          {%{state | lifecycle: :suspend_requested}, [{:edit_externally, key, text}]}
+
+        {:error, :too_large} ->
+          {%{state | notice: {:command_feedback, "The message is over 256 KiB."}}, []}
+      end
     else
       {state, []}
     end
@@ -1117,18 +1123,16 @@ defmodule SwarmCodeCLI.UI.Reducer do
         draft = Drafts.fetch(state.drafts, key)
 
         # cli020 D8: the edited text has every paste in it; nothing collapses back.
-        if text == Pastes.expand(Editor.text(draft.editor), draft.pastes),
-          do: {state, []},
-          else:
-            replace_draft(
-              %{
-                state
-                | history_cursor: nil,
-                  drafts: Drafts.put(state.drafts, %{draft | pastes: %{}})
-              },
-              key,
-              text
-            )
+        case Pastes.expand(Editor.text(draft.editor), draft.pastes) do
+          {:ok, expanded} when text == expanded ->
+            {state, []}
+
+          {:ok, _expanded} ->
+            replace_draft(%{state | history_cursor: nil}, key, text)
+
+          {:error, :too_large} ->
+            {%{state | notice: {:command_feedback, "The message is over 256 KiB."}}, []}
+        end
 
       {:error, reason} ->
         {%{state | notice: {:command_feedback, external_edit_words(reason)}}, []}
@@ -1245,40 +1249,22 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp transition(state, {:field_editor, {:feature_field, _, _}, _}), do: {state, []}
 
   defp transition(state, {kind, key, operation}) when kind in [:editor, :field_editor] do
-    {state, operation} =
-      if kind == :editor, do: collapse_paste(state, key, operation), else: {state, operation}
-
-    {next, effects} = Editing.apply(state, kind, key, operation)
-    next = if kind == :editor and next != state, do: SlashPalette.after_edit(next), else: next
-
-    # Editing a recalled prompt makes it the draft: Up moves the caret again.
-    next =
-      if kind == :editor and next.drafts != state.drafts and
-           not match?({:undo_boundary, _}, operation),
-         do: %{next | history_cursor: nil},
-         else: next
-
-    # Typing while an approval has just opened keeps the approval waiting.
-    {next, effects} =
-      if kind == :editor and next.interaction_grace != nil and next.drafts != state.drafts,
-        do: restart_grace(next, effects),
-        else: {next, effects}
-
-    # A completed edit is the end of any vim command, so the operator and count
-    # that led to it are spent. An undo boundary is the editor's own timer, not
-    # a key, and must not swallow a prefix the user is still typing.
-    next =
-      if kind == :editor and next.keymap == :vim and
-           not match?({:undo_boundary, _}, operation),
-         do: clear_vim_prefix(next),
-         else: next
-
-    # An `@` token at the caret asks the project for its paths.
-    if kind == :editor and next != state do
-      {next, completion} = PathCompletion.sync(next)
-      {next, effects ++ completion}
+    with {:ok, operation, pastes} <-
+           if(kind == :editor,
+             do: collapse_paste(state, key, operation),
+             else: {:ok, operation, nil}
+           ) do
+      editor_transition(state, kind, key, operation, pastes)
     else
-      {next, effects}
+      {:error, :paste_capacity} ->
+        {%{
+           state
+           | notice:
+               {:command_feedback, "Paste limit reached; send or remove an existing paste first."}
+         }, []}
+
+      {:error, reason} ->
+        {%{state | notice: {:editor_error, reason}}, []}
     end
   end
 
@@ -3091,16 +3077,59 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp elem_body({_tag, body}), do: body
   defp elem_body(body), do: body
 
-  # cli020 D8: a large paste becomes its placeholder; Backspace or Delete
-  # next to a whole placeholder deletes all of it and its entry.
+  defp editor_transition(state, kind, key, operation, pastes) do
+    {next, effects} = Editing.apply(state, kind, key, operation, pastes)
+    next = if kind == :editor and next != state, do: SlashPalette.after_edit(next), else: next
+
+    next =
+      if kind == :editor and next.drafts != state.drafts and
+           not match?({:undo_boundary, _}, operation),
+         do: %{next | history_cursor: nil},
+         else: next
+
+    {next, effects} =
+      if kind == :editor and next.interaction_grace != nil and next.drafts != state.drafts,
+        do: restart_grace(next, effects),
+        else: {next, effects}
+
+    next =
+      if kind == :editor and next.keymap == :vim and
+           not match?({:undo_boundary, _}, operation),
+         do: clear_vim_prefix(next),
+         else: next
+
+    if kind == :editor and next != state do
+      {next, completion} = PathCompletion.sync(next)
+      {next, effects ++ completion}
+    else
+      {next, effects}
+    end
+  end
+
+  # Candidate payloads are committed only with an accepted editor operation.
+  # Whole-marker deletion keeps payloads owned by history and the register.
   defp collapse_paste(state, key, {:paste, text} = operation) do
     draft = Drafts.fetch(state.drafts, key)
 
     if Pastes.collapse?(text, state.paste_collapse_lines) do
-      {words, pastes} = Pastes.put(draft.pastes, text)
-      {%{state | drafts: Drafts.put(state.drafts, %{draft | pastes: pastes})}, {:paste, words}}
+      ids =
+        Pastes.references(Editor.text(draft.editor), draft.pastes)
+        |> MapSet.union(Editor.retained_tags(draft.editor))
+        |> MapSet.union(
+          Pastes.references(elem(draft.editor.register || {"", :charwise}, 0), draft.pastes)
+        )
+
+      retained = Pastes.retain(draft.pastes, ids)
+
+      case Pastes.admit(retained, text) do
+        {:ok, words, pastes} ->
+          {:ok, {:paste, words}, pastes}
+
+        {:error, :paste_capacity} ->
+          {:error, :paste_capacity}
+      end
     else
-      {state, operation}
+      {:ok, operation, nil}
     end
   end
 
@@ -3111,21 +3140,20 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     with true <- draft.pastes != %{},
          nil <- Editor.selection(draft.editor),
-         {length, n} <-
+         {length, _n} <-
            Pastes.deletion(
              Editor.text(draft.editor),
              Editor.cursor(draft.editor),
              direction,
              draft.pastes
            ) do
-      draft = %{draft | pastes: Map.delete(draft.pastes, n)}
-      {%{state | drafts: Drafts.put(state.drafts, draft)}, {:times, length, operation}}
+      {:ok, {:times, length, operation}, nil}
     else
-      _ -> {state, operation}
+      _ -> {:ok, operation, nil}
     end
   end
 
-  defp collapse_paste(state, _key, operation), do: {state, operation}
+  defp collapse_paste(_state, _key, operation), do: {:ok, operation, nil}
 
   # cli020 D7: a `!` command goes into the history as typed, when it is sent.
   defp remember_text(state, conversation, text) do

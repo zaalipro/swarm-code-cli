@@ -19,6 +19,40 @@ defmodule SwarmCodeCLI.UI.EditorTest do
 
   defp records(editor), do: length(editor.undo)
 
+  test "undo records retain paste ids through undo redo and trim" do
+    editor =
+      filled("x", undo_count: 2)
+      |> Editor.tag_undo(MapSet.new([1, 2]))
+
+    assert Editor.retained_tags(editor) == MapSet.new([1, 2])
+    editor = edit(editor, {:insert, "y"}) |> Editor.tag_undo(MapSet.new([2, 3]))
+    assert Editor.retained_tags(editor) == MapSet.new([1, 2, 3])
+
+    editor = edit(editor, :undo)
+    assert Editor.retained_tags(editor) == MapSet.new([1, 2, 3])
+    editor = edit(editor, :redo)
+    assert Editor.retained_tags(editor) == MapSet.new([1, 2, 3])
+
+    editor = edit(editor, {:paste, "z"}) |> Editor.tag_undo(MapSet.new([4]))
+    assert Editor.retained_tags(editor) == MapSet.new([2, 3, 4])
+    assert Editor.retained_tags(Editor.reset(editor)) == MapSet.new()
+    assert Editor.tag_undo(Editor.new(), MapSet.new([1])) == Editor.new()
+  end
+
+  test "grouped edits union tags and byte eviction drops them with their record" do
+    editor =
+      Editor.new(undo_bytes: 2)
+      |> edit({:insert, "x"})
+      |> Editor.tag_undo(MapSet.new([1]))
+      |> edit({:insert, "y"})
+      |> Editor.tag_undo(MapSet.new([2]))
+
+    assert records(editor) == 1
+    assert Editor.retained_tags(editor) == MapSet.new([1, 2])
+    assert Editor.retained_tags(edit(editor, :undo)) == MapSet.new([1, 2])
+    assert Editor.retained_tags(edit(editor, {:insert, "z"})) == MapSet.new()
+  end
+
   test "fragmented accents, modifiers, flags and ZWJ retain exact bytes and graphemes" do
     for text <- ["é", "👩🏽‍🚒", "🇬🇪🇺🇸🇫", "👨‍👩‍👧‍👦", "❤︎❤️", "ქართული", "العربية", "עברית", "界"] do
       editor = Enum.reduce(String.codepoints(text), Editor.new(), &edit(&2, {:insert, &1}))

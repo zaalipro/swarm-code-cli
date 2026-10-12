@@ -1,8 +1,9 @@
 defmodule SwarmCodeCLI.UI.Reducer.Editing do
   @moduledoc false
   alias SwarmCodeCLI.UI.{Drafts, FieldEditors, Editor, State}
+  alias SwarmCodeCLI.UI.Draft.Pastes
 
-  def apply(state, kind, key, operation) do
+  def apply(state, kind, key, operation, pastes \\ nil) do
     editor = editor(state, kind, key)
 
     case Editor.apply(editor, operation) do
@@ -10,6 +11,20 @@ defmodule SwarmCodeCLI.UI.Reducer.Editing do
         {state, []}
 
       {:ok, next} ->
+        state =
+          if kind == :editor and pastes != nil do
+            draft = Drafts.fetch(state.drafts, key)
+            %{state | drafts: Drafts.put(state.drafts, %{draft | pastes: pastes})}
+          else
+            state
+          end
+
+        next =
+          if kind == :editor and not history?(operation) and
+               Editor.text(next) != Editor.text(editor),
+             do: annotate(next, editor, Drafts.fetch(state.drafts, key).pastes),
+             else: next
+
         state = put(state, kind, key, next)
         timer_key = {kind, key}
         timer = Map.get(state.timers, timer_key)
@@ -75,13 +90,37 @@ defmodule SwarmCodeCLI.UI.Reducer.Editing do
   defp put(state, :editor, key, editor) do
     draft = Drafts.fetch(state.drafts, key)
 
+    ids =
+      Pastes.references(Editor.text(editor), draft.pastes)
+      |> MapSet.union(Editor.retained_tags(editor))
+      |> MapSet.union(
+        Pastes.references(elem(editor.register || {"", :charwise}, 0), draft.pastes)
+      )
+
     %{
       state
-      | drafts: Drafts.put(state.drafts, %{draft | editor: editor}),
+      | drafts:
+          Drafts.put(state.drafts, %{
+            draft
+            | editor: editor,
+              pastes: Pastes.retain(draft.pastes, ids)
+          }),
         selection: Map.put(state.selection, "composer_draft", key)
     }
   end
 
   defp put(state, :field_editor, key, editor),
     do: %{state | field_editors: FieldEditors.put(state.field_editors, key, editor)}
+
+  defp annotate(next, previous, pastes) do
+    ids =
+      Pastes.references(Editor.text(previous), pastes)
+      |> MapSet.union(Pastes.references(Editor.text(next), pastes))
+
+    Editor.tag_undo(next, ids)
+  end
+
+  defp history?(operation) when operation in [:undo, :redo], do: true
+  defp history?({:times, _, operation}), do: history?(operation)
+  defp history?(_), do: false
 end

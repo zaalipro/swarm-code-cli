@@ -930,7 +930,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_cli/lib/swarm_code_cli/release/config_command.ex:731-737,1121-1129; SwarmCode.Settings.TextValue and RecordKind.
   - _Requirements:_ 7.3, 7.4
 
-- [ ] 19. Annotate bounded editor history with paste references
+- [x] 19. Annotate bounded editor history with paste references
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/ui/editor.ex`; `apps/swarm_code_cli/lib/swarm_code_cli/ui/draft/pastes.ex`; `apps/swarm_code_cli/test/swarm_code_cli/ui/editor_test.exs`
   - Purpose: Let paste retention follow actual undo/redo ownership without reconstructing every historical buffer or mistaking partial patches for complete markers.
   - Do:
@@ -943,7 +943,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_cli/lib/swarm_code_cli/ui/editor.ex `replace/4`, `history/2`, `trim/3`; apps/swarm_code_cli/lib/swarm_code_cli/ui/draft.ex `pastes?/1`.
   - _Requirements:_ 8.1, 8.2
 
-- [ ] 20. Bound opaque paste expansion at every caller
+- [x] 20. Bound opaque paste expansion at every caller
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/ui/draft/pastes.ex`; `apps/swarm_code_cli/lib/swarm_code_cli/ui/reducer/commands.ex`; `apps/swarm_code_cli/lib/swarm_code_cli/ui/reducer.ex`
   - Purpose: Fix recursive/duplicate expansion without creating an allocation amplification: the old too_large?/2 allocates first and external-editor expansion bypasses that check entirely.
   - Do:
@@ -957,7 +957,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ ui/draft/pastes.ex placeholder/2, lines/1 and allocation-first too_large?/2; ui/reducer/commands.ex:68-91 send/steer plus context expansion; ui/reducer.ex:1097-1131 external handoff/comparison; Commands.invoke/3 oversized-message refusal.
   - _Requirements:_ 8.3, 8.4
 
-- [ ] 21. Make reducer paste edits atomic and history-safe
+- [x] 21. Make reducer paste edits atomic and history-safe
   - Files: `apps/swarm_code_cli/lib/swarm_code_cli/ui/reducer.ex`; `apps/swarm_code_cli/lib/swarm_code_cli/ui/reducer/editing.ex`; `apps/swarm_code_cli/test/swarm_code_cli/ui/draft_paste_test.exs`
   - Purpose: Keep payload and editor state in one accepted transition and preserve undo across external editor replacement.
   - Do:
@@ -970,7 +970,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_cli/lib/swarm_code_cli/ui/reducer.ex:1119-1131,3090-3125; apps/swarm_code_cli/lib/swarm_code_cli/ui/reducer/editing.ex `apply/4`, `put/4`.
   - _Requirements:_ 8.1, 8.2
 
-- [ ] 22. Exercise paste history and expanded-byte ceilings
+- [x] 22. Exercise paste history and expanded-byte ceilings
   - Files: `apps/swarm_code_cli/test/swarm_code_cli/ui/draft_paste_test.exs`
   - Purpose: Pin reducer payload retention and prove repeated markers are refused before oversized output can be allocated or sent to the external editor.
   - Do:
