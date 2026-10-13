@@ -8,6 +8,7 @@ defmodule SwarmCode.Daemon.Service.Pass70QaQueueTest do
   """
   use ExUnit.Case, async: false
   alias SwarmCode.Daemon.Service.PersistedBackend, as: Backend
+  alias SwarmCode.Daemon.Service.QueueState
   alias SwarmCode.Domain.{Cache, Conversations, Engine, Projects, Providers, Repo}
   alias SwarmCode.Protocol.{Scope, ServiceRequest}
   alias SwarmCode.Test.LoopbackHTTP, as: HTTP
@@ -236,8 +237,17 @@ defmodule SwarmCode.Daemon.Service.Pass70QaQueueTest do
 
     send(c.backend, {:drain_queue, c.conversation.id})
 
-    assert eventually(fn -> :sys.get_state(c.backend).queue_retries > 0 end)
-    assert eventually(fn -> :sys.get_state(c.backend).queue_retries == 0 end)
+    assert eventually(fn ->
+             match?(
+               %{retries: retries} when retries in 1..8,
+               QueueState.entry(:sys.get_state(c.backend).queues, c.conversation.id)
+             )
+           end)
+
+    assert eventually(fn ->
+             QueueState.entry(:sys.get_state(c.backend).queues, c.conversation.id) == nil
+           end)
+
     assert Conversations.get(c.conversation.id).queued == ["Never starts"]
     assert Conversations.list_runs(c.conversation.id) == []
   end
