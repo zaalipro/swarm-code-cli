@@ -63,8 +63,8 @@ defmodule SwarmCode.Domain.Tools.BackgroundProcs do
         identity = {key, started_at, janitor}
 
         case Enum.find(state.reapers, fn {_ref, reaper} -> reaper.identity == identity end) do
-          {_ref, _reaper} ->
-            {:reply, :ok, state}
+          {_ref, reaper} ->
+            {:reply, {:ok, reaper.pid}, state}
 
           nil ->
             fallback = if is_nil(status), do: [os_pid], else: []
@@ -74,7 +74,7 @@ defmodule SwarmCode.Domain.Tools.BackgroundProcs do
                 ref = Process.monitor(pid)
                 :ets.select_delete(@table, [{{key, :_, started_at, janitor, :_, :_}, [], [true]}])
                 reapers = Map.put(state.reapers, ref, %{pid: pid, identity: identity})
-                {:reply, :ok, %{state | reapers: reapers}}
+                {:reply, {:ok, pid}, %{state | reapers: reapers}}
 
               :error ->
                 {:reply, {:error, :not_started}, state}
@@ -82,21 +82,29 @@ defmodule SwarmCode.Domain.Tools.BackgroundProcs do
         end
 
       [] ->
-        {:reply, :ok, state}
+        # The row is gone; a reaper that took it may still be killing.
+        case Enum.find(state.reapers, fn {_ref, reaper} -> elem(reaper.identity, 0) == key end) do
+          {_ref, reaper} -> {:reply, {:ok, reaper.pid}, state}
+          nil -> {:reply, :none, state}
+        end
     end
   end
 
+  # One clock read: the timeout branch and the timer share the same
+  # nonnegative remainder, so a pause between two reads cannot arm a negative
+  # timer and crash the server that owns the table and the reaper book.
   def handle_call({:await, deadline}, from, state) do
+    left = deadline - System.monotonic_time(:millisecond)
+
     cond do
       map_size(state.reapers) == 0 ->
         {:reply, :ok, state}
 
-      deadline - System.monotonic_time(:millisecond) <= 0 ->
+      left <= 0 ->
         {:reply, {:error, :timeout}, state}
 
       true ->
         id = make_ref()
-        left = deadline - System.monotonic_time(:millisecond)
         Process.send_after(self(), {:join_deadline, id}, left)
         {:noreply, %{state | joiners: Map.put(state.joiners, id, from)}}
     end
@@ -278,6 +286,24 @@ defmodule SwarmCode.Domain.Tools.BackgroundProcs do
   """
   @spec kill(String.t() | nil, pos_integer()) :: :ok
   def kill(run_id, os_pid) do
+    case reap(run_id, os_pid) do
+      {:ok, pid} -> await_down(pid)
+      :none -> :ok
+      # The task could not start: the row is still there, so kill it here.
+      {:error, :not_started} -> kill_direct(run_id, os_pid)
+    end
+  end
+
+  # The caller waits on the owned reaper; the server never does.
+  defp await_down(pid) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    end
+  end
+
+  defp kill_direct(run_id, os_pid) do
     key = {run_id, os_pid}
 
     targets =
@@ -324,10 +350,11 @@ defmodule SwarmCode.Domain.Tools.BackgroundProcs do
   @spec kill_async(String.t() | nil, pos_integer()) :: :ok
   def kill_async(run_id, os_pid) do
     case reap(run_id, os_pid) do
-      :ok -> :ok
-      # The task could not start: the row is still there, so the synchronous
-      # path (the same janitor and `kill_tree/1` authority) does the kill.
-      {:error, :not_started} -> kill(run_id, os_pid)
+      {:ok, _pid} -> :ok
+      :none -> :ok
+      # The task could not start: the row is still there, so the direct kill
+      # (the same janitor and `kill_tree/1` authority) does it.
+      {:error, :not_started} -> kill_direct(run_id, os_pid)
     end
   end
 

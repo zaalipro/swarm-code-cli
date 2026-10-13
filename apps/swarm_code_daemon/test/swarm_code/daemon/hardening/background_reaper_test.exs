@@ -69,6 +69,88 @@ defmodule SwarmCode.Daemon.Hardening.BackgroundReaperTest do
     assert reapers() == %{}
   end
 
+  test "kill after kill_async waits for the one reaper already running" do
+    janitor = fake_janitor()
+    run_id = run_id()
+    os_pid = fake_pid()
+    BackgroundProcs.put(run_id, [os_pid], "held", janitor)
+
+    :ok = BackgroundProcs.kill_async(run_id, os_pid)
+    assert_receive {:stop_requested, ^janitor}
+    assert BackgroundProcs.list(run_id) == []
+
+    killer = Task.async(fn -> BackgroundProcs.kill(run_id, os_pid) end)
+    assert Task.yield(killer, 100) == nil
+    assert map_size(reapers()) == 1
+    refute second_stop?(janitor)
+
+    send(janitor, :release)
+    assert Task.await(killer, 5_000) == :ok
+    assert BackgroundProcs.await_reapers(5_000) == :ok
+    assert reapers() == %{}
+    refute_receive {:stop_requested, ^janitor}, 50
+  end
+
+  test "kill_async during a synchronous kill reuses its handle" do
+    janitor = fake_janitor()
+    run_id = run_id()
+    os_pid = fake_pid()
+    BackgroundProcs.put(run_id, [os_pid], "held", janitor)
+
+    killer = Task.async(fn -> BackgroundProcs.kill(run_id, os_pid) end)
+    assert_receive {:stop_requested, ^janitor}, 5_000
+    assert BackgroundProcs.list(run_id) == []
+
+    assert :ok = BackgroundProcs.kill_async(run_id, os_pid)
+    assert map_size(reapers()) == 1
+    refute second_stop?(janitor)
+    assert Task.yield(killer, 50) == nil
+
+    send(janitor, :release)
+    assert Task.await(killer, 5_000) == :ok
+    assert BackgroundProcs.await_reapers(5_000) == :ok
+    assert reapers() == %{}
+    refute_receive {:stop_requested, ^janitor}, 50
+  end
+
+  test "kill leaves a replacement row alone when a reaper of the old row finishes" do
+    old = fake_janitor()
+    run_id = run_id()
+    os_pid = fake_pid()
+    BackgroundProcs.put(run_id, [os_pid], "old", old)
+    killer = Task.async(fn -> BackgroundProcs.kill(run_id, os_pid) end)
+    assert_receive {:stop_requested, ^old}, 5_000
+
+    Process.sleep(2)
+    [key] = BackgroundProcs.put(run_id, [os_pid], "replacement", fake_janitor())
+
+    send(old, :release)
+    assert Task.await(killer, 5_000) == :ok
+    assert [%{command: "replacement"}] = BackgroundProcs.list(run_id)
+    BackgroundProcs.delete(key)
+  end
+
+  test "deadlines at and around now never crash the server or its book" do
+    janitor = fake_janitor()
+    run_id = run_id()
+    os_pid = fake_pid()
+    BackgroundProcs.put(run_id, [os_pid], "held", janitor)
+    :ok = BackgroundProcs.kill_async(run_id, os_pid)
+    assert_receive {:stop_requested, ^janitor}
+    server = Process.whereis(BackgroundProcs)
+
+    for offset <- -50..50 do
+      deadline = System.monotonic_time(:millisecond) + offset
+      assert GenServer.call(BackgroundProcs, {:await, deadline}, 5_000) == {:error, :timeout}
+    end
+
+    assert Process.whereis(BackgroundProcs) == server
+    assert map_size(reapers()) == 1
+
+    send(janitor, :release)
+    assert BackgroundProcs.await_reapers(5_000) == :ok
+  end
+
   test "a late completion neither deletes nor signals a replacement row" do
     old = fake_janitor()
     run_id = run_id()
@@ -174,6 +256,11 @@ defmodule SwarmCode.Daemon.Hardening.BackgroundReaperTest do
 
     on_exit(fn -> Process.exit(pid, :kill) end)
     pid
+  end
+
+  defp second_stop?(janitor) do
+    {:messages, messages} = Process.info(janitor, :messages)
+    Enum.any?(messages, &match?({:stop, _, _, _}, &1))
   end
 
   # A row's pid that is never signalled: the fake janitor answers no targets.
