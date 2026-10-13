@@ -1034,7 +1034,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ Existing native/terminal_port/tests/cli020.rs and session read gate.
   - _Requirements:_ 10.1, 10.2, 10.3
 
-- [ ] 27. Define per-conversation queue state
+- [x] 27. Define per-conversation queue state
   - Files: `apps/swarm_code_daemon/lib/swarm_code/daemon/service/queue_state.ex` (new); `apps/swarm_code_daemon/test/swarm_code/daemon/hardening/queue_state_test.exs` (new)
   - Purpose: Separate the queue’s lifetime identity from the focused view without adding a process.
   - Do:
@@ -1046,7 +1046,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/daemon/service/persisted_backend.ex queue_monitors/queue_retries/queue_paused.
   - _Requirements:_ 11.1, 11.3
 
-- [ ] 28. Wire queue ownership independently of focus
+- [x] 28. Wire queue ownership independently of focus
   - Files: `apps/swarm_code_daemon/lib/swarm_code/daemon/service/persisted_backend.ex`; `apps/swarm_code_daemon/test/swarm_code/daemon/service/queue_test.exs`
   - Purpose: Let a session-owned A queue drain while the backend displays B, using the exact conversation identity.
   - Do:
@@ -1059,7 +1059,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/daemon/service/persisted_backend.ex `drain_queue/1`, `pop_and_start/2`, `switch_conversation/2`.
   - _Requirements:_ 11.1, 11.2, 11.3
 
-- [ ] 29. Regress navigation while a queue waits
+- [x] 29. Regress navigation while a queue waits
   - Files: `apps/swarm_code_daemon/test/swarm_code/daemon/service/queue_test.exs`
   - Purpose: Pin the real run/monitor/navigation lifecycle with A/B isolation and exactly-once starts.
   - Do:
