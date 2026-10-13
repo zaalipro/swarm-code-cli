@@ -727,7 +727,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/test/swarm_code/domain/tools/polish62_command_safety_test.exs and apps/swarm_code_daemon/lib/swarm_code/domain/engine/policy.ex
   - _Requirements:_ 1.1, 1.2, 1.3
 
-- [ ] 3. Close workflow struct and protocol construction
+- [x] 3. Close workflow struct and protocol construction
   - Files: `apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex`; `provenance/patches/apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex.diff`; `provenance/extracted-files.json`
   - Purpose: Remove the assumption that all Enum calls are pure when arbitrary protocol-bearing values can be forged.
   - Do:
@@ -741,7 +741,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex `check/3`, `validate_ast/1`, `check_node/2`; built-ins under apps/swarm_code_daemon/priv/workflows/
   - _Requirements:_ 2.1, 2.3
 
-- [ ] 4. Admit only explicit safe Jason decode options
+- [x] 4. Admit only explicit safe Jason decode options
   - Files: `apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex`; `provenance/patches/apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex.diff`; `provenance/extracted-files.json`
   - Purpose: Close the dynamic-option atom-interning hole without evaluating option expressions during checking.
   - Do:
@@ -754,7 +754,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/workflows/smoke.ex special Jason `check_node/2` clause at baseline 324-340.
   - _Requirements:_ 2.2, 2.3
 
-- [ ] 5. Exercise public smoke admission and built-ins
+- [x] 5. Exercise public smoke admission and built-ins
   - Files: `apps/swarm_code_daemon/test/swarm_code/daemon/hardening/workflow_smoke_test.exs` (new)
   - Purpose: Prove the repaired boundary rejects effects before evaluation and preserves the shipping workflow corpus.
   - Do:
