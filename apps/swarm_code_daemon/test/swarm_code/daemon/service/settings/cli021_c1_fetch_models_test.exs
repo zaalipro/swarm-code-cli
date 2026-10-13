@@ -22,6 +22,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Cli021C1FetchModelsTest do
   alias SwarmCodeCLI.UI.Settings.Sections.Providers, as: ProvidersPage
 
   @moduletag timeout: 120_000
+  @watch "sh"
   @renamed ["ms/glm-5.2", "ms/deepseek-v4.1flash", "nv/glm-5.3", "plain-model"]
 
   setup do
@@ -260,8 +261,11 @@ defmodule SwarmCode.Daemon.Service.Settings.Cli021C1FetchModelsTest do
           |> then(&Responses.delta(state, &1))
           |> serve(client)
           |> refresh_until(ref, client, done?)
+
+        {:service_overflow, _backend, ^ref} ->
+          flunk("the shell watch overflowed before the page showed the saved list")
       after
-        5_000 -> flunk("the page never showed the saved list")
+        15_000 -> flunk("the page never showed the saved list")
       end
     end
   end
@@ -278,8 +282,8 @@ defmodule SwarmCode.Daemon.Service.Settings.Cli021C1FetchModelsTest do
     assert {:watch, 0, _, _kind, _body} =
              GenServer.call(backend, {:service_watch, self(), "w-sh", scope, watch})
 
-    send(backend, {:service_ready, self(), "sh"})
-    "sh"
+    send(backend, {:service_ready, self(), @watch})
+    @watch
   end
 
   # Feeds the shell watch's task deltas to the reducer until no task runs.
@@ -295,6 +299,9 @@ defmodule SwarmCode.Daemon.Service.Settings.Cli021C1FetchModelsTest do
           {:ok, decoded} = DataSource.Delta.decode(delta)
           {state, effects} = Responses.delta(state, decoded.body)
           {state, effects} |> serve(client) |> settle(ref, client)
+
+        {:service_overflow, _backend, ^ref} ->
+          flunk("the shell watch overflowed: #{inspect(state.settings.tasks)}")
       after
         15_000 -> flunk("the task never ended: #{inspect(state.settings.tasks)}")
       end
@@ -319,11 +326,32 @@ defmodule SwarmCode.Daemon.Service.Settings.Cli021C1FetchModelsTest do
           Enum.reduce(requests, {state, []}, fn {kind, request}, {acc, more} ->
             assert :ok = apply(DataSource, kind, [client, request])
             delivery = await(client, request.request_id)
+            # The real data source delivers the watch's deltas and the answers
+            # through one ordered path; here the deltas come straight from the
+            # backend, so the ones already queued are applied before the answer
+            # (a snapshot stamped with the newer revision would make the gate
+            # drop them).
+            {acc, queued} = drain_deltas(acc)
             {acc, next} = Reducer.update(acc, {:data, delivery})
-            {acc, more ++ next}
+            {acc, more ++ queued ++ next}
           end)
 
         serve(state, more, client, rounds - 1)
+    end
+  end
+
+  defp drain_deltas(state, effects \\ []) do
+    receive do
+      {:service_delta, backend, @watch, delta} ->
+        send(backend, {:service_credit, self(), @watch, delta["sequence"]})
+        {:ok, decoded} = DataSource.Delta.decode(delta)
+        {state, more} = Responses.delta(state, decoded.body)
+        drain_deltas(state, effects ++ more)
+
+      {:service_overflow, _backend, @watch} ->
+        flunk("the shell watch overflowed")
+    after
+      0 -> {state, effects}
     end
   end
 

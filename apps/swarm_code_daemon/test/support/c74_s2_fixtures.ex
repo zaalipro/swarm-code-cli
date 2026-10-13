@@ -237,7 +237,7 @@ defmodule SwarmCode.Test.C74S2 do
       mcp_server!(%{
         name: "docs",
         transport: "http",
-        url: "https://mcp.example.test/mcp",
+        url: "http://127.0.0.1:9/mcp",
         headers: %{"Authorization" => "Bearer test-token-0000000000k1l2"},
         disabled_tools: ["docs_01"]
       })

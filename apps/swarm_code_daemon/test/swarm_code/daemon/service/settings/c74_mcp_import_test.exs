@@ -34,7 +34,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74MCPImportTest do
         },
         "linear" => %{
           "type" => "http",
-          "url" => "https://mcp.linear.test/mcp",
+          "url" => "http://127.0.0.1:9/linear",
           "headers" => %{"Authorization" => "Bearer " <> @linear_key}
         },
         "home" => %{

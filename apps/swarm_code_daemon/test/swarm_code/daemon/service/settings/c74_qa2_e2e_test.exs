@@ -39,7 +39,10 @@ defmodule SwarmCode.Daemon.Service.Settings.C74Qa2E2ETest do
          source_epoch: epoch}
       )
 
-    on_exit(fn -> Engine.stop_all(data.conversation.id) end)
+    on_exit(fn ->
+      Engine.stop_all(data.conversation.id)
+      for server <- [data.github, data.fs, data.docs], do: MCP.stop_client(server.id)
+    end)
 
     socket_dir = Path.join(fx.dir, "sock")
     File.mkdir_p!(socket_dir)
@@ -139,10 +142,10 @@ defmodule SwarmCode.Daemon.Service.Settings.C74Qa2E2ETest do
     state = open(c, :mcp) |> open_page(c, %Page{section: :mcp, record: {"mcp_server", id}})
 
     {state, _} =
-      Ops.run(state, [{:stage, {"mcp_server", id}, %{"url" => "https://mine.test/mcp"}}])
+      Ops.run(state, [{:stage, {"mcp_server", id}, %{"url" => "http://127.0.0.1:9/mine"}}])
 
     state = state |> verb(:restart) |> serve(c.client)
-    assert MCP.get(id).url == "https://mine.test/mcp", inspect(state.settings.status)
+    assert MCP.get(id).url == "http://127.0.0.1:9/mine", inspect(state.settings.status)
 
     state = state |> verb(:undo) |> serve(c.client)
     assert state.settings.status.text =~ "Undid: ", inspect(state.settings.status)
@@ -150,7 +153,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74Qa2E2ETest do
 
     state = state |> verb(:redo) |> serve(c.client)
     assert state.settings.status.text =~ "Redid: ", inspect(state.settings.status)
-    assert MCP.get(id).url == "https://mine.test/mcp"
+    assert MCP.get(id).url == "http://127.0.0.1:9/mine"
   end
 
   test "a provider's saved effort levels are undone and redone (the answer's record gives the undo its expected)",
