@@ -60,6 +60,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     ShellEscape,
     CommandLedger,
     PersistedProjection,
+    QueueState,
     Rewind,
     SessionConfiguration
   }
@@ -186,10 +187,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         facts_job: nil,
         facts_failed: MapSet.new(),
         file_index: nil,
-        # pass70 Q3: monitors on this conversation's running chat runs while
-        # prompts are queued behind them (monitor ref => true).
-        queue_monitors: %{},
-        queue_retries: 0,
+        # Queue ownership follows the conversation, not the selected view.
+        queues: QueueState.new(),
         # cli020 C1 (bugs-17): conversations whose queue a stop the user asked
         # for paused; `queue.resume` (or the next turn the user starts) lifts it.
         queue_paused: MapSet.new(),
@@ -424,11 +423,6 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:DOWN, monitor, :process, _, _}, %{repo_monitor: monitor} = state),
     do: {:stop, :admitted_repo_lost, state}
 
-  # pass70 Q3: the chat turn a queued prompt waits behind has ended.
-  def handle_info({:DOWN, monitor, :process, _, _}, %{queue_monitors: monitors} = state)
-      when is_map_key(monitors, monitor),
-      do: {:noreply, drain_queue(%{state | queue_monitors: Map.delete(monitors, monitor)})}
-
   # cli020 C4 (bugs-6): the ncode app opened or quit on the same database. The
   # shell watch hears it as a `desktop_running` delta; the workspace metadata
   # carries it too.
@@ -518,8 +512,22 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass71 F8: a retry of a queued prompt whose start was refused.
   def handle_info({:drain_queue, conversation_id}, state) do
     if conversation_id == state.opts[:conversation_id],
-      do: {:noreply, drain_queue(state)},
+      do: {:noreply, activate_queue(state, conversation_id)},
       else: {:noreply, state}
+  end
+
+  def handle_info({:drain_queue, conversation_id, generation}, state),
+    do: {:noreply, drain_queue(state, conversation_id, generation)}
+
+  def handle_info({:timeout, timer, {:queue_retry, conversation_id, generation}}, state) do
+    case QueueState.entry(state.queues, conversation_id) do
+      %{generation: ^generation, timer: ^timer} ->
+        queues = QueueState.put_timer(state.queues, conversation_id, nil)
+        {:noreply, drain_queue(%{state | queues: queues}, conversation_id, generation)}
+
+      _ ->
+        {:noreply, state}
+    end
   end
 
   # pass71 S2: a job crashed or was killed without answering.
@@ -531,10 +539,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: {:noreply, facts_done(state, Map.new(ids, &{&1, nil}))}
 
   def handle_info({:DOWN, monitor, :process, _, _}, state) do
-    {:noreply,
-     Enum.reduce(state.watches, state, fn {key, entry}, acc ->
-       if entry.monitor == monitor, do: unwatch(acc, key), else: acc
-     end)}
+    case QueueState.pop_monitor(state.queues, monitor) do
+      {queues, {conversation_id, generation}} ->
+        {:noreply, drain_queue(%{state | queues: queues}, conversation_id, generation)}
+
+      {_, :stale} ->
+        {:noreply,
+         Enum.reduce(state.watches, state, fn {key, entry}, acc ->
+           if entry.monitor == monitor, do: unwatch(acc, key), else: acc
+         end)}
+    end
   end
 
   # pass71 S2: the facts job of this conversation finished (a stale one was
@@ -732,6 +746,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   @impl true
   def terminate(_, state) do
+    Enum.each(state.queues.entries, fn {_id, entry} -> cancel_queue_effects(entry) end)
     cancel_jobs(state, wire_error(:source_unavailable))
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
@@ -1691,7 +1706,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # started: the terminal aimed Ctrl-C at the conversation id, and a
         # one-shot waited for that "run" to finish.
         {accepted(id, [], notice("Queue", words), "queued"),
-         state |> watch_queue(live_turns(conversation_id)) |> refresh()}
+         state |> activate_queue(conversation_id) |> refresh()}
 
       {:error, :database_busy} ->
         {refuse(id, :database_busy, text), state}
@@ -1722,22 +1737,25 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # The pids of this conversation's running turns (chat turns and
   # compactions, pass73), each monitored once. With none left (the turn
   # ended meanwhile) the queue drains at once.
-  defp watch_queue(state, []) do
-    send(self(), {:drain_queue, state.opts[:conversation_id]})
+  defp watch_queue(state, conversation_id, generation, []) do
+    send(self(), {:drain_queue, conversation_id, generation})
     state
   end
 
-  defp watch_queue(state, turns) do
+  defp watch_queue(state, conversation_id, _generation, turns) do
     pids = Enum.map(turns, &elem(&1, 1))
 
-    monitors =
-      Enum.reduce(pids, state.queue_monitors, fn pid, acc ->
-        if Enum.any?(acc, fn {_ref, watched} -> watched == pid end),
-          do: acc,
-          else: Map.put(acc, Process.monitor(pid), pid)
+    queues =
+      Enum.reduce(pids, state.queues, fn pid, acc ->
+        if Enum.any?(
+             QueueState.entry(acc, conversation_id).monitors,
+             fn {_ref, watched} -> watched == pid end
+           ),
+           do: acc,
+           else: QueueState.put_monitor(acc, conversation_id, Process.monitor(pid), pid)
       end)
 
-    %{state | queue_monitors: monitors}
+    %{state | queues: queues}
   end
 
   # Takes the queue's head (the desktop's IMMEDIATE pop, so a desktop window
@@ -1746,32 +1764,59 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # /queue) through the dispatcher. While a turn runs it waits for its end;
   # after a command that runs no turn the next item starts at once.
   defp drain_queue(state) do
-    conversation_id = state.opts[:conversation_id]
+    activate_queue(state, state.opts[:conversation_id])
+  end
 
-    turns = live_turns(conversation_id)
+  defp activate_queue(state, conversation_id) do
+    project_id = state.opts[:project_id]
 
-    cond do
-      MapSet.member?(state.queue_paused, conversation_id) ->
-        state
+    case Conversations.get(conversation_id) do
+      %{project_id: ^project_id, queued: [_ | _]} ->
+        {queues, generation} = QueueState.activate(state.queues, conversation_id)
 
-      turns != [] ->
-        watch_queue(state, turns)
+        watch_queue(
+          %{state | queues: queues},
+          conversation_id,
+          generation,
+          live_turns(conversation_id)
+        )
 
-      true ->
-        pop_and_start(state, conversation_id)
+      _ ->
+        remove_queue(state, conversation_id)
     end
   end
 
-  defp pop_and_start(state, conversation_id) do
+  defp drain_queue(state, conversation_id, generation) do
+    project_id = state.opts[:project_id]
+
+    with %{generation: ^generation, timer: nil} <-
+           QueueState.entry(state.queues, conversation_id),
+         %{project_id: ^project_id} <- Conversations.get(conversation_id) do
+      turns = live_turns(conversation_id)
+
+      cond do
+        MapSet.member?(state.queue_paused, conversation_id) -> state
+        turns != [] -> watch_queue(state, conversation_id, generation, turns)
+        true -> pop_and_start(state, conversation_id, generation)
+      end
+    else
+      _ ->
+        state
+    end
+  end
+
+  defp pop_and_start(state, conversation_id, generation) do
     case Conversations.pop_queued(conversation_id) do
       {:ok, text, conversation} ->
         case start_queued(conversation, text, approval_opts(state)) do
           {:ok, _} ->
-            drain_queue(refresh(%{state | queue_retries: 0}))
+            queues = QueueState.reset(state.queues, conversation_id)
+            state = refresh_queue(%{state | queues: queues}, conversation_id)
+            drain_queue(state, conversation_id, generation)
 
           {:error, reason} when reason in [:database_busy, :operation_failed] ->
             Conversations.set_queued(conversation, [text | conversation.queued || []])
-            retry_queue(state)
+            retry_queue(state, conversation_id, generation)
 
           {:error, reason} ->
             # It can never start (nothing to compact, an unknown command):
@@ -1780,15 +1825,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
             state
             |> toast("error", "Queue", "A queued message did not start: " <> words, nil)
-            |> refresh()
-            |> drain_queue()
+            |> refresh_queue(conversation_id)
+            |> drain_queue(conversation_id, generation)
         end
 
       {:error, _busy} ->
-        retry_queue(state)
+        retry_queue(state, conversation_id, generation)
 
       _empty ->
-        state
+        remove_queue(state, conversation_id)
     end
   end
 
@@ -1928,31 +1973,48 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # load, the engine still tearing down the turn before) put the prompt back
   # and armed nothing, so it waited for ever; it is retried a few times first.
   @queue_retry_ms 250
-  @queue_retries 8
+  defp retry_queue(state, conversation_id, generation) do
+    case QueueState.retry(state.queues, conversation_id) do
+      {queues, :retry} ->
+        timer =
+          :erlang.start_timer(
+            @queue_retry_ms,
+            self(),
+            {:queue_retry, conversation_id, generation}
+          )
 
-  defp retry_queue(%{queue_retries: n} = state) when n < @queue_retries do
-    Process.send_after(self(), {:drain_queue, state.opts[:conversation_id]}, @queue_retry_ms)
-    %{state | queue_retries: n + 1}
+        %{state | queues: QueueState.put_timer(queues, conversation_id, timer)}
+
+      {_, :exhausted} ->
+        state
+        |> remove_queue(conversation_id)
+        |> toast("error", "Queue", "The queued prompt could not start.", nil)
+    end
   end
 
-  defp retry_queue(state) do
-    toast(
-      %{state | queue_retries: 0},
-      "error",
-      "Queue",
-      "The queued prompt could not start.",
-      nil
-    )
+  defp refresh_queue(state, conversation_id) do
+    if conversation_id == state.opts[:conversation_id], do: refresh(state), else: state
+  end
+
+  defp remove_queue(state, conversation_id) do
+    with entry when not is_nil(entry) <- QueueState.entry(state.queues, conversation_id),
+         do: cancel_queue_effects(entry)
+
+    %{state | queues: QueueState.remove(state.queues, conversation_id)}
+  end
+
+  defp cancel_queue_effects(entry) do
+    Enum.each(entry.monitors, fn {ref, _} -> Process.demonitor(ref, [:flush]) end)
+    if entry.timer, do: Process.cancel_timer(entry.timer)
   end
 
   defp switch_conversation(state, id) do
     if id == state.opts[:conversation_id] do
       state
     else
-      Enum.each(state.queue_monitors, fn {ref, _pid} -> Process.demonitor(ref, [:flush]) end)
       # pass71 S2: reads of the old conversation are answered as queries
       # against it are now: not allowed.
-      state = %{cancel_jobs(state, wire_error(:not_allowed)) | queue_monitors: %{}}
+      state = cancel_jobs(state, wire_error(:not_allowed))
       Events.unsubscribe(state.opts[:conversation_id])
       Events.subscribe(id)
       # pass74 S1-10 (M3): the conversation shown now is the one kept back.
