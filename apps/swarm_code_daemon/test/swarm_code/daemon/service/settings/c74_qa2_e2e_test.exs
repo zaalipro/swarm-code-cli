@@ -23,6 +23,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74Qa2E2ETest do
   @moduletag timeout: 180_000
 
   setup do
+    C74S2.stop_new_mcp_clients_on_exit()
     fx = C74S2.repo!("c74-qa2-e2e")
     unless Process.whereis(UIState), do: start_supervised!(UIState)
     data = C74S2.appendix_a!(fx)

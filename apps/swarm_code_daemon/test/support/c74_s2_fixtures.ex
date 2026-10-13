@@ -19,6 +19,28 @@ defmodule SwarmCode.Test.C74S2 do
   def canary, do: @canary
 
   @doc """
+  Stops, at test exit, every MCP client that was not registered when this was
+  called. Needs no Repo (`MCP.stop_client/1` only uses the Registry and the
+  client supervisor), so it still works after the fixture Repo is gone and when
+  an assertion or a command raised before the test's own stops ran. Call it
+  first in `setup`; the calling module must not be `async: true`.
+  """
+  def stop_new_mcp_clients_on_exit do
+    before = registered_mcp_ids()
+
+    on_exit(fn ->
+      for id <- registered_mcp_ids(), id not in before, do: MCP.stop_client(id)
+    end)
+
+    :ok
+  end
+
+  defp registered_mcp_ids do
+    SwarmCode.Domain.Registry
+    |> Registry.select([{{{:mcp, :"$1"}, :_, :_}, [], [:"$1"]}])
+  end
+
+  @doc """
   A fresh fixture database and global directory for the calling test (or
   module, from `setup_all`). Returns `%{dir, config_dir, user_agents_dir}`.
   """

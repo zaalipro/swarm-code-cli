@@ -15,6 +15,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74MCPImportTest do
   @unset "C74_IMPORT_UNSET_#{System.unique_integer([:positive])}"
 
   setup do
+    C74S2.stop_new_mcp_clients_on_exit()
     fx = C74S2.repo!("c74-mcp-import")
     data = C74S2.appendix_a!(fx)
 

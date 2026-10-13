@@ -36,6 +36,7 @@ defmodule SwarmCode.Daemon.Service.Settings.C74AttentionTest do
   ]
 
   setup do
+    C74S2.stop_new_mcp_clients_on_exit()
     fx = C74S2.repo!("c74-attention")
     data = C74S2.appendix_a!(fx)
 
