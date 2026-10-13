@@ -1,0 +1,126 @@
+# CLI-local change to lib/swarm_code/workflows/host.ex at a93d6d8, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/workflows/host.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/workflows/host.ex
+@@ -14,6 +14,9 @@
+   alias SwarmCode.Domain.Git
+ 
+   @cap 200_000
++  # The ceiling of the ordinary `Tools.ReadFile` (its @max_size).
++  @max_read_bytes 5_000_000
++  @too_large "Error: file exceeds 5000000 bytes"
+   @max_entries 5_000
+   @max_matches 200
+   # spec 74 EFFICIENCY-50: a non-git `host(:grep)` reads at most this much of one file.
+@@ -196,9 +199,19 @@
+   defp read_file(root, path) do
+     case safe_join(root, path) do
+       {:ok, full} ->
+-        case File.read(full) do
+-          {:ok, text} -> String.slice(text, 0, @cap)
+-          {:error, reason} -> "Error: #{:file.format_error(reason)}"
++        # Classified before any open, so a FIFO or device can never block the read.
++        case File.stat(full) do
++          {:ok, %File.Stat{type: :regular, size: size}} when size > @max_read_bytes ->
++            @too_large
++
++          {:ok, %File.Stat{type: :regular}} ->
++            read_prefix(full)
++
++          {:ok, _other} ->
++            "Error: not a regular file"
++
++          {:error, reason} ->
++            "Error: #{:file.format_error(reason)}"
+         end
+ 
+       {:error, :outside_root} ->
+@@ -206,6 +219,88 @@
+     end
+   end
+ 
++  # The first @cap graphemes of the file, equal to
++  # `String.slice(String.replace_invalid(text), 0, @cap)` without holding the file:
++  # raw chunks of at most 64 KiB, an incomplete trailing scalar carried to the
++  # next chunk, and the last grapheme withheld until a later chunk (or EOF)
++  # proves it complete.
++  defp read_prefix(full) do
++    case File.open(full, [:read, :binary, :raw]) do
++      {:ok, io} ->
++        try do
++          read_chunks(io, <<>>, [], 0, 0)
++        after
++          File.close(io)
++        end
++
++      {:error, reason} ->
++        "Error: #{:file.format_error(reason)}"
++    end
++  end
++
++  defp read_chunks(io, carry, acc, count, bytes) do
++    case :file.read(io, 65_536) do
++      {:ok, chunk} ->
++        bytes = bytes + byte_size(chunk)
++
++        if bytes > @max_read_bytes do
++          @too_large
++        else
++          {complete, incomplete} = split_incomplete(carry <> chunk)
++
++          [last | rest] =
++            complete |> String.replace_invalid() |> String.graphemes() |> prepend_none()
++
++          read_graphemes(io, last, rest, incomplete, acc, count, bytes)
++        end
++
++      :eof ->
++        finish(carry, acc, count)
++
++      {:error, reason} ->
++        "Error: #{:file.format_error(reason)}"
++    end
++  end
++
++  defp prepend_none([]), do: [nil]
++  defp prepend_none(graphemes), do: Enum.reverse(graphemes)
++
++  # `last`/`rest` arrive reversed: `last` is the final (unresolved) grapheme of
++  # this chunk, or nil when the chunk held no complete scalar yet.
++  defp read_graphemes(io, nil, _rest, incomplete, acc, count, bytes),
++    do: read_chunks(io, incomplete, acc, count, bytes)
++
++  defp read_graphemes(io, last, rest, incomplete, acc, count, bytes) do
++    resolved = Enum.reverse(rest)
++    total = count + length(resolved)
++
++    if total >= @cap do
++      [acc, Enum.take(resolved, @cap - count)] |> IO.iodata_to_binary()
++    else
++      # The unresolved grapheme goes back in front of the next chunk's text.
++      read_chunks(io, last <> incomplete, [acc, resolved], total, bytes)
++    end
++  end
++
++  defp finish(carry, acc, count) do
++    tail = carry |> String.replace_invalid() |> String.graphemes() |> Enum.take(@cap - count)
++    IO.iodata_to_binary([acc, tail])
++  end
++
++  # Splits off a trailing UTF-8 sequence that is a valid but unfinished prefix.
++  defp split_incomplete(binary) do
++    size = byte_size(binary)
++
++    Enum.find_value(1..min(size, 3)//1, {binary, <<>>}, fn k ->
++      tail = binary_part(binary, size - k, k)
++
++      case :unicode.characters_to_binary(tail) do
++        {:incomplete, <<>>, ^tail} -> {binary_part(binary, 0, size - k), tail}
++        _ -> nil
++      end
++    end)
++  end
++
+   defp list_dir(root, path) do
+     with {:ok, dir} <- safe_join(root, path),
+          {:ok, entries} <- File.ls(dir) do
