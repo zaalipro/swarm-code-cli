@@ -1071,7 +1071,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/test/support/c020_backend.ex `start_backend/3`, `send_text/4`, `workspace/2`, `eventually/2`.
   - _Requirements:_ 11.1, 11.2, 11.3
 
-- [ ] 30. Keep asynchronous reap tasks owned until completion
+- [x] 30. Keep asynchronous reap tasks owned until completion
   - Files: `apps/swarm_code_daemon/lib/swarm_code/domain/tools/background_procs.ex`; `provenance/patches/apps/swarm_code_daemon/lib/swarm_code/domain/tools/background_procs.ex.diff`; `provenance/extracted-files.json`
   - Purpose: Fix the gap where a deleted visible row makes a still-running reaper invisible to shutdown.
   - Do:
@@ -1085,7 +1085,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/tools/background_procs.ex `kill_async/2`, `kill/2`, `delete/1`; apps/swarm_code_daemon/lib/swarm_code/domain/os_process.ex.
   - _Requirements:_ 12.1, 12.3
 
-- [ ] 31. Join existing reapers inside shutdown cleanup budget
+- [x] 31. Join existing reapers inside shutdown cleanup budget
   - Files: `apps/swarm_code_daemon/lib/swarm_code/daemon/shutdown.ex`; `apps/swarm_code_daemon/test/swarm_code/daemon/shutdown_test.exs`
   - Purpose: Make session halt wait for reapers already started by run teardown instead of seeing an empty table and leaving early.
   - Do:
@@ -1097,7 +1097,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/daemon/shutdown.ex `run/1`, `reap_survivors/0`, `wait_for_cleanups/1`.
   - _Requirements:_ 12.1, 12.2, 12.3
 
-- [ ] 32. Regress TERM-ignoring asynchronous background cleanup
+- [x] 32. Regress TERM-ignoring asynchronous background cleanup
   - Files: `apps/swarm_code_daemon/test/swarm_code/daemon/hardening/background_reaper_test.exs` (new)
   - Purpose: Prove the reaper join controls a real local subprocess and does not accidentally signal a replacement row.
   - Do:
