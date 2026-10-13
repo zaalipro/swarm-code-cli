@@ -186,10 +186,18 @@ defmodule SwarmCodeCLI.UI.Renderer.RatatuiPort.BusyPortTest do
   } do
     {helper, gate} = gated_helper(dir)
     {owner, runtime} = owner(helper)
-    busy!(owner, runtime)
+    scene(runtime, 1)
+    port = :sys.get_state(owner).port
+    # The helper's confirmation follows the request from the same sender, so the
+    # owner handles it before its 400 ms soft deadline can be queued, however
+    # slow the paint build is on a loaded host.
+    send(owner, {:draw, "big", 1})
+    body = <<1, 18, 1::64, 1::64, 1::64>>
+    send(owner, {port, {:data, <<byte_size(body)::32, body::binary>>}})
     # The helper confirmed the big frame, but the port still holds its bytes.
-    record(owner, <<1, 18, 1::64, 1::64, 1::64>>)
-    assert_receive {:draw_result, "big", 1, :ok}
+    assert_receive {:draw_result, "big", 1, :ok}, 3000
+    {:queue_size, queued} = :erlang.port_info(port, :queue_size)
+    assert queued > 8192
 
     scene(runtime, 2)
     send(owner, {:draw, "busy", 2})
