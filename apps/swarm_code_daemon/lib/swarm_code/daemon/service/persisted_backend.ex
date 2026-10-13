@@ -118,6 +118,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # pass70 C5 (arch F10): what happens outside this conversation.
       SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, "notifications")
       SwarmCode.Domain.MCP.subscribe()
+      :ok = SwarmCode.Domain.LLM.subscribe_rate_limits()
       # pass74 S1-10 (§3.3.9): what the settings layer shows changes here.
       SwarmCode.Domain.Settings.subscribe()
       SwarmCode.Domain.Providers.subscribe()
@@ -688,6 +689,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     {:noreply, schedule_partial(state, [run_id], ids)}
   end
 
+  # A token-only flush or a late label usage. The payload is cumulative, so
+  # it only names the run: the partial reload reads the row's totals. A run
+  # this service does not hold is admitted by its own created/full-snapshot path.
+  def handle_info({:run_totals, run_id, totals}, state)
+      when is_binary(run_id) and is_map(totals) do
+    if Map.has_key?(state.runs, run_id),
+      do: {:noreply, schedule_partial(state, [run_id], [])},
+      else: {:noreply, state}
+  end
+
   # Only a totals tick (the counters moved, nothing a card keys off did) is
   # partial; any other run update, or one that changed nothing we hold, is a
   # signal to reload everything.
@@ -761,6 +772,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     SettingsTasks.terminate(state.settings_tasks)
     cancel_facts_job(state.facts_job, state.task_supervisor)
     AgentStatus.cancel_all(state.agent_status, state.task_supervisor)
+
+    SwarmCode.Domain.PubSub.unsubscribe(
+      SwarmCode.Domain.PubSub,
+      SwarmCode.Domain.LLM.rate_limit_topic()
+    )
+
     Events.unsubscribe(state.opts[:conversation_id])
   end
 
