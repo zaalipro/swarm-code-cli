@@ -674,6 +674,8 @@ Baseline evidence was supplied by the review owner, not rerun while writing this
 
 No release/install, saved-real, browser or external-provider validation was performed. TUI-06 was source-confirmed; its attempted custom PTY probe was denied, so the spec does not claim an end-to-end reproduction. MCP tasks 9–11 were validated with 15 local stdio/HTTP queue tests plus the existing 18-test MCP settings suite; remaining tasks/tests below are future work.
 
+Task 38 results (final gate at HEAD `091727c3f206e782dd5fd75c9836fc2afee308f6`, run serially 2026-10-13, logs under `/Users/zaali/.factory/missions/40e8ae25-c055-4fc3-8393-0a7f3288a07c/validation/final-gate/`): every component exited 0 with no exceptions. `compile --warnings-as-errors` 0; `precommit` 0 (core 217 tests, daemon 1559 tests, CLI 10 properties + 3248 tests, 0 failures in each; provenance, drift, schema and Unicode steps passed); native gate 0 (78 Rust tests); socket smoke 6 tests, 0 failures; PTYs: terminal port 24 OK, demo 11 OK, live 1 OK, saved 2 OK, stall 1 OK; synthetic plain demo 0. The separate `mix test` was not repeated by user decision (2026-10-13) because `precommit` runs the same full suite.
+
 - Unit: every pure policy/parser/width/paste/helper criterion is pinned in the exact task test files. The existing width reductions tests stay; no platform-relative performance SLA is introduced.
 - Integration: use actual Engine operation approvals, real queued MCP boundary, fixture ConfigCommand foundation, real event producer broadcasts, backend A/B navigation, live detail service requests and owned local subprocess reapers. No credentials or canonical user database.
 - Per task: root compile warnings-as-errors plus one-app focused tests. For native tasks, compile plus check_terminal_port.sh runs fmt, locked Rust tests and license gate. Domain source tasks also format/sync only their exact three-file scope.
@@ -1109,7 +1111,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/test/swarm_code/daemon/shutdown_test.exs and apps/swarm_code_daemon/lib/swarm_code/domain/tools/background_procs.ex `adopt/2`, `kill_async/2`.
   - _Requirements:_ 12.1, 12.2, 12.3
 
-- [ ] 33. Subscribe the backend to the real rate-limit topic
+- [x] 33. Subscribe the backend to the real rate-limit topic
   - Files: `apps/swarm_code_daemon/lib/swarm_code/daemon/service/persisted_backend.ex`; `apps/swarm_code_daemon/test/swarm_code/daemon/hardening/events_test.exs` (new)
   - Purpose: Connect the existing handler to the producer topic that changed upstream.
   - Do:
@@ -1121,7 +1123,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/llm.ex `subscribe_rate_limits/0`; apps/swarm_code_daemon/lib/swarm_code/domain/llm/http.ex:622-645; existing backend handler at 605.
   - _Requirements:_ 13.1
 
-- [ ] 34. Refresh standalone run totals from their producer event
+- [x] 34. Refresh standalone run totals from their producer event
   - Files: `apps/swarm_code_daemon/lib/swarm_code/daemon/service/persisted_backend.ex`; `apps/swarm_code_daemon/test/swarm_code/daemon/hardening/events_test.exs` (new)
   - Purpose: Keep late label usage visible without treating cumulative totals as deltas or reloading every run.
   - Do:
@@ -1134,7 +1136,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/conversations/writes.ex `add_run_usage/4`; apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex `add_usage/3`.
   - _Requirements:_ 13.2, 13.3
 
-- [ ] 35. Resolve live tool text through existing detail paging
+- [x] 35. Resolve live tool text through existing detail paging
   - Files: `apps/swarm_code_daemon/lib/swarm_code/daemon/service/live_backend.ex`; `apps/swarm_code_daemon/test/swarm_code/daemon/service/live_backend_test.exs`
   - Purpose: Make the detail IDs already advertised by live tool rows actually resolvable.
   - Do:
@@ -1147,7 +1149,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/daemon/service/live_backend.ex:974-986,1166-1213 and existing `preview/2`.
   - _Requirements:_ 14.1, 14.2, 14.3
 
-- [ ] 36. Stream bounded workflow host text
+- [x] 36. Stream bounded workflow host text
   - Files: `apps/swarm_code_daemon/lib/swarm_code/domain/workflows/host.ex`; `provenance/patches/apps/swarm_code_daemon/lib/swarm_code/domain/workflows/host.ex.diff`; `provenance/extracted-files.json`
   - Purpose: Avoid whole-file allocation while preserving the 200,000-grapheme result cap and root confinement.
   - Do:
@@ -1161,7 +1163,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/lib/swarm_code/domain/workflows/host.ex `safe_join/2`, `valid_utf8/1`, @cap 200_000; apps/swarm_code_daemon/lib/swarm_code/domain/tools/read_file.ex @max_size 5_000_000.
   - _Requirements:_ 15.1, 15.2, 15.3
 
-- [ ] 37. Pin workflow host read ceilings and character boundaries
+- [x] 37. Pin workflow host read ceilings and character boundaries
   - Files: `apps/swarm_code_daemon/test/swarm_code/daemon/hardening/host_read_test.exs` (new)
   - Purpose: Show bounded regular-file behavior and exact grapheme-cap compatibility with real temporary files.
   - Do:
@@ -1174,7 +1176,7 @@ Execute data/logic/wiring/regression steps in order. Before each Check, run the 
   - _Leverage:_ apps/swarm_code_daemon/test/swarm_code/domain/workflows/host_test.exs; Host.run/3 and Host.valid_utf8/1.
   - _Requirements:_ 15.1, 15.2, 15.3
 
-- [ ] 38. Run the serial full contributor and terminal gate
+- [x] 38. Run the serial full contributor and terminal gate
   - Files: `.specs/01_app_hardening_spec.md`
   - Purpose: Verify the integrated change once after focused gates; only this spec’s checkboxes/results may be edited here.
   - Do:
