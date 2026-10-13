@@ -254,6 +254,105 @@ defmodule SwarmCode.Daemon.Service.LiveBackendTest do
     assert {:error, %{"code" => "not_allowed"}} = request(backend, "foreign", foreign, req)
   end
 
+  test "live tool detail pages rebuild the projected tool name, newline and output", %{
+    opts: opts,
+    scope: scope
+  } do
+    File.write!(Path.join(opts[:project_root], "wide.txt"), String.duplicate("界é😀", 1500))
+
+    server =
+      HTTP.start(fn socket, _request, turn ->
+        case turn do
+          1 ->
+            HTTP.stream(socket, [
+              HTTP.sse(%{
+                "choices" => [
+                  %{
+                    "delta" => %{
+                      "tool_calls" => [
+                        %{
+                          "index" => 0,
+                          "id" => "read-1",
+                          "type" => "function",
+                          "function" => %{
+                            "name" => "read_file",
+                            "arguments" => Jason.encode!(%{"path" => "wide.txt"})
+                          }
+                        }
+                      ]
+                    },
+                    "finish_reason" => "tool_calls"
+                  }
+                ]
+              })
+            ])
+
+          _ ->
+            HTTP.stream(socket, [
+              HTTP.sse(%{
+                "choices" => [
+                  %{"index" => 0, "delta" => %{"content" => "done"}, "finish_reason" => "stop"}
+                ]
+              })
+            ])
+        end
+      end)
+
+    on_exit(fn -> HTTP.stop(server) end)
+
+    {:ok, provider} =
+      Provider.new(
+        name: "tool",
+        base_url: server.url,
+        api_key: "secret",
+        default_model: "fixture"
+      )
+
+    {:ok, tool_backend} =
+      start_supervised(
+        Supervisor.child_spec(
+          {LiveBackend, Keyword.put(opts, :provider, provider) |> Keyword.put(:approval, :auto)},
+          id: :tool_backend
+        )
+      )
+
+    {:ok, %{"value" => %{"identifiers" => [run_id]}}} =
+      request(tool_backend, "tool-run", scope, send_request("read it"))
+
+    wait_done(tool_backend, scope, run_id)
+    [tool] = :sys.get_state(tool_backend).runs[run_id].tools
+    expected = tool.tool <> "\n" <> tool.text
+    assert byte_size(tool.text) > 2048
+
+    {:ok, %{"value" => %{"items" => items}}} = query(tool_backend, scope, "transcript")
+    item = Enum.find(items, &(&1["id"] == tool.id))
+    assert %{"id" => ref, "total_bytes" => total} = item["detail_ref"]
+    assert ref == tool.id <> ":text"
+    assert total == byte_size(expected)
+
+    pages = fetch_pages(tool_backend, scope, ref, 0, 7, [])
+    assert Enum.all?(pages, &(String.valid?(&1) and byte_size(&1) <= 7))
+    assert IO.iodata_to_binary(pages) == expected
+
+    assert IO.iodata_to_binary(fetch_pages(tool_backend, scope, ref, 0, 65_536, [])) == expected
+
+    {first_multibyte, _} = :binary.match(expected, "界")
+    split = first_multibyte + 1
+
+    assert {:ok, %{"value" => %{"state" => "error", "error" => error}}} =
+             request(tool_backend, "split", scope, detail(ref, split, 4))
+
+    assert error == %{"code" => "invalid_request"} or error["code"] == "invalid_request"
+
+    assert {:ok, %{"value" => %{"state" => "error", "error" => ^error}}} =
+             request(tool_backend, "unknown", scope, detail(tool.id <> ":other", 0, 4))
+
+    foreign = %{scope | id: "55555555-5555-4555-8555-555555555555"}
+
+    assert {:error, %{"code" => "not_allowed"}} =
+             request(tool_backend, "foreign-tool", foreign, detail(ref, 0, 4))
+  end
+
   test "request capacity rejects before a run can start", %{backend: backend, scope: scope} do
     :sys.replace_state(backend, fn state ->
       %{state | requests: Map.new(1..4096, &{Integer.to_string(&1), {:occupied, :occupied}})}
@@ -377,6 +476,21 @@ defmodule SwarmCode.Daemon.Service.LiveBackendTest do
     assert agent["started_at"] == run["started_at"]
     assert agent["finished_at"] == run["finished_at"]
     assert agent["error"] == nil
+  end
+
+  defp detail(ref, offset, bytes),
+    do: %ServiceRequest{
+      operation: :detail,
+      params: %{"detail_ref" => ref, "offset" => offset, "bytes" => bytes},
+      timeout_ms: 5_000
+    }
+
+  defp fetch_pages(backend, scope, ref, offset, bytes, acc) do
+    assert {:ok, %{"value" => %{"state" => "idle", "text" => text, "next_offset" => next}}} =
+             request(backend, "page-#{bytes}-#{offset}", scope, detail(ref, offset, bytes))
+
+    acc = acc ++ [text]
+    if next, do: fetch_pages(backend, scope, ref, next, bytes, acc), else: acc
   end
 
   defp request(backend, id, scope, req),

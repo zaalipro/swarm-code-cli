@@ -1177,7 +1177,9 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
             {run.user_id <> ":text", run.prompt},
             {run.node_id <> ":text", run.text},
             {run.node_id <> ":reasoning", run.reasoning}
-          ] ++ Enum.map(run.steers, &{&1.id <> ":text", &1.text})
+          ] ++
+            Enum.map(run.steers, &{&1.id <> ":text", &1.text}) ++
+            Enum.map(run.tools, &{&1.id <> ":text", &1.tool <> "\n" <> &1.text})
 
         Enum.find_value(values, fn {key, text} -> if key == ref, do: text end)
       end)
