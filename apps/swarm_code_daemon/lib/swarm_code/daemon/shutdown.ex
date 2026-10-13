@@ -68,11 +68,9 @@ defmodule SwarmCode.Daemon.Shutdown do
     reaped = step(:reap_background_commands, &reap_survivors/0, 0)
     step(:wait_for_flush, fn -> wait_for_flush(Keyword.get(opts, :flush_ms, @flush_ms)) end, :ok)
 
-    step(
-      :wait_for_cleanups,
-      fn -> wait_for_cleanups(Keyword.get(opts, :cleanup_ms, @cleanup_ms)) end,
-      :ok
-    )
+    deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :cleanup_ms, @cleanup_ms)
+    step(:await_reapers, fn -> await_reapers(deadline) end, :ok)
+    step(:wait_for_cleanups, fn -> wait_for_cleanups(remaining(deadline)) end, :ok)
 
     if Keyword.get(opts, :teardown, true),
       do: teardown(Keyword.get(opts, :teardown_ms, @teardown_ms))
@@ -186,6 +184,20 @@ defmodule SwarmCode.Daemon.Shutdown do
 
     length(survivors)
   end
+
+  # Kills admitted asynchronously (`kill_async/2`) have no visible row but are
+  # still running; the quit joins them inside the cleanup budget.
+  defp await_reapers(deadline) do
+    case BackgroundProcs.await_reapers(remaining(deadline)) do
+      :ok ->
+        :ok
+
+      {:error, :timeout} ->
+        Logger.warning("background reapers did not finish before shutdown deadline")
+    end
+  end
+
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   defp wait_for_flush(left) when left <= 0, do: :ok
 

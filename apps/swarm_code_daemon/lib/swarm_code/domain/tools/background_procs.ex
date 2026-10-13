@@ -46,7 +46,124 @@ defmodule SwarmCode.Domain.Tools.BackgroundProcs do
   @impl true
   def init(:ok) do
     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
-    {:ok, %{}}
+    {:ok, %{reapers: %{}, joiners: %{}}}
+  end
+
+  # `reapers` maps a task's monitor ref to `%{pid, identity}`: the asynchronous
+  # kills that are still running, owned here even after their visible row is
+  # gone. `joiners` maps a join id to `{from, deadline}` for `await_reapers/1`;
+  # the server never waits on a task, it only answers when the book empties or
+  # a joiner's own deadline passes.
+  @impl true
+  def handle_call({:reap, run_id, os_pid}, _from, state) do
+    key = {run_id, os_pid}
+
+    case :ets.lookup(@table, key) do
+      [{^key, _command, started_at, janitor, status, _conv}] ->
+        identity = {key, started_at, janitor}
+
+        case Enum.find(state.reapers, fn {_ref, reaper} -> reaper.identity == identity end) do
+          {_ref, _reaper} ->
+            {:reply, :ok, state}
+
+          nil ->
+            fallback = if is_nil(status), do: [os_pid], else: []
+
+            case start_reaper(janitor, os_pid, fallback) do
+              {:ok, pid} ->
+                ref = Process.monitor(pid)
+                :ets.select_delete(@table, [{{key, :_, started_at, janitor, :_, :_}, [], [true]}])
+                reapers = Map.put(state.reapers, ref, %{pid: pid, identity: identity})
+                {:reply, :ok, %{state | reapers: reapers}}
+
+              :error ->
+                {:reply, {:error, :not_started}, state}
+            end
+        end
+
+      [] ->
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:await, deadline}, from, state) do
+    cond do
+      map_size(state.reapers) == 0 ->
+        {:reply, :ok, state}
+
+      deadline - System.monotonic_time(:millisecond) <= 0 ->
+        {:reply, {:error, :timeout}, state}
+
+      true ->
+        id = make_ref()
+        left = deadline - System.monotonic_time(:millisecond)
+        Process.send_after(self(), {:join_deadline, id}, left)
+        {:noreply, %{state | joiners: Map.put(state.joiners, id, from)}}
+    end
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    case Map.pop(state.reapers, ref) do
+      {nil, _reapers} ->
+        {:noreply, state}
+
+      {_reaper, reapers} ->
+        state = %{state | reapers: reapers}
+
+        if map_size(reapers) == 0 do
+          Enum.each(state.joiners, fn {_id, from} -> GenServer.reply(from, :ok) end)
+          {:noreply, %{state | joiners: %{}}}
+        else
+          {:noreply, state}
+        end
+    end
+  end
+
+  def handle_info({:join_deadline, id}, state) do
+    case Map.pop(state.joiners, id) do
+      {nil, _joiners} ->
+        {:noreply, state}
+
+      {from, joiners} ->
+        GenServer.reply(from, {:error, :timeout})
+        {:noreply, %{state | joiners: joiners}}
+    end
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
+
+  # The external kill only: the janitor names the targets, `kill_tree/1`
+  # signals them. It never touches the table, so a late finish cannot delete or
+  # signal a row that replaced this one.
+  defp start_reaper(janitor, os_pid, fallback) do
+    case Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
+           targets =
+             case janitor && call(janitor, {:stop, os_pid}) do
+               {:ok, targets} -> targets
+               _none_or_unknown -> fallback
+             end
+
+           Enum.each(targets, &SwarmCode.Domain.OSProcess.kill_tree/1)
+         end) do
+      {:ok, pid} -> {:ok, pid}
+      _error -> :error
+    end
+  catch
+    :exit, _reason -> :error
+  end
+
+  @doc """
+  Waits until every asynchronous kill `kill_async/2` admitted has finished, or
+  `timeout_ms` has passed (a monotonic deadline; `0` does not wait). A timeout
+  does not stop or revoke anything: the reapers keep running and stay owned.
+  """
+  @spec await_reapers(non_neg_integer()) :: :ok | {:error, :timeout}
+  def await_reapers(timeout_ms) when is_integer(timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + max(timeout_ms, 0)
+    GenServer.call(__MODULE__, {:await, deadline}, :infinity)
+  catch
+    :exit, _no_server -> :ok
   end
 
   @doc """
@@ -200,28 +317,24 @@ defmodule SwarmCode.Domain.Tools.BackgroundProcs do
   The row goes at once — the strip empties on the next render and `list/1`
   stops offering it — and the janitor request plus `OSProcess.kill_tree/1`
   (a TERM, up to 500 ms of polls, then KILL) run in a `TaskSupervisor` child
-  that owns only the external kill. Quit keeps the synchronous `kill/2`: it
-  must finish before `System.halt`.
+  that owns only the external kill. The server registers that task and the
+  exact row before the row goes, so `await_reapers/1` still sees it. Quit
+  keeps the synchronous `kill/2` for visible rows and joins the rest.
   """
   @spec kill_async(String.t() | nil, pos_integer()) :: :ok
   def kill_async(run_id, os_pid) do
-    key = {run_id, os_pid}
-    janitor = janitor_pid(key)
-    fallback = if running?(key), do: [os_pid], else: []
-    delete(key)
+    case reap(run_id, os_pid) do
+      :ok -> :ok
+      # The task could not start: the row is still there, so the synchronous
+      # path (the same janitor and `kill_tree/1` authority) does the kill.
+      {:error, :not_started} -> kill(run_id, os_pid)
+    end
+  end
 
-    {:ok, _pid} =
-      Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
-        targets =
-          case janitor && call(janitor, {:stop, os_pid}) do
-            {:ok, targets} -> targets
-            _none_or_unknown -> fallback
-          end
-
-        Enum.each(targets, &SwarmCode.Domain.OSProcess.kill_tree/1)
-      end)
-
-    :ok
+  defp reap(run_id, os_pid) do
+    GenServer.call(__MODULE__, {:reap, run_id, os_pid})
+  catch
+    :exit, _reason -> {:error, :not_started}
   end
 
   @doc "`kill_all/1` with `kill_async/2` per row. Returns how many it signalled."

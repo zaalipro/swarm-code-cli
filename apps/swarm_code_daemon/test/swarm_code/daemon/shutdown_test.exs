@@ -172,6 +172,37 @@ defmodule SwarmCode.Daemon.ShutdownTest do
     refute self() in monitored_by(cleanup)
   end
 
+  @tag :capture_log
+  test "a zero cleanup budget does not wait for an owned reaper" do
+    test = self()
+    run_id = "shutdown-reaper-#{System.unique_integer([:positive])}"
+
+    janitor =
+      spawn(fn ->
+        receive do
+          {:stop, _os_pid, from, ref} ->
+            send(test, :stop_requested)
+
+            receive do
+              :release -> send(from, {ref, []})
+            end
+        end
+      end)
+
+    BackgroundProcs.put(run_id, [4_100_000 + System.unique_integer([:positive])], "held", janitor)
+    [%{os_pid: os_pid}] = BackgroundProcs.list(run_id)
+    :ok = BackgroundProcs.kill_async(run_id, os_pid)
+    assert_receive :stop_requested
+
+    {micros, _} =
+      :timer.tc(fn -> Shutdown.run(teardown: false, flush_ms: 0, cleanup_ms: 0) end)
+
+    assert micros < 2_000_000
+    assert BackgroundProcs.await_reapers(0) == {:error, :timeout}
+    send(janitor, :release)
+    assert BackgroundProcs.await_reapers(5_000) == :ok
+  end
+
   defp monitored_by(pid) do
     case Process.info(pid, :monitored_by) do
       {:monitored_by, pids} -> pids
