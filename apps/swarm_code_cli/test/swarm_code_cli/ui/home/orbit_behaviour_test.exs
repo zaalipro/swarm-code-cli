@@ -486,4 +486,13 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
       assert edge.home.selected == 1
     end
   end
+
+  describe "orbit int fixes" do
+    test "picking the conversation Home sits on from the switcher closes Home (UI-U-7)" do
+      state = ready()
+      {state, _} = step(state, {:open_conversation, conversation_id()})
+      assert state.home == nil
+      assert state.destination == {:conversation, conversation_id()}
+    end
+  end
 end

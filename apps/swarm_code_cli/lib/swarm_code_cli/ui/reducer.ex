@@ -784,7 +784,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, closed} = close_switcher(state)
 
     if state.destination == {:conversation, id} do
-      {state, closed}
+      # orbit int (UI-U-7): the pick over Home names the conversation Home sits
+      # on, so no destination changes (D20) and nothing else would close it.
+      {state, left} = Reducer.Home.close(state, :opened)
+      {state, closed ++ left}
     else
       {state, sent} = service_request(state, {:conversation_open, id}, {:conversation, :open})
       {state, closed ++ sent}
