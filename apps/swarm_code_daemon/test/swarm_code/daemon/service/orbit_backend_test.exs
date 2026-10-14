@@ -78,6 +78,14 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
     conversation
   end
 
+  # The overview leaves out a conversation nothing was said in (D11), so the
+  # overview tests use conversations that have one prompt.
+  defp used!(project, title, updated_at) do
+    conversation = conversation!(project, title, updated_at)
+    say!(conversation, "work on #{title}")
+    conversation
+  end
+
   defp say!(conversation, text, attrs \\ %{}) do
     {:ok, message} =
       Conversations.create_message(
@@ -249,8 +257,8 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
 
   describe "S4 home.overview and conversation.search" do
     setup c do
-      older = conversation!(c.project, "Older work", ~U[2026-10-01 00:00:01.000000Z])
-      current = conversation!(c.project, "Current work", ~U[2026-10-01 00:00:02.000000Z])
+      older = used!(c.project, "Older work", ~U[2026-10-01 00:00:01.000000Z])
+      current = used!(c.project, "Current work", ~U[2026-10-01 00:00:02.000000Z])
       %{older: older, current: current, backend: start_backend!(c, current)}
     end
 
@@ -307,7 +315,7 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
     test "a small byte_limit drops conversations from the back; none left is capacity_exceeded",
          c do
       for i <- 1..20 do
-        conversation!(
+        used!(
           c.project,
           String.duplicate("t", 150) <> "#{i}",
           DateTime.add(~U[2026-10-02 00:00:00.000000Z], i)

@@ -87,6 +87,17 @@ defmodule SwarmCode.Daemon.Service.OrbitHomeOverviewTest do
   defp conversation!(project, title, updated_at, opts \\ []) do
     {:ok, conversation} = Conversations.create(project.id)
 
+    # The overview leaves out a conversation nothing was said in (D11), so a
+    # fixture conversation says one thing unless the test wants an empty one.
+    unless opts[:empty] do
+      {:ok, _} =
+        Conversations.create_message(%{
+          conversation_id: conversation.id,
+          role: "user",
+          content: "work on #{title}"
+        })
+    end
+
     changes =
       [title: title, updated_at: updated_at] ++
         Keyword.take(opts, [:research_id, :scheduled_task_id])
@@ -230,6 +241,40 @@ defmodule SwarmCode.Daemon.Service.OrbitHomeOverviewTest do
     small = build(project, %{projects: 2, per_project: 1})
     assert [%{"title" => "work 15"}] = project_body(small, project)["conversations"]
     assert project_body(small, project)["conversation_count"] == 15
+  end
+
+  test "an empty conversation is not on the map: no count, no row (D11, first run)", c do
+    # What `SessionSelection.open(root, :latest)` leaves in a project nothing
+    # was said in: one conversation with no run and no user message.
+    fresh = project!(c, "fresh", last_opened_at: ~U[2026-10-02 00:00:00.000000Z])
+    conversation!(fresh, "New conversation", ~U[2026-10-02 00:00:01.000000Z], empty: true)
+
+    used = project!(c, "used", last_opened_at: ~U[2026-10-01 00:00:00.000000Z])
+    conversation!(used, "real work", ~U[2026-10-01 00:00:01.000000Z])
+    conversation!(used, "New conversation", ~U[2026-10-01 00:00:02.000000Z], empty: true)
+
+    # A conversation with only a run (no user message row) is not empty, and a
+    # superseded (edited) prompt does not count as one.
+    ran = conversation!(used, "ran", ~U[2026-10-01 00:00:03.000000Z], empty: true)
+    run!(ran, %{status: "done"})
+
+    edited = conversation!(used, "edited", ~U[2026-10-01 00:00:04.000000Z], empty: true)
+
+    {:ok, said} =
+      Conversations.create_message(%{conversation_id: edited.id, role: "user", content: "old"})
+
+    Repo.update_all(from(m in Conversations.Message, where: m.id == ^said.id),
+      set: [superseded_at: ~U[2026-10-01 00:00:05.000000Z]]
+    )
+
+    body = build(fresh)
+
+    assert {0, 0} = counts(project_body(body, fresh))
+    assert project_body(body, fresh)["conversations"] == []
+
+    row = project_body(body, used)
+    assert row["conversation_count"] == 2
+    assert Enum.map(row["conversations"], & &1["title"]) == ["ran", "real work"]
   end
 
   test "the window is per project", c do

@@ -16,7 +16,7 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
   import Ecto.Query
 
   alias SwarmCode.Daemon.Service.Settings.Usage
-  alias SwarmCode.Domain.Conversations.{Conversation, Node, Run}
+  alias SwarmCode.Domain.Conversations.{Conversation, Message, Node, Run}
   alias SwarmCode.Domain.Engine.Questions
   alias SwarmCode.Domain.Projects.Project
   alias SwarmCode.Domain.{Repo, Scheduled}
@@ -106,27 +106,46 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
     )
   end
 
+  # The conversations the user made themselves: not research, not a scheduled
+  # task's, and not an empty one (D11: no run and no live user message, the
+  # one `SessionSelection.open/2` gives a project nothing was said in; it is
+  # the client's `Home.empty?/1`). `query` names its conversation binding `:c`.
+  defp own_conversations(query) do
+    from(c in query,
+      where:
+        is_nil(c.research_id) and is_nil(c.scheduled_task_id) and
+          (exists(from(r in Run, where: r.conversation_id == parent_as(:c).id, select: 1)) or
+             exists(
+               from(m in Message,
+                 where:
+                   m.conversation_id == parent_as(:c).id and m.role == "user" and
+                     is_nil(m.superseded_at),
+                 select: 1
+               )
+             ))
+    )
+  end
+
   # The newest `per_project` conversations of each project, in one window query
-  # (research and scheduled-task conversations are not the user's own).
+  # (see `own_conversation/0` for which conversations count).
   defp conversation_rows([], _per_project), do: []
 
   defp conversation_rows(ids, per_project) do
     ranked =
-      from(c in Conversation,
-        where: c.project_id in ^ids and is_nil(c.research_id) and is_nil(c.scheduled_task_id),
-        select: %{
-          id: c.id,
-          project_id: c.project_id,
-          title: fragment("substr(coalesce(?, ''), 1, 256)", c.title),
-          updated_at: c.updated_at,
-          last_seen_at: c.last_seen_at,
-          rank:
-            over(row_number(),
-              partition_by: c.project_id,
-              order_by: [desc: c.updated_at, desc: c.id]
-            )
-        }
-      )
+      from(c in Conversation, as: :c, where: c.project_id in ^ids)
+      |> own_conversations()
+      |> select([c], %{
+        id: c.id,
+        project_id: c.project_id,
+        title: fragment("substr(coalesce(?, ''), 1, 256)", c.title),
+        updated_at: c.updated_at,
+        last_seen_at: c.last_seen_at,
+        rank:
+          over(row_number(),
+            partition_by: c.project_id,
+            order_by: [desc: c.updated_at, desc: c.id]
+          )
+      })
 
     Repo.all(
       from(r in subquery(ranked),
@@ -139,13 +158,11 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
   defp conversation_counts([]), do: %{}
 
   defp conversation_counts(ids) do
-    Repo.all(
-      from(c in Conversation,
-        where: c.project_id in ^ids and is_nil(c.research_id) and is_nil(c.scheduled_task_id),
-        group_by: c.project_id,
-        select: {c.project_id, count(c.id)}
-      )
-    )
+    from(c in Conversation, as: :c, where: c.project_id in ^ids)
+    |> own_conversations()
+    |> group_by([c], c.project_id)
+    |> select([c], {c.project_id, count(c.id)})
+    |> Repo.all()
     |> Map.new()
   end
 
