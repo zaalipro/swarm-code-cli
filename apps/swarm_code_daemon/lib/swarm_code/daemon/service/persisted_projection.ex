@@ -738,30 +738,80 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
         )
 
       {page, rest} = Enum.split(rows, limit)
-      ids = Enum.map(page, & &1.id)
 
-      stats =
-        if ids == [],
-          do: %{},
-          else:
-            Repo.all(
-              from(r in Run,
-                where: r.conversation_id in ^ids,
-                group_by: r.conversation_id,
-                select: {r.conversation_id, count(r.id), max(r.finished_at)}
-              )
-            )
-            |> Map.new(fn {id, count, finished} -> {id, {count, finished}} end)
-
-      prompts = last_prompts(ids)
-
-      {:ok,
-       Enum.map(page, fn row ->
-         row
-         |> Map.put(:stats, Map.get(stats, row.id, {0, nil}))
-         |> Map.put(:last_prompt, Map.get(prompts, row.id))
-       end), rest != []}
+      {:ok, decorate(page), rest != []}
     end
+  end
+
+  @doc """
+  orbit S3: the project's conversations whose title, or any user message that
+  is not superseded, contains `query` (ASCII case-insensitive; `%`, `_` and `\\`
+  match themselves), newest first, at most `limit`. Research conversations stay
+  out, as in `conversations/3`, and the rows have the same shape. There is no
+  next page: the caller asks for what it wants to see.
+  """
+  @spec conversation_search(String.t(), String.t(), pos_integer()) :: {:ok, [map()], false}
+  def conversation_search(project_id, query, limit) do
+    pattern = "%" <> escape_like(String.downcase(query, :ascii)) <> "%"
+
+    rows =
+      Repo.all(
+        from(c in Conversation,
+          as: :c,
+          where:
+            c.project_id == ^project_id and is_nil(c.research_id) and
+              (fragment("lower(coalesce(?, '')) LIKE ? ESCAPE '\\'", c.title, ^pattern) or
+                 exists(
+                   from(m in Message,
+                     where:
+                       m.conversation_id == parent_as(:c).id and m.role == "user" and
+                         is_nil(m.superseded_at) and
+                         fragment("lower(?) LIKE ? ESCAPE '\\'", m.content, ^pattern),
+                     select: 1
+                   )
+                 )),
+          order_by: [desc: c.updated_at, desc: c.id],
+          limit: ^limit,
+          select: %{
+            id: c.id,
+            title: fragment("substr(coalesce(?, ''), 1, 256)", c.title),
+            inserted_at: c.inserted_at,
+            updated_at: c.updated_at,
+            last_seen_at: c.last_seen_at
+          }
+        )
+      )
+
+    {:ok, decorate(rows), false}
+  end
+
+  defp escape_like(text), do: String.replace(text, ["\\", "%", "_"], &("\\" <> &1))
+
+  # Each page row with its run count and newest finish (`:stats`) and the first
+  # line of its newest prompt (`:last_prompt`), in two queries for the page.
+  defp decorate(page) do
+    ids = Enum.map(page, & &1.id)
+
+    stats =
+      if ids == [],
+        do: %{},
+        else:
+          Repo.all(
+            from(r in Run,
+              where: r.conversation_id in ^ids,
+              group_by: r.conversation_id,
+              select: {r.conversation_id, count(r.id), max(r.finished_at)}
+            )
+          )
+          |> Map.new(fn {id, count, finished} -> {id, {count, finished}} end)
+
+    prompts = last_prompts(ids)
+
+    Enum.map(page, fn row ->
+      row
+      |> Map.put(:stats, Map.get(stats, row.id, {0, nil}))
+      |> Map.put(:last_prompt, Map.get(prompts, row.id))
+    end)
   end
 
   # cli020 C19 (ux-live-24): per conversation of the page, the first line of
