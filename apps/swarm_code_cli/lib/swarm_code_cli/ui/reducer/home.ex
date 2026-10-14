@@ -651,15 +651,27 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   # moves or Home is opened again. An answer older than the newest push is
   # applied and asked for once more; `lag_floor` stops a daemon that cannot
   # catch up from being asked in a loop.
+  #
+  # orbit int (lane S issue 1): an error never replaces an overview already on
+  # screen. `capacity_exceeded` is both "the body does not fit its byte limit"
+  # (S's `fit_home/2`, `conversation.list`'s code) and "the request window is
+  # full" (the 33rd request, the client's own admission), and a deadline or a
+  # closed source is as passing: the last good board stays, and the next push
+  # asks again.
   defp overview_response(%{home: home} = state, %DTO.HomeOverview{} = body) do
     held = state.read_model.home_revision
     ready? = body.state == :ready
     behind? = not ready? or body.revision < held
     retry? = ready? and behind? and home.lag_floor < held
 
+    shown =
+      if ready? or not match?(%DTO.HomeOverview{state: :ready}, home.overview),
+        do: body,
+        else: home.overview
+
     home = %{
       home
-      | overview: body,
+      | overview: shown,
         overview_request: nil,
         seen_revision:
           if(ready?, do: max(home.seen_revision, body.revision), else: home.seen_revision),

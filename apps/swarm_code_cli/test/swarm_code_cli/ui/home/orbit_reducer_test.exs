@@ -224,6 +224,35 @@ defmodule SwarmCodeCLI.UI.Home.OrbitReducerTest do
       assert state.read_model.home_revision == 4
     end
 
+    # orbit int (lane S issue 1): `capacity_exceeded` is the daemon's too-large
+    # code and also a full request window; neither blanks a board already shown.
+    test "an error after a ready overview keeps the board; the next push asks again" do
+      {state, effects} = step(open_state(), :boot)
+      {state, _} = answer_overview(state, overview_request(effects))
+      shown = state.home.overview
+      assert %DTO.HomeOverview{state: :ready, revision: 3} = shown
+
+      {state, effects} = stale(state, 4)
+      request = overview_request(effects)
+
+      error = %DTO.HomeOverview{
+        request_id: request.request_id,
+        state: :error,
+        error: SwarmCodeCLI.UI.DataSource.AdmissionError.new(:capacity_exceeded)
+      }
+
+      {state, effects} = respond(state, request, error)
+      assert effects == []
+      assert state.home.overview == shown
+      assert state.home.overview_request == nil
+
+      # What the projector reads: the board, not the placeholders.
+      assert Home.View.overview(state) == shown
+
+      {_state, effects} = stale(state, 5)
+      assert [_] = queries(effects, :home_overview)
+    end
+
     test "a request the reducer dropped is forgotten and asked again" do
       {state, effects} = step(open_state(), :boot)
       request = overview_request(effects)
