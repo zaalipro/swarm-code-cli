@@ -11,8 +11,8 @@ ncode development TUI — SAVED · DEV
 Usage: scripts/dev/run_saved_session.sh
 
 Runs the same session as the installed ncode on the canonical database.
-Resumes the latest saved conversation for SWARM_PROJECT_ROOT by default.
-Set SWARM_CONVERSATION to latest, new, or an existing conversation UUID.
+Opens Home over the latest saved conversation for SWARM_PROJECT_ROOT by default.
+Set SWARM_CONVERSATION to latest (resume, no Home), new, or an existing conversation UUID.
 The conversation's own provider and model (or the ncode default) are used;
 SWARM_MODEL_OVERRIDE=<model|provider/model> overrides them for this session
 only. SWARM_* settings create a provider only when none exists yet.

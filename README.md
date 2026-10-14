@@ -87,9 +87,10 @@ object per output record:
 scripts/dev/run_plain_session.sh --ndjson < commands.txt
 ```
 
-`run_saved_session.sh` resumes the latest conversation for the selected project
-and keeps transcripts across detach/restart. Set `SWARM_CONVERSATION=new` for a
-new conversation, `latest` to resume, or an existing conversation UUID. The launcher
+`run_saved_session.sh` opens Home over the latest conversation for the selected
+project (Esc continues it) and keeps transcripts across detach/restart. Set
+`SWARM_CONVERSATION=new` for a new conversation, `latest` to resume without Home,
+or an existing conversation UUID. The launcher
 creates or migrates the database through guarded startup and refuses an active
 desktop or incompatible database. On macOS, quit the desktop before starting
 saved mode and exit the CLI before reopening the desktop; they share storage.
@@ -195,8 +196,9 @@ ncode [DIR] [--new | --continue | --resume ID] [--model M]
       [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
 ```
 
-- `--new` starts a conversation, `--continue` (`-c`, the default) opens the
-  latest, `--resume ID` a given one; `/resume` in the TUI picks one by title.
+- With no flag ncode opens Home over the latest conversation (Esc continues
+  it). `--new` starts a conversation, `--continue` (`-c`) opens the latest and
+  skips Home, `--resume ID` a given one; `/resume` in the TUI picks one by title.
 - `--model M` (or `provider/model`) answers with another model for this session
   only; nothing is written to the providers or the conversation.
 - `-p PROMPT` runs one turn in a new conversation (add `-c` or `--resume ID` to

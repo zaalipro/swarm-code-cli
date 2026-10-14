@@ -511,7 +511,8 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
                  request(backend, "live", global(), request)
       end
 
-      assert Process.alive?(backend)
+      # the refused requests left the backend answering
+      assert %{} = :sys.get_state(backend)
     end
 
     test "home is a default capability and the handshake lists it" do
