@@ -9,7 +9,7 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
   import SwarmCodeCLI.OrbitHelpers
 
   alias SwarmCodeCLI.Cli020EHelpers, as: H
-  alias SwarmCodeCLI.UI.{Drafts, Editor, Home, Input, Keymap, Reducer, SlashPalette}
+  alias SwarmCodeCLI.UI.{Drafts, Editor, Home, Input, Keymap, Reducer, SlashPalette, State}
   alias SwarmCodeCLI.UI.DataSource.DTO
 
   @new_id "9f9f9f9f-0000-4000-8000-000000000001"
@@ -493,6 +493,45 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
       {state, _} = step(state, {:open_conversation, conversation_id()})
       assert state.home == nil
       assert state.destination == {:conversation, conversation_id()}
+    end
+
+    test "Alt-O right after a send that waits for the workspace neither drops nor fires it (UI-U-8)" do
+      state = ready() |> workspace_ready() |> typed("fix the flaky test")
+      {state, _} = step(state, {:home, :enter})
+      {state, _} = step(state, {:navigate, {:conversation, @new_id}})
+      assert state.home == nil
+      assert state.deferred_send == {{@new_id, :main}, "fix the flaky test"}
+
+      {state, _} = step(state, :open_home)
+      assert state.home != nil
+      assert state.deferred_send == {{@new_id, :main}, "fix the flaky test"}
+      refute match?({:command_feedback, "Not sent" <> _}, state.notice)
+
+      # the workspace loads under Home: the text is sent from the conversation's
+      # draft, and Home stays open over it
+      {state, effects} = workspace_delivered(state)
+      assert state.deferred_send == nil
+      assert state.home != nil
+
+      assert [%{kind: {:dispatch, :send, "fix the flaky test", :main, []}}] =
+               commands(effects, :dispatch)
+
+      assert home_draft(state) == ""
+    end
+
+    test "a notice Home's own step set fades, and the deferred one is gone once it sent (SMOKE-F2)" do
+      state = ready() |> workspace_ready() |> typed("fix the flaky test")
+      {state, _} = step(state, {:home, :enter})
+      {state, _} = step(state, {:navigate, {:conversation, @new_id}})
+
+      words = "Sends once the conversation has loaded."
+      assert state.notice == {:command_feedback, words}
+      assert is_integer(state.notice_at)
+      assert State.shown_notice(state) == {:command_feedback, words}
+      assert State.shown_notice(%{state | now: state.now + 7_000}) == nil
+
+      {state, _} = workspace_delivered(state)
+      assert state.notice == nil
     end
   end
 end

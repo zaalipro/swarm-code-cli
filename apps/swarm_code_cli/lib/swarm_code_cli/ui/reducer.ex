@@ -69,6 +69,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
   @history_conversations 16
   @history_max_bytes 65_536
   @dismissed_limit 64
+  # The notice an Enter kept for the workspace shows (and clears when it sends).
+  @deferred_words "Sends once the conversation has loaded."
 
   @spec init(Init.t()) :: {State.t(), [SwarmCodeCLI.UI.Effect.t()]}
   def init(%Init{} = init) do
@@ -142,7 +144,6 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {next, effects} = SwarmCodeCLI.UI.Reducer.Attention.after_update(state, next, effects)
         next = note_policy_change(state, next)
         next = hush_refusals(state, next)
-        next = stamp_notice(state, next)
         next = repair_switcher(state, next)
         next = follow_note_focus(state, next)
         next = SwarmCodeCLI.UI.Reducer.Settings.track_legacy(next, effects)
@@ -150,6 +151,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {next, effects} = boot_resume_picker(next, effects)
         {next, effects} = home_after_update(state, next, effects)
         {next, effects} = home_closed_interactions(state, next, effects)
+        # orbit int (SMOKE-F2): last, so a notice Home's own step set (the send
+        # it deferred, a command it refused) is stamped too; stamped nowhere,
+        # `notice_at` stayed nil and the notice never faded.
+        next = stamp_notice(state, next)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
 
         if next == state,
@@ -686,7 +691,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {%{
            state
            | deferred_send: {key, Keymap.draft_text(state)},
-             notice: {:command_feedback, "Sends once the conversation has loaded."}
+             notice: {:command_feedback, @deferred_words}
          }, []}
     end
   end
@@ -2705,10 +2710,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp replay_deferred(%{deferred_send: nil} = state, effects), do: {state, effects}
 
   defp replay_deferred(%{deferred_send: {key, text}} = state, effects) do
+    # orbit int (UI-U-8): the send belongs to the conversation underneath. While
+    # Home is open its own composer is the current draft, so the key, the draft
+    # and the send are all read as they are with Home away.
+    view = %{state | home: nil}
     status = Map.get(state.watches, :workspace, %{status: :closed}).status
 
     cond do
-      State.current_draft_key(state) != key ->
+      State.current_draft_key(view) != key ->
         drop_deferred(state, effects, "Not sent: another conversation opened first.")
 
       status in [:frozen, :resyncing] ->
@@ -2717,22 +2726,27 @@ defmodule SwarmCodeCLI.UI.Reducer do
       status != :ready ->
         drop_deferred(state, effects, "Not sent: the conversation did not load.")
 
-      Keymap.draft_text(state) != text ->
+      Keymap.draft_text(view) != text ->
         drop_deferred(state, effects, "Not sent: the draft changed after Enter.")
 
       true ->
-        state = %{state | deferred_send: nil}
+        view = %{view | deferred_send: nil, notice: sent_notice(view.notice)}
 
-        case Keymap.draft_send(state) do
+        case Keymap.draft_send(view) do
           {:ok, action} ->
-            {state, more} = transition(state, action)
-            {state, effects ++ more}
+            {sent, more} = transition(view, action)
+            {%{sent | home: state.home}, effects ++ more}
 
           :ignore ->
-            {state, effects}
+            {%{state | deferred_send: nil, notice: view.notice}, effects}
         end
     end
   end
+
+  # "Sends once the conversation has loaded." stops being true when it sends
+  # (orbit int, SMOKE-F2); any other notice stays.
+  defp sent_notice({:command_feedback, @deferred_words}), do: nil
+  defp sent_notice(notice), do: notice
 
   defp drop_deferred(state, effects, words),
     do: {%{state | deferred_send: nil, notice: {:command_feedback, words}}, effects}
