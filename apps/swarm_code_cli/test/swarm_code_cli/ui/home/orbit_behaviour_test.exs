@@ -495,6 +495,27 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
   end
 
   describe "orbit int fixes" do
+    test "conversation-scoped remote commands close Home and run on the conversation in view (UI-U-2)" do
+      for text <-
+            ~w(/stop /compact /fork /export /cost /resume-run) ++
+              ["/rename Auth fix", "/model gpt-x", "/worker_model gpt-x", "/export notes.md"] do
+        state = ready() |> workspace_ready() |> typed(text)
+        {state, effects} = step(state, {:home, :enter})
+        assert state.home == nil, "#{text} left Home open"
+        assert commands(effects, :conversation_new) == [], "#{text} made a new conversation"
+        assert [%{kind: {:dispatch, :send, ^text, :main, []}}] = commands(effects, :dispatch)
+      end
+    end
+
+    test "work-starting text and commands still take the new-conversation path (D10)" do
+      for text <- ["fix the flaky test", "/swarm audit the daemon", "/plan the refactor"] do
+        state = ready() |> workspace_ready() |> typed(text)
+        {state, effects} = step(state, {:home, :enter})
+        assert [_new] = commands(effects, :conversation_new), "#{text} did not make one"
+        assert state.home.pending_send == text
+      end
+    end
+
     test "picking the conversation Home sits on from the switcher closes Home (UI-U-7)" do
       state = ready()
       {state, _} = step(state, {:open_conversation, conversation_id()})

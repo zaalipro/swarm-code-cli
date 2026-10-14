@@ -29,7 +29,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   @conversation_bound [:rewind, :undo, :delete, :queue, :diff]
   # The same commands with arguments (`/rewind 3`, `/effort high`) are not client
   # commands, they go to the daemon for the conversation in view: Home goes first.
-  @bound_words ~w(rewind undo delete queue diff effort worker_effort)
+  # orbit int (UI-U-2): so does every other remote command whose catalogue words
+  # say "this conversation" (`SwarmCode.Commands`): stop, compact, rename, fork,
+  # export, cost, resume-run, and the model, worker model and profile of it.
+  # Anything else (text, `/swarm`, `/plan`, `/goal`, ...) starts work: D10.
+  @bound_words ~w(rewind undo delete queue diff effort worker_effort stop compact rename fork
+                  export cost resume-run model worker_model profile)
 
   # The constants of spec 3.3.
   @overview {:home_overview, 6, 12, 131_072}
