@@ -13,7 +13,7 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
   alias SwarmCode.Daemon.Service.PersistedBackend, as: Backend
   alias SwarmCode.Daemon.Service.PersistedProjection
   alias SwarmCode.Domain.{Cache, Conversations, Projects, Repo}
-  alias SwarmCode.Domain.Conversations.{Conversation, Message}
+  alias SwarmCode.Domain.Conversations.{Conversation, Message, Run}
   alias SwarmCode.Protocol.{Envelope, Frame, Scope, ServiceRequest}
   alias SwarmCode.Protocol.Message, as: Wire
 
@@ -837,6 +837,104 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
 
       :ok = stop_supervised(Backend)
       assert Process.read_timer(timer) == false
+    end
+  end
+
+  ## S8: opening a conversation never marks it seen (decision D12)
+
+  describe "S8 opening never marks seen" do
+    @seen ~U[2026-10-01 09:00:00.000000Z]
+    @finished ~U[2026-10-01 10:00:00.000000Z]
+
+    # A conversation with a run that finished after it was last seen.
+    defp unread_conversation!(c, title) do
+      conversation = conversation!(c.project, title, ~U[2026-10-01 10:00:00.000000Z])
+
+      assert {:ok, run} =
+               Conversations.create_run(%{
+                 conversation_id: conversation.id,
+                 kind: "chat",
+                 status: "done",
+                 started_at: ~U[2026-10-01 09:30:00.000000Z],
+                 finished_at: @finished
+               })
+
+      Repo.update_all(from(x in Conversation, where: x.id == ^conversation.id),
+        set: [last_seen_at: @seen]
+      )
+
+      {conversation, run}
+    end
+
+    defp assert_untouched(conversation, run) do
+      assert DateTime.compare(Repo.get!(Conversation, conversation.id).last_seen_at, @seen) == :eq
+      assert Repo.get!(Run, run.id).seen_at == nil
+    end
+
+    defp unread_rows(backend, conversation) do
+      assert {:ok, %{"value" => overview}} =
+               request(backend, "home", global(), overview_request())
+
+      overview_row =
+        overview["projects"]
+        |> hd()
+        |> Map.get("conversations")
+        |> Enum.find(&(&1["id"] == conversation.id))
+
+      assert {:ok, %{"value" => list}} =
+               request(backend, "list", global(), %ServiceRequest{
+                 operation: :conversation_list,
+                 timeout_ms: 5000,
+                 params: %{"cursor" => nil, "page_size" => 50, "byte_limit" => 262_144}
+               })
+
+      list_row = Enum.find(list["items"], &(&1["id"] == conversation.id))
+      {overview_row["unread"], list_row["unread"]}
+    end
+
+    test "a backend started on it, its workspace watched and opened again: still unread", c do
+      {target, run} = unread_conversation!(c, "Finished work")
+      backend = start_backend!(c, target)
+
+      watch!(backend, "workspace", conversation_scope(target.id), "workspace")
+
+      assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+               request(backend, "open", global(), %ServiceRequest{
+                 operation: :conversation_open,
+                 timeout_ms: 5000,
+                 params: %{"conversation_id" => target.id}
+               })
+
+      assert {true, true} = unread_rows(backend, target)
+      assert_untouched(target, run)
+    end
+
+    test "switching to it from another conversation does not mark it either", c do
+      {target, run} = unread_conversation!(c, "Finished work")
+      current = conversation!(c.project, "Current work", ~U[2026-10-01 11:00:00.000000Z])
+      backend = start_backend!(c, current)
+
+      assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+               request(backend, "open", global(), %ServiceRequest{
+                 operation: :conversation_open,
+                 timeout_ms: 5000,
+                 params: %{"conversation_id" => target.id}
+               })
+
+      watch!(backend, "workspace", conversation_scope(target.id), "workspace")
+      assert {true, true} = unread_rows(backend, target)
+      assert_untouched(target, run)
+
+      # Only the explicit operation marks it seen.
+      assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+               request(backend, "seen", global(), %ServiceRequest{
+                 operation: :mark_seen,
+                 timeout_ms: 5000,
+                 params: %{"kind" => "conversation", "id" => target.id, "revision" => 1}
+               })
+
+      assert DateTime.compare(Repo.get!(Conversation, target.id).last_seen_at, @seen) == :gt
+      assert {false, false} = unread_rows(backend, target)
     end
   end
 end
