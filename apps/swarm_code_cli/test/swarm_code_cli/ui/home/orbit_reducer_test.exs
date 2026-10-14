@@ -123,7 +123,9 @@ defmodule SwarmCodeCLI.UI.Home.OrbitReducerTest do
     end
 
     test "Esc from the list or the map returns to the composer" do
-      state = open_state()
+      # the map is drawn, and so reachable, once the overview has answered
+      {state, effects} = step(open_state(), :boot)
+      {state, _} = answer_overview(state, overview_request(effects))
       {state, _} = step(state, {:home, :focus_next})
       assert state.home.focus == :list
       {state, _} = step(state, {:home, :escape})

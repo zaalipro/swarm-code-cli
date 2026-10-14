@@ -149,6 +149,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {next, effects} = boot_settings(next, effects)
         {next, effects} = boot_resume_picker(next, effects)
         {next, effects} = home_after_update(state, next, effects)
+        {next, effects} = home_closed_interactions(state, next, effects)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
 
         if next == state,
@@ -1161,6 +1162,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
       do: PathCompletion.dismiss(state),
       else: {SlashPalette.dismiss_args(state), []}
   end
+
+  # orbit: the wheel over Home moves the list's selection.
+  defp transition(
+         %{home: %SwarmCodeCLI.UI.Home{}, layers: [], settings: nil} = state,
+         {:scroll, region, {:line, delta}}
+       )
+       when region in ["main", "panel"],
+       do: Reducer.Home.scroll(state, delta)
 
   defp transition(state, {:scroll, region, operation}), do: Pages.scroll(state, region, operation)
 
@@ -3875,6 +3884,53 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp home_after_update(prev, next, effects) do
     {next, more} = Reducer.Home.after_update(prev, next)
     {next, effects ++ more}
+  end
+
+  # D19: an approval that waited under Home opens as Home goes, also when it was
+  # the destination change (after the step's own interaction sync) that closed it.
+  defp home_closed_interactions(
+         %{home: %SwarmCodeCLI.UI.Home{}} = previous,
+         %{home: nil} = next,
+         effects
+       ),
+       do: sync_interactions(next, effects, {:home, :close}, previous)
+
+  defp home_closed_interactions(_previous, next, effects), do: {next, effects}
+
+  # orbit: the steps `Reducer.Home` takes through the reducer's private parts.
+
+  @doc false
+  # What Enter does with the draft in view: sends it, or keeps it for the
+  # workspace that is still loading. A client slash command (`deferrable?` false)
+  # needs no workspace and runs as the shell runs it.
+  def home_send(state, deferrable? \\ true) do
+    status = Map.get(state.watches, :workspace, %{status: :closed}).status
+
+    if deferrable? and status in [:frozen, :resyncing] and Keymap.deferrable_send?(state) do
+      transition(state, :defer_send)
+    else
+      case Keymap.draft_send(state) do
+        {:ok, action} -> transition(state, action)
+        :ignore -> {state, []}
+      end
+    end
+  end
+
+  @doc false
+  def home_replace_draft(state, key, text), do: replace_draft(state, key, text)
+
+  @doc false
+  # Ctrl-C with nothing to clear: the press that arms the quit, and the one
+  # that confirms it.
+  def home_ctrl_c(state) do
+    case state.quit_armed do
+      nil ->
+        arm_quit(state)
+
+      armed ->
+        {state, effects} = exit_requested(disarm_quit(state), :detach)
+        {state, [{:cancel_timer, armed} | effects]}
+    end
   end
 
   defp leave_modes(state, action) do

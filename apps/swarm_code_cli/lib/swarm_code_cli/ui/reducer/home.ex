@@ -16,10 +16,17 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
       Home when the destination changed (D20), and hands a pending send on.
   """
 
-  alias SwarmCodeCLI.UI.{Draft, DraftKey, Drafts, Editor, FieldEditors, Home, State}
+  alias SwarmCodeCLI.UI.{Draft, DraftKey, Drafts, Editor, FieldEditors, Home, Keymap, State}
   alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
+  alias SwarmCodeCLI.UI.Draft.Pastes
+  alias SwarmCodeCLI.UI.Home.{CopyCommand, View}
+  alias SwarmCodeCLI.UI.ModelPicker
   alias SwarmCodeCLI.UI.Reducer
   alias SwarmCodeCLI.UI.Reducer.Editing
+
+  # The slash commands that act on the conversation in view: Home closes first,
+  # so you see what they act on (D10).
+  @conversation_bound [:rewind, :undo, :delete, :queue, :diff]
 
   # The constants of spec 3.3.
   @overview {:home_overview, 6, 12, 131_072}
@@ -106,12 +113,77 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   def handle(%{home: %Home{}} = state, :escape), do: {set_focus(state, :composer), []}
 
   def handle(%{home: %Home{focus: focus}} = state, :focus_next),
-    do: {set_focus(state, next_focus(focus)), []}
+    do: {set_focus(state, next_focus(state, focus)), []}
 
   def handle(%{home: %Home{focus: focus}} = state, :focus_previous),
-    do: {set_focus(state, previous_focus(focus)), []}
+    do: {set_focus(state, previous_focus(state, focus)), []}
 
-  def handle(%{home: %Home{}} = state, verb) when verb in [:up, :down] do
+  # The project map: ←/→ the orbit, ↑/↓ the bead (clamped).
+  def handle(%{home: %Home{focus: :map}} = state, verb) when verb in [:left, :right] do
+    last = max(length(View.map_projects(state)) - 1, 0)
+    home = state.home
+    orbit = if verb == :left, do: home.orbit - 1, else: home.orbit + 1
+    {clamp(%{state | home: %{home | orbit: min(max(orbit, 0), last)}}), []}
+  end
+
+  def handle(%{home: %Home{focus: :map}} = state, verb) when verb in [:up, :down] do
+    home = state.home
+    bead = if verb == :up, do: home.bead - 1, else: home.bead + 1
+    {clamp(%{state | home: %{home | bead: max(bead, 0)}}), []}
+  end
+
+  # A draft of several lines keeps ↑/↓ for the caret while the caret is not on
+  # its first/last line; only there they move the list.
+  def handle(%{home: %Home{focus: :composer}} = state, verb) when verb in [:up, :down] do
+    if caret_on_edge?(state, verb),
+      do: select_row(state, verb),
+      else: Editing.apply(state, :editor, draft_key(state), {:move, verb})
+  end
+
+  def handle(%{home: %Home{}} = state, verb) when verb in [:up, :down],
+    do: select_row(state, verb)
+
+  # Enter. Nothing is sent while a `conversation.new` is out for an earlier Enter.
+  def handle(%{home: %Home{pending_send: text}} = state, :enter) when is_binary(text),
+    do: {state, []}
+
+  def handle(%{home: %Home{focus: :composer}} = state, :enter), do: enter_composer(state)
+  def handle(%{home: %Home{focus: :list}} = state, :enter), do: open_selected(state)
+  def handle(%{home: %Home{focus: :map}} = state, :enter), do: enter_map(state)
+
+  def handle(%{home: %Home{}} = state, {:open_row, n}), do: open_nth(state, n)
+
+  # `y` on the map: the command that opens the bead's conversation, for any project.
+  def handle(%{home: %Home{focus: :map}} = state, :copy) do
+    case View.map_target(state) do
+      %{project: project, conversation: %{id: _} = conversation} ->
+        copy_command(state, project, conversation)
+
+      _ ->
+        {state, []}
+    end
+  end
+
+  def handle(%{home: %Home{}} = state, :next_need), do: next_need(state)
+  def handle(%{home: %Home{}} = state, :interrupt), do: interrupt(state)
+
+  def handle(state, _verb), do: {state, []}
+
+  defp set_focus(state, focus), do: %{state | home: %{state.home | focus: focus}}
+
+  # Tab walks composer → list → map → composer, and passes the map by where it
+  # is not drawn (the minimal class, no overview yet).
+  defp next_focus(_state, :composer), do: :list
+  defp next_focus(state, :list), do: if(View.map?(state), do: :map, else: :composer)
+  defp next_focus(_state, :map), do: :composer
+
+  defp previous_focus(state, :composer), do: if(View.map?(state), do: :map, else: :list)
+  defp previous_focus(_state, :map), do: :list
+  defp previous_focus(_state, :list), do: :composer
+
+  # ------------------------------------------------------- the list's cursor
+
+  defp select_row(state, verb) do
     count = length(Home.rows(state))
     home = state.home
     last = max(count - 1, 0)
@@ -119,17 +191,241 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
     {%{state | home: %{home | selected: min(max(selected, 0), last)}}, []}
   end
 
-  def handle(state, _verb), do: {state, []}
+  # The caret is on the first (for ↑) or last (for ↓) logical line of the draft.
+  defp caret_on_edge?(state, verb) do
+    editor = Drafts.fetch(state.drafts, draft_key(state)).editor
+    graphemes = editor |> Editor.text() |> String.graphemes()
+    {before, rest} = Enum.split(graphemes, Editor.cursor(editor))
+    scanned = if verb == :up, do: before, else: rest
+    not Enum.any?(scanned, &Editor.newline?/1)
+  end
 
-  defp set_focus(state, focus), do: %{state | home: %{state.home | focus: focus}}
+  @doc """
+  The wheel (or alternate scroll) over Home moves the list's selection: one row
+  per notch, up for a negative `delta`.
+  """
+  @spec scroll(State.t(), integer()) :: {State.t(), [term()]}
+  def scroll(%{home: %Home{}} = state, delta) when is_integer(delta) do
+    rows = if delta < 0, do: -1, else: 1
+    home = state.home
+    last = max(length(Home.rows(state)) - 1, 0)
+    {%{state | home: %{home | selected: min(max(home.selected + rows, 0), last)}}, []}
+  end
 
-  defp next_focus(:composer), do: :list
-  defp next_focus(:list), do: :map
-  defp next_focus(:map), do: :composer
+  def scroll(state, _delta), do: {state, []}
 
-  defp previous_focus(:composer), do: :map
-  defp previous_focus(:map), do: :list
-  defp previous_focus(:list), do: :composer
+  # ------------------------------------------------------------ enter, open
+
+  # Enter in the composer. An empty draft opens the selected row (D10); a client
+  # slash command runs as it does in the shell, closing Home first when it acts
+  # on the conversation; any other text starts work in this project.
+  defp enter_composer(state) do
+    text = draft_text(state)
+
+    cond do
+      String.trim(text) == "" -> open_selected(state, :continue)
+      close_first?(text) -> run_closing(state, text)
+      Keymap.local_command(text) != nil -> run_here(state)
+      true -> start_work(state, text)
+    end
+  end
+
+  defp close_first?(text) do
+    case Keymap.local_command(text) do
+      command when command in @conversation_bound -> true
+      {:effort, _} -> true
+      nil -> ModelPicker.opener(text) != nil
+      _ -> false
+    end
+  end
+
+  # A command about this session (/trust, /settings, /theme …) runs from Home's
+  # own draft, which it clears; Home stays.
+  defp run_here(state), do: Reducer.home_send(state, false)
+
+  # A command about the conversation in view: Home goes, the text is moved to the
+  # conversation's draft and runs there, and the draft that was there is put back.
+  defp run_closing(state, text) do
+    from = draft_key(state)
+    {state, closed} = close(state, :continue)
+
+    case State.current_draft_key(state) do
+      nil ->
+        {state, closed}
+
+      to ->
+        saved = Editor.text(Drafts.fetch(state.drafts, to).editor)
+
+        with {:ok, state} <- move_draft(state, from, to) do
+          {state, sent} = Reducer.home_send(state, false)
+          {state, kept} = restore_draft_text(state, to, saved, text)
+          {state, closed ++ sent ++ kept}
+        else
+          :error -> {note(state, "Too many drafts are open to run that here."), closed}
+        end
+    end
+  end
+
+  defp restore_draft_text(state, _key, "", _text), do: {state, []}
+
+  defp restore_draft_text(state, key, saved, text) do
+    current = Editor.text(Drafts.fetch(state.drafts, key).editor)
+    if current in ["", text], do: Reducer.home_replace_draft(state, key, saved), else: {state, []}
+  end
+
+  # D10: text over an empty conversation (no run, no prompt, no draft) goes there;
+  # otherwise a new conversation is made first and the text follows it.
+  defp start_work(state, text) do
+    if underneath_free?(state), do: send_here(state), else: send_in_new(state, text)
+  end
+
+  defp underneath_free?(state) do
+    with true <- Home.empty_underneath?(state),
+         id when is_binary(id) <- Home.current_conversation_id(state) do
+      draft = Drafts.fetch(state.drafts, {id, :main})
+      not Draft.dirty?(draft)
+    else
+      _ -> false
+    end
+  end
+
+  defp send_here(state) do
+    from = draft_key(state)
+    {state, closed} = close(state, :opened)
+
+    with to when not is_nil(to) <- State.current_draft_key(state),
+         {:ok, state} <- move_draft(state, from, to) do
+      {state, sent} = Reducer.home_send(state)
+      {state, closed ++ sent}
+    else
+      _ -> {note(state, "Could not start that here."), closed}
+    end
+  end
+
+  defp send_in_new(state, text) do
+    draft = Drafts.fetch(state.drafts, draft_key(state))
+
+    case Pastes.expand(text, draft.pastes) do
+      {:ok, expanded} ->
+        {state, effects} =
+          Reducer.service_request(state, {:conversation_new}, {:conversation, :new})
+
+        if effects == [] do
+          {note(state, "Not ready yet: try again in a moment."), []}
+        else
+          {state, cleared} = Reducer.home_replace_draft(state, draft_key(state), "")
+          {%{state | home: %{state.home | pending_send: expanded}}, effects ++ cleared}
+        end
+
+      {:error, :too_large} ->
+        {note(state, "The message is over 256 KiB."), []}
+    end
+  end
+
+  # The draft moves with its collapsed pastes, attachments and target.
+  defp move_draft(state, from, to) do
+    draft = Drafts.fetch(state.drafts, from)
+    moved = %Draft{draft | key: to, scroll_x: 0, scroll_y: 0}
+    drafts = state.drafts |> Drafts.put(moved) |> Drafts.put(Draft.clear(draft))
+    {:ok, %{state | drafts: drafts, slash_palette: nil}}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp note(state, words), do: %{state | notice: {:command_feedback, words}}
+
+  defp draft_text(state), do: Editor.text(Drafts.fetch(state.drafts, draft_key(state)).editor)
+
+  defp open_selected(state, empty \\ :stay) do
+    case Enum.at(Home.rows(state), state.home.selected) do
+      %{id: id} -> open_conversation(state, id)
+      nil when empty == :continue -> close(state, :continue)
+      nil -> {state, []}
+    end
+  end
+
+  # Alt-1..9: row n of the list as drawn; in a first run, the nth conversation
+  # "elsewhere", whose command is copied.
+  defp open_nth(state, n) do
+    if View.first_run?(state) do
+      case Enum.at(View.elsewhere(state, 5), n - 1) do
+        nil -> {state, []}
+        entry -> copy_command(state, entry.project, entry.conversation)
+      end
+    else
+      case Enum.at(View.visible_list(state).rows, n - 1) do
+        %{summary: %{id: id}} -> open_conversation(state, id)
+        _ -> {state, []}
+      end
+    end
+  end
+
+  # The conversation in view: Home just closes. Another of this project: the
+  # service switches to it, and the destination change closes Home (D20).
+  defp open_conversation(state, id) do
+    if id == Home.current_conversation_id(state) do
+      close(state, :opened)
+    else
+      Reducer.service_request(state, {:conversation_open, id}, {:conversation, :open})
+    end
+  end
+
+  defp enter_map(state) do
+    case View.map_target(state) do
+      %{project: %{current: true}, conversation: %{id: id}} ->
+        open_conversation(state, id)
+
+      %{project: project, conversation: %{id: _} = conversation} ->
+        copy_command(state, project, conversation)
+
+      _ ->
+        {state, []}
+    end
+  end
+
+  # Another project opens in its own tab: the command goes to the clipboard.
+  defp copy_command(state, project, conversation) do
+    command =
+      CopyCommand.command(project.root_path, conversation.id, View.launch_fact(state, :home))
+
+    {note(state, "Copied: " <> command <> " — run it in a new terminal tab."), [{:copy, command}]}
+  end
+
+  # Ctrl-N (D19): the first approval or question that waits, here or elsewhere.
+  defp next_need(state) do
+    here =
+      case state.conversations do
+        %DTO.ConversationList{items: items} -> Enum.find(items, &(&1.waiting > 0))
+        _ -> nil
+      end
+
+    elsewhere =
+      for project <- View.projects(state),
+          not project.current,
+          conversation <- project.conversations,
+          conversation.waiting > 0,
+          do: {project, conversation}
+
+    cond do
+      here != nil -> open_conversation(state, here.id)
+      elsewhere != [] -> elsewhere |> hd() |> then(fn {p, c} -> copy_command(state, p, c) end)
+      true -> {note(state, "Nothing waits for you."), []}
+    end
+  end
+
+  # Ctrl-C (D21): the search text, then the draft; with neither, a press that
+  # has nothing to do arms the quit, and a second one quits. It never stops a
+  # turn: Home has none in view.
+  defp interrupt(%{home: %Home{focus: :list, filter: filter}} = state) when filter != "",
+    do: clear_filter(state)
+
+  defp interrupt(%{home: %Home{focus: :composer}} = state) do
+    if draft_text(state) != "",
+      do: Reducer.home_replace_draft(state, draft_key(state), ""),
+      else: Reducer.home_ctrl_c(state)
+  end
+
+  defp interrupt(state), do: Reducer.home_ctrl_c(state)
 
   # ---------------------------------------------------------------- requests
 
@@ -341,10 +637,30 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
 
   defp search_response(state, _request, _body), do: {state, []}
 
-  # The list never selects a row it does not have.
-  defp clamp(%{home: %Home{selected: selected} = home} = state) do
+  # The list never selects a row it does not have, nor the map a bead.
+  defp clamp(%{home: %Home{} = home} = state) do
     last = max(length(Home.rows(state)) - 1, 0)
-    %{state | home: %{home | selected: min(selected, last)}}
+    projects = View.map_projects(state)
+    orbit = min(home.orbit, max(length(projects) - 1, 0))
+
+    beads =
+      case Enum.at(projects, orbit) do
+        nil -> 0
+        project -> length(project.conversations)
+      end
+
+    focus = if home.focus == :map and projects == [], do: :composer, else: home.focus
+
+    %{
+      state
+      | home: %{
+          home
+          | selected: min(home.selected, last),
+            orbit: orbit,
+            bead: min(home.bead, max(beads - 1, 0)),
+            focus: focus
+        }
+    }
   end
 
   defp clamp(state), do: state
@@ -364,14 +680,46 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
 
     cond do
       prev.home != nil and prev.destination != next.destination ->
-        close(next, :opened)
+        arrived(next)
 
       true ->
+        {next, restored} = settle_pending(next)
         {next, listed} = relist(prev, next)
         {next, asked} = requery(next)
-        {next, listed ++ asked}
+        {next, restored ++ listed ++ asked}
     end
   end
+
+  # The destination changed (D20): Home goes. A text that waited for
+  # `conversation.new` is put in the new conversation's draft and sent as soon as
+  # its workspace is ready (`Reducer.home_send/1` defers it until then).
+  defp arrived(next) do
+    text = next.home.pending_send
+    {next, closed} = close(next, :opened)
+
+    with true <- is_binary(text) and text != "",
+         key when not is_nil(key) <- State.current_draft_key(next) do
+      {next, put} = Reducer.home_replace_draft(next, key, text)
+      {next, sent} = Reducer.home_send(next)
+      {next, closed ++ put ++ sent}
+    else
+      _ -> {next, closed}
+    end
+  end
+
+  # A `conversation.new` that was refused (or dropped) gives the text back.
+  defp settle_pending(%{home: %Home{pending_send: text} = home} = next) when is_binary(text) do
+    if Enum.any?(Map.values(next.requests), &(&1.kind == {:conversation_new})) do
+      {next, []}
+    else
+      next = %{next | home: %{home | pending_send: nil}}
+      existing = draft_text(next)
+      restored = if String.trim(existing) == "", do: text, else: text <> "\n" <> existing
+      Reducer.home_replace_draft(next, draft_key(next), restored)
+    end
+  end
+
+  defp settle_pending(next), do: {next, []}
 
   # A request the reducer dropped (the watch it was sent in was reopened) will
   # not be answered: forget it, so the next ask is not mistaken for a second

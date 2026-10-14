@@ -25,9 +25,8 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
   alias SwarmCodeCLI.UI.Home
   alias SwarmCodeCLI.UI.Home.{Canvas, Grid, Mark, Orbits, View}
   alias SwarmCodeCLI.UI.Keymap.Bindings
-  alias SwarmCodeCLI.UI.Projector.{Density, KeyLabel, Status}
+  alias SwarmCodeCLI.UI.Projector.{KeyLabel, Status}
   alias SwarmCodeCLI.UI.Projector.Panel.Glyph
-  alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.Scene.{Cursor, Rect, Region}
   alias SwarmCodeCLI.UI.Settings.Glyphs
 
@@ -108,9 +107,6 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
       search: "search"
     }
   end
-
-  @placeholder "Type to start a new conversation, or / for commands…"
-  @small_placeholder "Type to start a new conversation…"
 
   @doc "Home's regions and cursor, or nil while it is closed or the terminal is too small."
   @spec project(map(), term()) :: nil | {[Region.t()], Cursor.t() | nil}
@@ -649,7 +645,7 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
   defp resume_list(canvas, state, grid, tier) do
     cols = list_layout(grid, canvas.width)
     header = grid.header_row
-    extra = max(draft_rows(state, canvas.width) - 1, 0)
+    extra = max(View.draft_rows(state, canvas.width) - 1, 0)
     rows = max(grid.list_rows - extra, 1)
     list = View.list(state, rows)
 
@@ -757,7 +753,7 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
 
   # The first row the composer occupies (it grows upwards with the draft).
   defp composer_top(state, grid, width),
-    do: grid.composer_row - (draft_rows(state, width) - 1)
+    do: grid.composer_row - (View.draft_rows(state, width) - 1)
 
   defp resume_header(canvas, state, grid, cols) do
     row = grid.header_row
@@ -1150,7 +1146,7 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
   defp composer(canvas, state, grid, tier) do
     focused? = state.home.focus == :composer
     width = canvas.width
-    {lines, caret} = draft_lines(state, width)
+    {lines, caret} = View.draft_lines(state, width)
     rows = length(lines)
     first = grid.composer_row - (rows - 1)
     prompt = Glyphs.for_caps(:crumb, state.capabilities)
@@ -1212,79 +1208,6 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
 
   defp list_cursor(_state, _grid), do: nil
 
-  # How many rows the draft takes (1..3).
-  defp draft_rows(state, width), do: state |> draft_lines(width) |> elem(0) |> length()
-
-  # The visible lines of the Home draft (at most 3) and the caret as {row, col}.
-  defp draft_lines(state, width) do
-    policy = state.capabilities.ambiguous_width
-    draft = Drafts.fetch(state.drafts, {state.source_epoch, :home})
-    editor_width = max(width - 4, 1)
-    slice = Editor.visible_slice(draft.editor, editor_width, 3, policy)
-
-    if slice.text == "" do
-      {[
-         %{
-           text: Canvas.clip(Canvas.new(state, width, 1), placeholder(state), editor_width),
-           placeholder?: true
-         }
-       ], {0, 0}}
-    else
-      limits = %{Limits.composer_viewport() | ambiguous_width: policy}
-
-      lines =
-        slice.text
-        |> Density.external(limits)
-        |> SafeText.value()
-        |> Width.wrap(editor_width, policy)
-
-      before =
-        slice.text
-        |> String.graphemes()
-        |> Enum.take(slice.cursor_offset)
-        |> Enum.join()
-        |> Density.external(limits)
-        |> SafeText.value()
-
-      prefix = Width.wrap(before, editor_width, policy)
-      caret_row = max(length(prefix) - 1, 0)
-      first = max(caret_row - 2, 0)
-      shown = lines |> Enum.drop(first) |> Enum.take(3)
-      col = min(editor_width - 1, Width.cells(List.last(prefix) || "", policy))
-      {Enum.map(shown, &%{text: &1, placeholder?: false}), {min(caret_row - first, 2), col}}
-    end
-  end
-
-  defp placeholder(state) do
-    cond do
-      View.first_run?(state) and small?(state) ->
-        "Type to start the first conversation…"
-
-      View.first_run?(state) ->
-        "Type to start the first conversation in " <>
-          View.project_name(state) <> ", or / for commands…"
-
-      small?(state) ->
-        @small_placeholder
-
-      true ->
-        @placeholder
-    end
-  end
-
-  # The two classes with no preview and no room for sentences in the hint row.
-  defp small?(state) do
-    %{columns: columns, rows: rows} = state.size
-    tier = Glyph.tier(state.capabilities)
-    Grid.class(columns, rows, tier) in [:compact, :minimal]
-  end
-
-  defp map_drawn?(state) do
-    %{columns: columns, rows: rows} = state.size
-    tier = Glyph.tier(state.capabilities)
-    Grid.class(columns, rows, tier) != :minimal
-  end
-
   defp hint_parts(state) do
     text = state |> home_draft_text() |> String.trim()
     enter = key_label(state, :home_enter, "Enter")
@@ -1308,10 +1231,10 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
         trust? =
           Map.get(Map.get(state.read_model.snapshots, :workspace) || %{}, :trusted) == false
 
-        if small?(state) do
+        if View.small?(state) do
           key_pairs(
             [{enter, "first"}] ++
-              if(map_drawn?(state),
+              if(View.map?(state),
                 do: [{key_label(state, :home_focus_next, "Tab"), "map"}],
                 else: []
               )
@@ -1333,13 +1256,13 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
 
         back = if state.home.entered == :boot, do: "continue the latest: ", else: "back to: "
 
-        if small?(state) do
+        if View.small?(state) do
           key_pairs(
             [
               {enter, "new"},
               {escape, if(state.home.entered == :boot, do: "latest", else: "back")}
             ] ++
-              if(map_drawn?(state),
+              if(View.map?(state),
                 do: [{key_label(state, :home_focus_next, "Tab"), "map"}],
                 else: []
               )

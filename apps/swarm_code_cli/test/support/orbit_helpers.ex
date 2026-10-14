@@ -64,6 +64,84 @@ defmodule SwarmCodeCLI.OrbitHelpers do
     %{state | watches: Map.put(state.watches, :shell, watch)}
   end
 
+  @doc """
+  The workspace watch of the conversation in view delivered, as the service's first
+  snapshot leaves it: sending is allowed, the chat provider usable. `fields` override
+  the snapshot's (`interactions:`, `runs:`).
+  """
+  def workspace_ready(state, fields \\ []) do
+    {state, _effects} = workspace_delivered(state, fields)
+    state
+  end
+
+  @doc "`workspace_ready/2` with the effects the delivery caused (a deferred send replays then)."
+  def workspace_delivered(state, fields \\ []) do
+    watch = state.watches.workspace
+    conversation = SwarmCodeCLI.UI.Home.current_conversation_id(state) || @conversation
+
+    body =
+      struct!(
+        %DTO.WorkspaceSnapshot{
+          conversation_id: conversation,
+          allowed_actions: [:send, :queue],
+          chat_provider: "anthropic",
+          chat_provider_usable: true,
+          trusted: true,
+          approval_mode: :auto,
+          project: "swarm-code-cli",
+          transcript: %DTO.TranscriptWindow{items: []},
+          runs_page: %DTO.PageInfo{},
+          interactions_page: %DTO.PageInfo{}
+        },
+        fields
+      )
+
+    delivery = %Delivery{
+      kind: :watch_ready,
+      watch_ref: watch.watch_ref,
+      request_id: nil,
+      scope: watch.scope,
+      generation: watch.generation,
+      revision: 0,
+      sequence: nil,
+      body: body
+    }
+
+    Reducer.update(state, {:data, delivery})
+  end
+
+  @doc "A pending approval of the conversation in view (`id`), waiting on run `run`."
+  def approval(id, run \\ "r") do
+    %DTO.PendingInteraction{
+      id: id,
+      kind: :approval,
+      run_id: run,
+      node_id: "op-1",
+      conversation_id: @conversation,
+      expected_revision: 5,
+      created_at: 1,
+      allowed_actions: [:approve, :deny, :always_allow],
+      approval: %DTO.Approval{
+        tool: "run_command",
+        permission: :execute,
+        arguments_preview: "ls -la notes"
+      }
+    }
+  end
+
+  @doc "A run of the conversation in view."
+  def run(id, state) do
+    %DTO.RunSummary{
+      id: id,
+      conversation_id: @conversation,
+      state: state,
+      revision: 3,
+      kind: :chat,
+      started_at: 1,
+      allowed_actions: [:stop, :pause]
+    }
+  end
+
   @doc "The conversations Home lists (the palette's `conversation.list` answer)."
   def put_conversations(state, items) do
     list = %DTO.ConversationList{

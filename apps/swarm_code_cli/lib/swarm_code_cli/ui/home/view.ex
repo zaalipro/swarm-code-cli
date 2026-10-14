@@ -11,8 +11,11 @@ defmodule SwarmCodeCLI.UI.Home.View do
   the legend says `…`.
   """
 
-  alias SwarmCodeCLI.UI.Home
-  alias SwarmCodeCLI.UI.Home.{CopyCommand, Mark, Orbits}
+  alias SwarmCodeCLI.UI.{Drafts, Editor, Home, SafeText, Width}
+  alias SwarmCodeCLI.UI.Home.{Canvas, CopyCommand, Grid, Mark, Orbits}
+  alias SwarmCodeCLI.UI.Projector.Density
+  alias SwarmCodeCLI.UI.Projector.Panel.Glyph
+  alias SwarmCodeCLI.UI.SafeText.Limits
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Switcher
 
@@ -519,6 +522,110 @@ defmodule SwarmCodeCLI.UI.Home.View do
         command: CopyCommand.command(project.root_path, conversation.id, home)
       }
     end)
+  end
+
+  # ------------------------------------------------------ grid and the draft
+
+  @placeholder "Type to start a new conversation, or / for commands…"
+  @small_placeholder "Type to start a new conversation…"
+
+  @doc "The grid of the state's terminal size and glyph tier, for the orbits there are."
+  @spec grid(map()) :: Grid.t()
+  def grid(state) do
+    %{columns: columns, rows: rows} = state.size
+    Grid.for(columns, rows, Glyph.tier(state.capabilities), max(length(projects(state)), 1))
+  end
+
+  @doc "The projects the map shows: as many as the grid has orbits for."
+  @spec map_projects(map()) :: [DTO.HomeProject.t()]
+  def map_projects(state), do: state |> projects() |> Enum.take(grid(state).orbit_slots)
+
+  @doc "Whether a map is drawn at all (a focus on it needs something to point at)."
+  @spec map?(map()) :: boolean()
+  def map?(state), do: map_projects(state) != []
+
+  @doc """
+  The visible window of the resume list: what the projector draws, so the digit of
+  a row and the row Alt-digit opens agree.
+  """
+  @spec visible_list(map()) :: %{
+          start: non_neg_integer(),
+          total: non_neg_integer(),
+          rows: [map()]
+        }
+  def visible_list(state) do
+    extra = max(draft_rows(state, state.size.columns) - 1, 0)
+    list(state, max(grid(state).list_rows - extra, 1))
+  end
+
+  @doc "How many rows the Home draft takes in a canvas `width` wide (1..3)."
+  @spec draft_rows(map(), pos_integer()) :: pos_integer()
+  def draft_rows(state, width), do: state |> draft_lines(width) |> elem(0) |> length()
+
+  @doc "The visible lines of the Home draft (at most 3) and the caret as `{row, col}`."
+  @spec draft_lines(map(), pos_integer()) :: {[map()], {non_neg_integer(), non_neg_integer()}}
+  def draft_lines(state, width) do
+    policy = state.capabilities.ambiguous_width
+    draft = Drafts.fetch(state.drafts, {state.source_epoch, :home})
+    editor_width = max(width - 4, 1)
+    slice = Editor.visible_slice(draft.editor, editor_width, 3, policy)
+
+    if slice.text == "" do
+      {[
+         %{
+           text: Canvas.clip(Canvas.new(state, width, 1), placeholder(state), editor_width),
+           placeholder?: true
+         }
+       ], {0, 0}}
+    else
+      limits = %{Limits.composer_viewport() | ambiguous_width: policy}
+
+      lines =
+        slice.text
+        |> Density.external(limits)
+        |> SafeText.value()
+        |> Width.wrap(editor_width, policy)
+
+      before =
+        slice.text
+        |> String.graphemes()
+        |> Enum.take(slice.cursor_offset)
+        |> Enum.join()
+        |> Density.external(limits)
+        |> SafeText.value()
+
+      prefix = Width.wrap(before, editor_width, policy)
+      caret_row = max(length(prefix) - 1, 0)
+      first = max(caret_row - 2, 0)
+      shown = lines |> Enum.drop(first) |> Enum.take(3)
+      col = min(editor_width - 1, Width.cells(List.last(prefix) || "", policy))
+      {Enum.map(shown, &%{text: &1, placeholder?: false}), {min(caret_row - first, 2), col}}
+    end
+  end
+
+  defp placeholder(state) do
+    cond do
+      first_run?(state) and small?(state) ->
+        "Type to start the first conversation…"
+
+      first_run?(state) ->
+        "Type to start the first conversation in " <>
+          project_name(state) <> ", or / for commands…"
+
+      small?(state) ->
+        @small_placeholder
+
+      true ->
+        @placeholder
+    end
+  end
+
+  @doc "The two classes with no preview and no room for sentences in the hint row."
+  @spec small?(map()) :: boolean()
+  def small?(state) do
+    %{columns: columns, rows: rows} = state.size
+    tier = Glyph.tier(state.capabilities)
+    Grid.class(columns, rows, tier) in [:compact, :minimal]
   end
 
   @doc "`1 approval waiting` / `3 approvals waiting`."
