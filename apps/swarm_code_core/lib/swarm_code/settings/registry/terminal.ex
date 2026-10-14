@@ -432,11 +432,12 @@ defmodule SwarmCode.Settings.Registry.Terminal do
       type: :enum,
       choices:
         choices([
+          {"dashboard", "Open Home: recent work, live runs, resume"},
           {"latest", "Continue the latest conversation"},
           {"new", "Start a new conversation"},
           {"ask", "Ask (the resume picker, as --resume)"}
         ]),
-      default: "latest",
+      default: "dashboard",
       layers: [:flag, :env, :cli, :default],
       flag: "--new/--continue/--resume",
       env: ["SWARM_CONVERSATION"],

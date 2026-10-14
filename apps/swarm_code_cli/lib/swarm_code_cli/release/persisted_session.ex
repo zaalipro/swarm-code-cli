@@ -266,14 +266,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         preflight!()
         root = project_root()
         check_root!(root)
-        {selection, ask?} = tui_selection()
+        {selection, opening} = tui_selection()
         executable = terminal_port!()
         route_logger!(log_path(test_boot))
         start_applications!()
 
         with_storage(
           test_boot,
-          fn session -> tui(session, executable, Keyword.put(opts, :resume_picker?, ask?)) end,
+          fn session -> tui(session, executable, Keyword.put(opts, :opening, opening)) end,
           root,
           conversation: selection,
           interactive: true
@@ -314,7 +314,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     if opts[:label] == :dev,
       do: IO.puts(:stderr, "ncode (dev) — conversation #{session.conversation.id}")
 
-    {outcome, current} = run_ui(session, executable, opts[:resume_picker?] == true)
+    {outcome, current} = run_ui(session, executable, opts[:opening])
     shown = %{session | conversation: %{session.conversation | id: current}}
     # Read the summary while storage and the runs are still up, then stop them.
     summary = query_worker(fn -> summary(shown, started_at) end)
@@ -485,7 +485,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       :ok
   end
 
-  defp run_ui(session, executable, resume_picker?) do
+  defp run_ui(session, executable, opening) do
     # cli020 B10: folders a hard exit left behind go first.
     _ = SwarmCodeCLI.Release.SocketSweep.sweep()
     {dir, stat} = private_directory!()
@@ -564,13 +564,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
       # pass74 S1-13: the settings layer's boot query, the cli values, the
       # launch facts and cli.json's `ask` (U1's `Init` fields; a build without
-      # them ignores the keys).
+      # them ignores the keys). orbit: `home?` opens Home over the conversation
+      # (the default; `ask` opens the resume picker instead, never both).
       init =
         struct(init,
           settings_open: settings_open() || session[:open_settings],
           prefs: launch.prefs,
           launch_facts: launch_facts(launch, session.project.root_path, cli_path),
-          resume_picker?: resume_picker?
+          resume_picker?: opening == :picker,
+          home?: opening == :home
         )
 
       runtime =
@@ -728,7 +730,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       reduced_motion?: false,
       accent: nil,
       companion?: Map.get(env, "SWARM_COMPANION") != "0",
-      startup_conversation: :latest,
+      startup_conversation: :dashboard,
       prefs: snapshot.values,
       env_overrides: %{},
       flag_overrides: %{},
@@ -758,34 +760,45 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     :ok
   end
 
-  @doc """
-  pass74 S1-13 (§3.8.4): the conversation a TUI session opens and whether it
-  asks first. A flag or `SWARM_CONVERSATION` chooses; else cli.json's
-  `startup_conversation` (`ask` opens the latest with the resume picker over
-  it). A settings-only session opens the latest (it never starts a new one).
+  @typedoc """
+  What opens over the conversation a session starts on: `:picker` is the resume
+  picker (`--resume` alone, or cli.json `ask`), `:home` is Home (the default),
+  `nil` is neither (a flag, `SWARM_CONVERSATION`, or an explicit `latest`).
   """
-  @spec tui_selection() :: {:latest | :new | String.t(), boolean()}
+  @type opening :: nil | :picker | :home
+
+  @doc """
+  pass74 S1-13 (§3.8.4): the conversation a TUI session opens and what opens
+  over it. A flag or `SWARM_CONVERSATION` chooses (and opens nothing); else
+  cli.json's `startup_conversation` (`dashboard`, the default, opens Home over
+  the latest; `ask` the resume picker; `latest` neither). A settings-only
+  session opens the latest and nothing over it (it never starts a new one).
+  """
+  @spec tui_selection() :: {:latest | :new | String.t(), opening()}
   def tui_selection do
     cond do
       # cli020 B19: bare `ncode --resume` opens the latest with the picker over it.
       System.get_env("SWARM_RESUME_PICKER") == "1" and not settings_only?() ->
-        {:latest, true}
+        {:latest, :picker}
 
       System.get_env("SWARM_CONVERSATION") in [nil, ""] and not settings_only?() ->
         startup_selection(SwarmCodeCLI.Release.preferences_path())
 
       true ->
-        {selection_from_env(), false}
+        {selection_from_env(), nil}
     end
   end
 
   @doc false
-  @spec startup_selection(Path.t() | nil) :: {:latest | :new, boolean()}
+  @spec startup_selection(Path.t() | nil) :: {:latest | :new, opening()}
   def startup_selection(cli_path) do
     case SwarmCode.Settings.CliFile.read_all(cli_path).values["startup_conversation"] do
-      "new" -> {:new, false}
-      "ask" -> {:latest, true}
-      _ -> {:latest, false}
+      "new" -> {:new, nil}
+      "ask" -> {:latest, :picker}
+      # An explicit `latest` keeps today's behaviour: no Home.
+      "latest" -> {:latest, nil}
+      # `dashboard`, an absent key or a file that is missing or unreadable.
+      _ -> {:latest, :home}
     end
   end
 

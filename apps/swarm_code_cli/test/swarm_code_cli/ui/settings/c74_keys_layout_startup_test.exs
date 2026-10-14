@@ -167,7 +167,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74KeysLayoutStartupTest do
   describe "Session & startup" do
     test "the launch rows and this launch's facts" do
       {state, _fake} = opened(:startup)
-      assert words(key_row(state, "terminal.startup_conversation")) =~ "latest"
+      # orbit: the default is Home ("dashboard"), shown by its label.
+      assert words(key_row(state, "terminal.startup_conversation")) =~ "Open Home"
       assert key_row(state, "terminal.companion")
 
       ctx = %{
