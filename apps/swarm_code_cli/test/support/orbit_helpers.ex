@@ -168,6 +168,52 @@ defmodule SwarmCodeCLI.OrbitHelpers do
     Reducer.update(state, {:data, delivery})
   end
 
+  @doc """
+  The designer's mock as a state (`Fixtures.home_state/3`) at `{columns, rows}`,
+  truecolor at the rich glyph tier unless `caps:` says otherwise.
+  """
+  def fixture(size \\ {120, 36}, options \\ []) do
+    {columns, rows} = size
+    size = %Size{columns: columns, rows: rows}
+
+    caps =
+      struct!(
+        %Capabilities{size: size},
+        Keyword.merge(
+          [glyph_tier: :rich, color_mode: :truecolor],
+          Keyword.get(options, :caps, [])
+        )
+      )
+
+    SwarmCodeCLI.UI.Fixtures.home_state(size, caps, Keyword.delete(options, :caps))
+  end
+
+  @golden_dir Path.expand("../fixtures/home", __DIR__)
+
+  @doc """
+  Compares `text` with the golden `name` in `test/fixtures/home/`, or writes it when
+  `ORBIT_GOLDEN_WRITE=1` is set (review the file by eye before committing it).
+  """
+  def assert_golden(name, text) do
+    path = Path.join(@golden_dir, name)
+    text = String.trim_trailing(text) <> "\n"
+
+    if System.get_env("ORBIT_GOLDEN_WRITE") == "1" do
+      File.write!(path, text)
+    else
+      expected = File.read!(path)
+
+      if expected != text do
+        File.write!(path <> ".actual", text)
+
+        raise ExUnit.AssertionError,
+          message: "#{name} differs from its golden; the new screen is in #{name}.actual"
+      end
+    end
+
+    :ok
+  end
+
   @doc "Home's own draft text."
   def home_draft(state) do
     SwarmCodeCLI.UI.Editor.text(

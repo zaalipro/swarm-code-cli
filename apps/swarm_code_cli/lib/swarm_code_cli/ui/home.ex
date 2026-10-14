@@ -15,8 +15,10 @@ defmodule SwarmCodeCLI.UI.Home do
       `seen_revision` the home revision the overview reflects;
     * `search_request`/`search_dirty?` are the same single flight for the
       list's `conversation.search`;
-    * `opened_over` is the destination Esc returns to; `pending_send` the text
-      that waits for `conversation.new`;
+    * `opened_over` is the destination Esc returns to and `entered` how Home was
+      opened (`:boot` at launch, else `:key` or `:command`: the hint line says
+      "continue the latest" at launch and "back to" after); `pending_send` the
+      text that waits for `conversation.new`;
     * `generation` counts the openings, so a late answer of an earlier one is
       dropped. `asked_revision` is the newest push the request in flight was sent
       after, and `lag_floor` the newest push an answer could not catch up with
@@ -44,6 +46,7 @@ defmodule SwarmCodeCLI.UI.Home do
             search_request: nil,
             search_dirty?: false,
             opened_over: nil,
+            entered: :boot,
             pending_send: nil,
             asked_revision: 0,
             lag_floor: 0
@@ -78,6 +81,7 @@ defmodule SwarmCodeCLI.UI.Home do
           search_request: binary() | nil,
           search_dirty?: boolean(),
           opened_over: term(),
+          entered: :boot | :key | :command,
           pending_send: binary() | nil,
           asked_revision: non_neg_integer(),
           lag_floor: non_neg_integer()
@@ -108,11 +112,12 @@ defmodule SwarmCodeCLI.UI.Home do
           bead: kept.bead,
           overview: kept.overview,
           seen_revision: kept.seen_revision,
-          opened_over: state.destination
+          opened_over: state.destination,
+          entered: how
         }
 
       _ ->
-        %__MODULE__{generation: 1, opened_over: state.destination}
+        %__MODULE__{generation: 1, opened_over: state.destination, entered: how}
     end
   end
 
