@@ -33,4 +33,4 @@
 
  › Type to start the first conversation in ailogic, or / for commands…
    Enter first conversation here   /trust lets it edit files   F2 settings
- Build · read-only · untrusted · opus 5.5 · xhigh                                                     Tab map   F1 keys
+ Build · read-only · untrusted · opus 5.5 · xhigh                                                    Tab list   F1 keys

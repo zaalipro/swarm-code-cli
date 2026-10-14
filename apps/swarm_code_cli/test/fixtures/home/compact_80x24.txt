@@ -8,7 +8,7 @@
   llmotions       ──────────────●────────────────────────────○───────○──────  3
   ailogic         ───────────────────────────────────────────────────○───○──  2
                   now                   1 h              1 d       7 d  30 d
-  resume                                                Alt-1…9 open   ↓ search
+  resume                                              Alt-1…9 open   Tab search
  ▌ 1 ! rate-limit chip wiring            approval waiting             2 min ago
    2 ● MCP fixture isolation             swarm · 60%                  6 min ago
    3 ● paste width regression                                        52 min ago
@@ -20,5 +20,5 @@
    9 ○ side panel lane colours                                          6 d ago
 
  › Type to start a new conversation…
-   Enter new   Esc latest   Tab map
+   Enter open   Esc latest   Tab list
  Build · auto · opus 5.5 · xhigh · 1 waiting                            F1 keys

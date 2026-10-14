@@ -96,7 +96,7 @@ defmodule SwarmCodeCLI.UI.Home.OrbitStatesTest do
 
     test "the status row does not advertise opening rows that are not there" do
       status = Enum.at(rows(first_run()), 35)
-      assert status =~ "Tab map"
+      assert status =~ "Tab list"
       assert status =~ "F1 keys"
       refute status =~ "Alt-1"
     end

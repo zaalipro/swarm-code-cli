@@ -786,13 +786,21 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
       if state.home.focus == :map do
         [{updown_label(state), {:text_muted, [:bold]}}, {" star", :text_faint}]
       else
+        # orbit int (UI-U-6): Tab reaches the search; ↓ moves the selection.
+        # With the list focused its own header already says "search".
         [
           {digits_label(state), {:text_muted, [:bold]}},
-          {" open", :text_faint},
-          {"   ", :text_primary},
-          {down_label(state), {:text_muted, [:bold]}},
-          {" " <> cols.search, :text_faint}
-        ]
+          {" open", :text_faint}
+        ] ++
+          if searching? do
+            []
+          else
+            [
+              {"   ", :text_primary},
+              {key_label(state, :home_focus_next, "Tab"), {:text_muted, [:bold]}},
+              {" " <> cols.search, :text_faint}
+            ]
+          end
       end
 
     Canvas.rputs(canvas, row, cols.end, hint) |> elem(0)
@@ -1344,7 +1352,7 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
           key_pairs(
             [{enter, "first"}] ++
               if(View.map?(state),
-                do: [{key_label(state, :home_focus_next, "Tab"), "map"}],
+                do: [{key_label(state, :home_focus_next, "Tab"), "list"}],
                 else: []
               )
           )
@@ -1365,23 +1373,43 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
 
         back = if state.home.entered == :boot, do: "continue the latest: ", else: "back to: "
 
+        # orbit int (UI-U-6): Enter says what it does. With an empty draft it
+        # opens the selected row (D10); the words "new conversation" are for a
+        # draft that has text.
+        enter_words =
+          cond do
+            text != "" and View.small?(state) -> "new"
+            text != "" -> "new conversation in " <> project
+            View.small?(state) -> "open"
+            true -> "open " <> selected_title(state)
+          end
+
         if View.small?(state) do
           key_pairs(
             [
-              {enter, "new"},
+              {enter, enter_words},
               {escape, if(state.home.entered == :boot, do: "latest", else: "back")}
             ] ++
               if(View.map?(state),
-                do: [{key_label(state, :home_focus_next, "Tab"), "map"}],
+                do: [{key_label(state, :home_focus_next, "Tab"), "list"}],
                 else: []
               )
           )
         else
           key_pairs([
-            {enter, "new conversation in " <> project},
+            {enter, enter_words},
             {escape, back <> Canvas.clip(Canvas.new(state, 200, 1), title, 40)}
           ])
         end
+    end
+  end
+
+  # The title of the row Enter opens from an empty composer, clipped to fit the
+  # hint row beside the Esc hint.
+  defp selected_title(state) do
+    case Enum.at(Home.rows(state), state.home.selected) do
+      %{title: title} when title != "" -> Canvas.clip(Canvas.new(state, 200, 1), title, 24)
+      _ -> "the latest"
     end
   end
 
@@ -1439,18 +1467,5 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
           do: KeyLabel.label(key, state.capabilities.ascii?)
 
     if length(labels) == 2, do: Enum.join(labels), else: "↑↓"
-  end
-
-  defp down_label(state) do
-    case Bindings.fetch(:home_down) do
-      %{} = binding ->
-        case Bindings.key_in_context(binding, :home_composer, Keymap.overrides(state)) do
-          nil -> "↓"
-          key -> KeyLabel.label(key, state.capabilities.ascii?)
-        end
-
-      _ ->
-        "↓"
-    end
   end
 end

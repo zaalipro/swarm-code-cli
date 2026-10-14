@@ -151,7 +151,7 @@ defmodule SwarmCodeCLI.UI.Keymap.HomeBindings do
   """
   @spec hints(atom()) :: [{[atom()], binary()}]
   def hints(:home_composer),
-    do: [{[:home_focus_next], "map"}, {:digits, "open"}, {[:help], "keys"}]
+    do: [{[:home_focus_next], "list"}, {:digits, "open"}, {[:help], "keys"}]
 
   def hints(:home_list),
     do: [

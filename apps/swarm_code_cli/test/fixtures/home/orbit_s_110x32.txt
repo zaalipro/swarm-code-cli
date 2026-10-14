@@ -17,7 +17,7 @@
     bars 3 live · swarm research chat
     dot  1 needs you · Ctrl-N go
 
-    resume in swarm-code-cli                                                    Alt-1…9 open   ↓ search all
+    resume in swarm-code-cli                                                  Alt-1…9 open   Tab search all
   ▌ 1  ! rate-limit chip wiring           approval waiting  4 runs                                2 min ago
     2  ● MCP fixture isolation            swarm · 60%       7 runs                                6 min ago
     3  ● paste width regression                             3 runs                               52 min ago
@@ -28,5 +28,5 @@
     8  ○ history search ranking                             2 runs                                  4 d ago
     9  ○ side panel lane colours                            9 runs                                  6 d ago
  › Type to start a new conversation, or / for commands…
-   Enter new conversation in swarm-code-cli   Esc continue the latest: rate-limit chip wiring
- Build · auto · opus 5.5 · xhigh · ⎇ main +3 · 1 waiting                     Tab map   Alt-1…9 open   F1 keys
+   Enter open rate-limit chip wiring   Esc continue the latest: rate-limit chip wiring
+ Build · auto · opus 5.5 · xhigh · ⎇ main +3 · 1 waiting                    Tab list   Alt-1…9 open   F1 keys

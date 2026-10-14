@@ -232,6 +232,13 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
                [:map, :list, :composer]
     end
 
+    test "the first Tab from the composer lands on the list, in a first run too: the hints say `list` (UI-U-6)" do
+      assert focus(ready(), :focus_next).home.focus == :list
+      first = ready(conversations: [summary(1, run_count: 0, last_prompt: nil)])
+      assert Home.View.first_run?(first)
+      assert focus(first, :focus_next).home.focus == :list
+    end
+
     test "skips the map where none is drawn (the minimal class)" do
       state = ready(size: {60, 16})
       walk = Enum.scan(1..3, state, fn _, acc -> focus(acc, :focus_next) end)

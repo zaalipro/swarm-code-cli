@@ -7,7 +7,7 @@ defmodule SwarmCodeCLI.UI.Home.OrbitProjectorTest do
   use ExUnit.Case, async: true
 
   import SwarmCodeCLI.OrbitHelpers,
-    only: [fixture: 0, fixture: 1, fixture: 2, assert_golden: 2, home_draft: 1, step: 2]
+    only: [fixture: 0, fixture: 1, fixture: 2, assert_golden: 2, home_draft: 1, step: 2, type: 2]
 
   alias SwarmCodeCLI.Cli020EHelpers, as: H
   alias SwarmCodeCLI.UI.{Projector, Theme}
@@ -112,16 +112,26 @@ defmodule SwarmCodeCLI.UI.Home.OrbitProjectorTest do
       assert Enum.at(rows, 32) =~ "Enter open   Ctrl-N go to the approval"
     end
 
+    test "a draft with text makes Enter a new conversation; the hint says so" do
+      {state, _} = type(fixture(), "fix the flaky test")
+      hint = Enum.at(rows(state), 34)
+      assert hint =~ "Enter new conversation in swarm-code-cli"
+      refute hint =~ "Enter open"
+    end
+
     test "the composer, its hint and the status row" do
       rows = rows(fixture())
       assert Enum.at(rows, 33) =~ "› Type to start a new conversation, or / for commands…"
 
+      # orbit int (UI-U-6): an empty draft's Enter opens the selected row.
       assert Enum.at(rows, 34) =~
-               "Enter new conversation in swarm-code-cli   Esc continue the latest: rate-limit chip wiring"
+               "Enter open rate-limit chip wiring   Esc continue the latest: rate-limit chip wiring"
 
       status = Enum.at(rows, 35)
       assert status =~ "auto · opus 5.5 · xhigh · ⎇ main +3 · 1 waiting"
-      assert status =~ "Tab map"
+      # ... and the first Tab from the composer lands on the list, not the map.
+      assert status =~ "Tab list"
+      refute status =~ "Tab map"
       assert status =~ "Alt-1…9 open"
       assert status =~ "F1 keys"
       refute status =~ "ctx"
@@ -380,7 +390,7 @@ defmodule SwarmCodeCLI.UI.Home.OrbitProjectorTest do
     test "the list has no run counts and the selected row is filled", %{state: state} do
       rows = rows(state)
       assert Enum.at(rows, 10) =~ "resume"
-      assert Enum.at(rows, 10) =~ "Alt-1…9 open   ↓ search"
+      assert Enum.at(rows, 10) =~ "Alt-1…9 open   Tab search"
       assert Enum.at(rows, 11) =~ "▌ 1 ! rate-limit chip wiring"
       assert Enum.at(rows, 19) =~ "9 ○ side panel lane colours"
       refute Enum.any?(11..19, &(Enum.at(rows, &1) =~ "runs"))
@@ -392,10 +402,10 @@ defmodule SwarmCodeCLI.UI.Home.OrbitProjectorTest do
     test "the composer, its hint and the status row", %{state: state} do
       rows = rows(state)
       assert Enum.at(rows, 21) =~ "› Type to start a new conversation…"
-      assert Enum.at(rows, 22) =~ "Enter new   Esc latest   Tab map"
+      assert Enum.at(rows, 22) =~ "Enter open   Esc latest   Tab list"
       assert Enum.at(rows, 23) =~ "auto · opus 5.5 · xhigh · 1 waiting"
       assert Enum.at(rows, 23) =~ "F1 keys"
-      refute Enum.at(rows, 23) =~ "Tab map"
+      refute Enum.at(rows, 23) =~ "Tab list"
     end
 
     test "fewer rows drop the line orbits first and keep three list rows" do
@@ -485,7 +495,7 @@ defmodule SwarmCodeCLI.UI.Home.OrbitProjectorTest do
       assert Enum.at(rows, 2) =~ "$38.40 of $60 · 3 live · 1 needs you"
       assert Enum.at(rows, 4) =~ "resume"
       assert Enum.at(rows, 5) =~ "▌ 1 ! rate-limit chip wiring"
-      assert Enum.at(rows, 14) =~ "Enter new   Esc latest"
+      assert Enum.at(rows, 14) =~ "Enter open   Esc latest"
       refute Enum.at(rows, 14) =~ "map"
     end
   end
