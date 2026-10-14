@@ -21,6 +21,8 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       desc: "How much agents may do without asking"
     },
     %{name: "trust", args: "", desc: "Trust this project: read its AGENTS.md and allow edits"},
+    # orbit: Home, the startup dashboard (Alt-O).
+    %{name: "home", args: "", desc: "Open Home: recent work, live runs, resume"},
     %{
       name: "panel",
       args: "[full|compact|hidden|summaries on|off]",
@@ -441,6 +443,9 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   # opened by itself (`Keymap.typing_under_card?/1`), so its `/com` lists,
   # completes and runs `/compact` as it does without the card.
   defp gate?(%{focus: "composer", layers: []}), do: true
+
+  # orbit U9: Home's composer is a composer too, whatever the shell has focused.
+  defp gate?(%{home: %{focus: :composer}, layers: []}), do: true
 
   defp gate?(%{layers: [{:approval, _} | _]} = state),
     do: SwarmCodeCLI.UI.Keymap.typing_under_card?(state)

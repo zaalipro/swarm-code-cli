@@ -33,6 +33,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
   @doc "cli021 C2: tell every client the shown conversation's vitals (a reading)."
   def vitals(server, %DTO.Vitals{} = vitals), do: GenServer.call(server, {:vitals, vitals})
 
+  @doc "orbit §3.2: tell every client Home's data is stale (`revision` is the home revision)."
+  def home_stale(server, revision) when is_integer(revision) and revision >= 0,
+    do: GenServer.call(server, {:home_stale, revision})
+
   def metadata(server), do: GenServer.call(server, :metadata)
   def unwatch(server, client_id, ref), do: GenServer.call(server, {:unwatch, client_id, ref})
 
@@ -52,6 +56,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
          script: script,
          epoch: epoch,
          clients: %{},
+         # orbit §3.2: the home revision `home_stale/2` last named, which the
+         # overview answers with (a lower one would be asked for again).
+         home_revision: 0,
          settings: nil,
          settings_opts: Keyword.get(opts, :settings, [])
        }}
@@ -93,6 +100,27 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
     }
 
     state = %{state | script: %{state.script | sequence: sequence, revision: revision}}
+    broadcast(state, [delta])
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:home_stale, revision}, _, state) do
+    watch_revision = state.script.revision + 1
+    sequence = state.script.sequence + 1
+
+    delta = %Delta{
+      kind: :home_stale,
+      body: %DTO.HomeStale{revision: revision},
+      sequence: sequence,
+      revision: watch_revision
+    }
+
+    state = %{
+      state
+      | script: %{state.script | sequence: sequence, revision: watch_revision},
+        home_revision: max(state.home_revision, revision)
+    }
+
     broadcast(state, [delta])
     {:reply, :ok, state}
   end
@@ -403,6 +431,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Source do
 
   defp execute(state, %Request{kind: {:conversation_list, _, _, _}} = request) do
     with {:ok, body} <- Session.conversation_list(state.script, request),
+         do: {:ok, state.script, body, []}
+  end
+
+  defp execute(state, %Request{kind: {:conversation_search, _, _, _}} = request) do
+    with {:ok, body} <- Session.conversation_search(state.script, request),
+         do: {:ok, state.script, body, []}
+  end
+
+  defp execute(state, %Request{kind: {:home_overview, _, _, _}} = request) do
+    with {:ok, body} <- Session.home_overview(state.script, request, state.home_revision),
          do: {:ok, state.script, body, []}
   end
 

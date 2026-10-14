@@ -1,0 +1,36 @@
+ ⬢ ailogic   ▌ home                                                                                         ncode 0.2.2
+                                        ailogic              swarm-code-cli    swarm-code       llmotions
+                 ⣀⣀⣤⣤⣤⣤⣤⣄⣀           ⠈ ⠂⠄⡀                  ⠈⠠                ⠈⠠                ⠡                   now
+             ⣀⣤⣶⣿⣿⡿⠿⠿⠿⠿⠿⠿⠿                ⠁⠂⢄                 ⠈⠄                ⠡                ⠡
+           ⣠⣾⣿⡿⠛⠉                            ⠈⠢⡀                ●                ⠡                ⠅
+         ⢠⣾⣿⠟⠁                 ⣾⣷              ⠈⠢⡀                ●               ⠡               ⠈⠄
+        ⣰⣿⣿⠋               ⣀  ⢸⣿⣿                ⠈⢆               ⠈⠄               ⠡               ●
+       ⢠⣿⣿⠃               ⣸⣿⡇ ⣼⣿⡇                  ⢣               ⠨                ●              ⠈⠄
+       ⣼⣿⡏           ⢀⣶⣦  ⣿⣿⠃ ⣿⣿⠃                  ⠈⡆               ●               ⠅               ⠅               1 h
+       ⣿⣿⠃       ⣀⣄  ⢸⣿⡿ ⢰⣿⣿ ⢰⣿⣿                    ⡇               ●               ●               ⠅
+       ⣿⣿⡄   ⢀⡀  ⣿⣿⠃ ⢺⣿⠇ ⢸⣿⡏ ⢸⣿⡏                    ⡇               ●               ⠅               ⠅
+       ⢻⣿⣇  ⢠⣿⣿ ⢰⣿⣿ ⢠⣶⣶  ⣿⣿⡇ ⣿⣿⡇                   ⢠⠃               ⠅               ⠅               ⠅
+       ⠘⣿⣿⡄ ⢸⣿⡟ ⢸⣿⡏ ⠈⣛⠋ ⢀⣿⣿ ⢠⣿⣿                   ⢀⠎               ○               ○               ⠠⠁               1 d
+        ⠘⣿⣿⣆⠈⠛⠁ ⣿⣿⡇ ⣸⣿⡇ ⢸⣿⡿ ⠸⠿⠟                  ⢠⠊               ○                ○               ○
+         ⠈⢻⣿⣷⣄  ⠻⠟  ⣿⣿⠇ ⢸⣿⠇                    ⢀⠔⠁               ○                ○               ⠠⠁
+           ⠙⠿⣿⣷⣦⣄⡀  ⠉⠉    ⣀⣤⣤⡀               ⡠⠐⠁                ○                ⠠⠁               ○                 7 d
+             ⠈⠙⠿⢿⣿⣿⣷⣶⣶⣶⣶⣾⣿⣿⡿⠟⠁            ⡠⠐⠈                 ⠠⠈                ○                ⠌
+                  ⠉⠉⠉⠛⠋⠉⠉⠉           ⡀⠠⠐ ⠁                  ⠠⠈                 ⠌                ⠌                  30 d
+                                      new                   9                  6                3 · 1 live
+    ring ▰▰▱▱▱▱▱▱▱▱  $12.10 of $60
+    bars 1 live · research in llmotions
+    dot  nothing waits for you
+
+    ✳ Ready to build                                             recently, elsewhere                      Alt-1…5 copy
+      Ask for a change, inspect the project, or choose a mode.   1  ● rate-limit chip wiring    swarm-code-cli   2 min
+                                                                 2  ● MCP fixture isolation     swarm-code-cli   6 min
+      Enter    send                                              3  ● competitor pricing scan        llmotions  12 min
+      /        commands                                          4  ● pass 76 review notes          swarm-code  40 min
+      Ctrl-P   workflows, research, memory, settings             5  ● paste width regression    swarm-code-cli  52 min
+
+      ! untrusted · /trust reads AGENTS.md and allows edits      Another project opens in its own tab: Enter copies
+      /approval auto lets it edit; read-only now                 the command, ncode ~/dev/swarm-code-cli -r 0b6f5b3e
+
+ › Type to start the first conversation in ailogic, or / for commands…
+   Enter first conversation here   /trust lets it edit files   F2 settings
+ Build · read-only · untrusted · opus 5.5 · xhigh                                                     Tab map   F1 keys

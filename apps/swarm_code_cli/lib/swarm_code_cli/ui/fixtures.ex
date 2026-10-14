@@ -444,6 +444,380 @@ defmodule SwarmCodeCLI.UI.Fixtures do
     put_in(state.read_model.snapshots[:shell], shell)
   end
 
+  # ------------------------------------------------------------------ Home
+  #
+  # orbit: the designer's mock for Home (D.html, gen_D.py), as service data. The
+  # clock is `@clock_ms`, so the ages are the frame's: 2 min, 6 min, 52 min, 3 h...
+
+  @home_project "0b6f5b3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
+  @home_projects [
+    {"0b6f5b3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b", "swarm-code-cli", "/Users/dev/dev/swarm-code-cli"},
+    {"5e3a8c11-2f4d-4b6a-9c7e-1d2f3a4b5c6d", "swarm-code", "/Users/dev/dev/swarm-code"},
+    {"7c1e9a2b-0000-4000-8000-000000000003", "llmotions", "/Users/dev/dev/llmotions"},
+    {"a1090000-0000-4000-8000-0000000000a1", "ailogic", "/Users/dev/dev/ailogic"}
+  ]
+
+  # {title, minutes since it moved, state, runs, minutes since it began, last prompt}
+  @home_cli [
+    {"rate-limit chip wiring", 2, :wait, 4, 4320,
+     "wire the rate-limit chip into the status row and the side-panel strip"},
+    {"MCP fixture isolation", 6, :live, 7, 2900,
+     "isolate the MCP fixtures per test so the stdio servers stop leaking"},
+    {"paste width regression", 52, :idle, 3, 1500, "why does a pasted wide line break the box"},
+    {"reaper ownership for kill_async", 180, :unread, 5, 3000,
+     "who should own the reaper that kills the async tree"},
+    {"workflow host file reads", 300, :idle, 2, 2000, "route host file reads through the guard"},
+    {"dashboard launch brief", 1560, :idle, 1, 1700, "brief the dashboard launch screen"},
+    {"settings strata hues", 2880, :idle, 6, 9000, "tune the strata hues of the settings rail"},
+    {"history search ranking", 5760, :idle, 2, 7000, "rank history search by recency"},
+    {"side panel lane colours", 8640, :idle, 9, 12_000, "give each lane its own colour"}
+  ]
+  @home_desk [
+    {"pass 76 review notes", 40},
+    {"ego lite smoke", 190},
+    {"tray menu order", 1500},
+    {"storage cleanup", 3000},
+    {"themes backfill", 7000},
+    {"icon picker", 17_000}
+  ]
+  @home_llm [
+    {"competitor pricing scan", 12, :live, 2, 14,
+     "scan five competitors' pricing pages and chart their tiers against ours"},
+    {"landing hero copy", 3100, :idle, 4, 6000, "rewrite the landing hero"},
+    {"pricing table refactor", 13_000, :idle, 1, 13_100, "split the pricing table"}
+  ]
+  @home_ail [{"fake provider script", 13_500}, {"seed data reset", 29_000}]
+
+  defp home_conversation_id(project, n) do
+    prefix = project |> String.slice(0, 8)
+    prefix <> "-0000-4000-8000-" <> String.pad_leading(Integer.to_string(n), 12, "0")
+  end
+
+  @doc """
+  Home's overview as the designer's mock (D-main-dark): four projects, three live
+  runs, $38.40 of $60 this month, one approval waiting and a scheduled task.
+  `now` is unix milliseconds (the fake source's clock by default).
+  """
+  @spec home_overview(integer(), keyword()) :: DTO.HomeOverview.t()
+  def home_overview(now \\ @clock_ms, opts \\ []) do
+    overview = main_overview(now)
+
+    case Keyword.get(opts, :scene, :main) do
+      :first_run -> first_run_overview(overview, now)
+      _ -> overview
+    end
+  end
+
+  # D-first-run: a project with nothing in it yet is innermost, the others have
+  # nothing live or waiting but the one research run in llmotions.
+  defp first_run_overview(overview, now) do
+    ail = Enum.find(overview.projects, &(&1.name == "ailogic"))
+    others = Enum.reject(overview.projects, &(&1.name == "ailogic"))
+
+    quiet = fn project ->
+      conversations =
+        Enum.map(project.conversations, fn conversation ->
+          if project.name == "llmotions",
+            do: conversation,
+            else: %{conversation | live: false, live_kind: nil, waiting: 0}
+        end)
+
+      live = if project.name == "llmotions", do: project.live, else: 0
+      %{project | current: false, waiting: 0, live: live, conversations: conversations}
+    end
+
+    ail = %{
+      ail
+      | current: true,
+        last_opened_at: now,
+        conversation_count: 0,
+        conversations: [],
+        live: 0,
+        waiting: 0
+    }
+
+    %{
+      overview
+      | project_id: ail.id,
+        projects: [ail | Enum.map(others, quiet)],
+        live_runs: Enum.filter(overview.live_runs, &(&1.kind == :research)),
+        waiting_total: 0,
+        month: %DTO.HomeMonth{spend_usd: 12.1, budget_usd: 60.0},
+        next_scheduled: nil
+    }
+  end
+
+  defp main_overview(now) do
+    ago = &(now - &1 * 60_000)
+    {cli_id, cli_name, cli_root} = Enum.at(@home_projects, 0)
+
+    cli_conversations =
+      for {{title, m, state, _runs, _born, _lp}, n} <- Enum.with_index(@home_cli, 1) do
+        %DTO.HomeConversation{
+          id: home_conversation_id(cli_id, n),
+          title: title,
+          updated_at: ago.(m),
+          live: state == :live,
+          live_kind: if(state == :live, do: :swarm),
+          waiting: if(state == :wait, do: 1, else: 0),
+          unread: state == :unread
+        }
+      end
+
+    plain = fn {id, _name, _root}, rows ->
+      for {{title, m}, n} <- Enum.with_index(rows, 1) do
+        %DTO.HomeConversation{id: home_conversation_id(id, n), title: title, updated_at: ago.(m)}
+      end
+    end
+
+    llm = Enum.at(@home_projects, 2)
+
+    llm_conversations =
+      for {{title, m, state, _runs, _born, _lp}, n} <- Enum.with_index(@home_llm, 1) do
+        %DTO.HomeConversation{
+          id: home_conversation_id(elem(llm, 0), n),
+          title: title,
+          updated_at: ago.(m),
+          live: state == :live,
+          live_kind: if(state == :live, do: :research)
+        }
+      end
+
+    project = fn {id, name, root} = entry, conversations, live, current? ->
+      _ = entry
+
+      %DTO.HomeProject{
+        id: id,
+        name: name,
+        root_path: root,
+        current: current?,
+        last_opened_at: if(current?, do: now),
+        conversation_count: length(conversations),
+        live: live,
+        waiting: if(current?, do: 1, else: 0),
+        conversations: conversations
+      }
+    end
+
+    desk = Enum.at(@home_projects, 1)
+    ail = Enum.at(@home_projects, 3)
+
+    %DTO.HomeOverview{
+      request_id: nil,
+      state: :ready,
+      revision: 3,
+      project_id: cli_id,
+      projects: [
+        project.({cli_id, cli_name, cli_root}, cli_conversations, 1, true),
+        project.(desk, plain.(desk, @home_desk), 0, false),
+        project.(llm, llm_conversations, 1, false),
+        project.(ail, plain.(ail, @home_ail), 0, false)
+      ],
+      live_runs: [
+        %DTO.HomeRun{
+          id: "9d000000-0000-4000-8000-000000000001",
+          project_id: cli_id,
+          conversation_id: home_conversation_id(cli_id, 2),
+          kind: :swarm,
+          progress: 60,
+          started_at: ago.(2900)
+        },
+        %DTO.HomeRun{
+          id: "9d000000-0000-4000-8000-000000000002",
+          project_id: elem(llm, 0),
+          conversation_id: home_conversation_id(elem(llm, 0), 1),
+          kind: :research,
+          progress: 25,
+          started_at: ago.(14)
+        },
+        %DTO.HomeRun{
+          id: "9d000000-0000-4000-8000-000000000003",
+          project_id: cli_id,
+          conversation_id: home_conversation_id(cli_id, 1),
+          kind: :chat,
+          progress: nil,
+          started_at: ago.(4320)
+        }
+      ],
+      live_overflow: 0,
+      waiting_total: 1,
+      month: %DTO.HomeMonth{spend_usd: 38.4, budget_usd: 60.0},
+      next_scheduled: %DTO.HomeScheduled{
+        id: "5c000000-0000-4000-8000-000000000001",
+        name: "nightly deps audit",
+        project_id: cli_id,
+        project_name: cli_name,
+        next_run_at: now + 14 * 60_000
+      }
+    }
+  end
+
+  @doc """
+  The conversation list of the mock's own project, as the resume list shows it
+  (`conversation.list`): nine rows, the first current, newest first.
+  """
+  @spec home_list(integer(), keyword()) :: DTO.ConversationList.t()
+  def home_list(now \\ @clock_ms, opts \\ [])
+
+  def home_list(now, scene: :first_run) do
+    id = home_conversation_id(elem(Enum.at(@home_projects, 3), 0), 1)
+
+    item = %DTO.ConversationSummary{
+      id: id,
+      title: "New conversation",
+      created_at: now,
+      updated_at: now,
+      run_count: 0,
+      current: true,
+      last_prompt: nil
+    }
+
+    %DTO.ConversationList{
+      project: "ailogic",
+      current_id: id,
+      items: [item],
+      request_id: nil,
+      presence: :covered,
+      covered_ids: [id],
+      through_sequence: 0
+    }
+  end
+
+  def home_list(now, _opts) do
+    items =
+      for {{title, m, state, runs, born, lp}, n} <- Enum.with_index(@home_cli, 1) do
+        %DTO.ConversationSummary{
+          id: home_conversation_id(@home_project, n),
+          title: title,
+          created_at: now - born * 60_000,
+          updated_at: now - m * 60_000,
+          run_count: runs,
+          live: state == :live,
+          waiting: if(state == :wait, do: 1, else: 0),
+          unread: state == :unread,
+          current: n == 1,
+          last_prompt: lp
+        }
+      end
+
+    %DTO.ConversationList{
+      project: "swarm-code-cli",
+      current_id: home_conversation_id(@home_project, 1),
+      items: items,
+      request_id: nil,
+      presence: :covered,
+      covered_ids: Enum.map(items, & &1.id),
+      through_sequence: 0
+    }
+  end
+
+  @doc """
+  A state with Home open as the designer's mock: the nine conversations of
+  swarm-code-cli underneath, the overview loaded, `auto` approvals, opus 5.5 at
+  xhigh, branch main with 3 changed files. `opts`: `home:` fields to set on the
+  `%Home{}`, `overview:` (a `%HomeOverview{}` or nil), `list:` (a
+  `%ConversationList{}` or nil), `workspace:` fields for the workspace snapshot.
+  """
+  @spec home_state(Size.t(), Capabilities.t(), keyword()) :: State.t()
+  def home_state(%Size{} = size, %Capabilities{} = capabilities, opts \\ []) do
+    capabilities = %{capabilities | size: size}
+    scene = Keyword.get(opts, :scene, :main)
+    first_run? = scene == :first_run
+    overview = Keyword.get(opts, :overview, home_overview(@clock_ms, scene: scene))
+    list = Keyword.get(opts, :list, home_list(@clock_ms, scene: scene))
+    project = if first_run?, do: Enum.at(@home_projects, 3), else: Enum.at(@home_projects, 0)
+
+    conversation =
+      if first_run?,
+        do: home_conversation_id(elem(project, 0), 1),
+        else: home_conversation_id(@home_project, 1)
+
+    # D-first-run is an untrusted read-only project; D-interact has the map focused
+    # on llmotions' newest conversation.
+    scene_workspace =
+      if first_run?,
+        do: [
+          project: "ailogic",
+          approval_mode: :read_only,
+          trusted: false,
+          git_branch: nil,
+          git_dirty: nil
+        ],
+        else: []
+
+    scene_home = if scene == :interact, do: [focus: :map, orbit: 2, bead: 0], else: []
+
+    workspace =
+      struct!(
+        %DTO.WorkspaceSnapshot{},
+        Keyword.merge(
+          [
+            project: elem(project, 1),
+            approval_mode: :auto,
+            trusted: true,
+            chat_model: "opus 5.5",
+            effort: "xhigh",
+            effort_effective: "xhigh",
+            git_branch: "main",
+            git_dirty: 3
+          ],
+          Keyword.merge(scene_workspace, Keyword.get(opts, :workspace, []))
+        )
+      )
+
+    editor = Editor.new(ambiguous_width: capabilities.ambiguous_width)
+
+    drafts =
+      Drafts.new(ambiguous_width: capabilities.ambiguous_width)
+      |> Drafts.put(Draft.new({conversation, :main}, editor))
+      |> Drafts.put(Draft.new({"fixture-epoch", :home}, editor))
+
+    home =
+      struct!(
+        %SwarmCodeCLI.UI.Home{generation: 1, overview: overview},
+        Keyword.merge(scene_home, Keyword.get(opts, :home, []))
+      )
+
+    %State{
+      size: size,
+      capabilities: capabilities,
+      source_epoch: "fixture-epoch",
+      destination: {:conversation, conversation},
+      read_model: %ReadModel{
+        snapshots: %{
+          workspace: workspace,
+          shell: %DTO.ShellSnapshot{
+            rate_limits: [
+              %DTO.RateLimit{
+                provider_id: "a0000000-0000-4000-8000-000000000001",
+                provider: "Anthropic",
+                scope: "5 h window",
+                used_percent: 41.0
+              },
+              %DTO.RateLimit{
+                provider_id: "a0000000-0000-4000-8000-000000000002",
+                provider: "OpenAI",
+                scope: "daily",
+                used_percent: 12.0
+              }
+            ]
+          }
+        }
+      },
+      drafts: drafts,
+      focus: "composer",
+      revision: 1,
+      now: @clock_ms,
+      home: home,
+      conversations: list,
+      launch_facts: %{
+        cli_version: "0.2.2",
+        project_root: elem(project, 2),
+        home: "/Users/dev"
+      }
+    }
+  end
+
   defp title(:chat), do: "Streaming conversation"
   defp title(:swarm), do: "Swarm · independent agent lanes"
   defp title(:consensus), do: "Consensus · docket and ledger"

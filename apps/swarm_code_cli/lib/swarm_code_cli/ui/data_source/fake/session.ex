@@ -48,7 +48,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
 
   @enforce_keys [:conversations, :current, :approval_mode, :trusted, :background, :rate_limits]
   # cli021 B1: the effort the demo's `/effort` and `/worker_effort` set.
-  defstruct @enforce_keys ++ [toasts: 0, effort: nil, swarm_effort: nil, vitals: nil]
+  # orbit: `home` is the optional scripted extra of Home's overview: nil, or a map
+  # with any of `:projects` (other projects' `DTO.HomeProject`, at most 7),
+  # `:month`, `:next_scheduled`, `:live_runs`, `:live_overflow`, `:waiting_total`.
+  defstruct @enforce_keys ++
+              [toasts: 0, effort: nil, swarm_effort: nil, vitals: nil, home: nil]
 
   @type t :: %__MODULE__{
           conversations: %{binary() => map()},
@@ -58,7 +62,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
           background: %{binary() => DTO.BackgroundCommand.t()},
           rate_limits: %{binary() => DTO.RateLimit.t()},
           toasts: non_neg_integer(),
-          vitals: DTO.Vitals.t() | nil
+          vitals: DTO.Vitals.t() | nil,
+          home: map() | nil
         }
 
   @doc "The provider id of the synthetic rate-limit window."
@@ -157,10 +162,27 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
       Enum.all?(session.rate_limits, fn {id, limit} ->
         limit.provider_id == id and Schema.valid?({:dto, DTO.RateLimit}, limit)
       end) and Schema.valid?(:count, session.toasts) and
-      Schema.valid?({:optional, {:dto, DTO.Vitals}}, session.vitals)
+      Schema.valid?({:optional, {:dto, DTO.Vitals}}, session.vitals) and
+      valid_home?(session.home)
   end
 
   def valid?(_), do: false
+
+  @home_keys [:projects, :month, :next_scheduled, :live_runs, :live_overflow, :waiting_total]
+
+  defp valid_home?(nil), do: true
+
+  defp valid_home?(home) when is_map(home) and not is_struct(home) do
+    Enum.all?(Map.keys(home), &(&1 in @home_keys)) and
+      Schema.valid?({:list, {:dto, DTO.HomeProject}, 7}, Map.get(home, :projects, [])) and
+      Schema.valid?({:optional, {:dto, DTO.HomeMonth}}, Map.get(home, :month)) and
+      Schema.valid?({:optional, {:dto, DTO.HomeScheduled}}, Map.get(home, :next_scheduled)) and
+      Schema.valid?({:list, {:dto, DTO.HomeRun}, 5}, Map.get(home, :live_runs, [])) and
+      Schema.valid?(:count, Map.get(home, :live_overflow, 0)) and
+      Schema.valid?(:count, Map.get(home, :waiting_total, 0))
+  end
+
+  defp valid_home?(_), do: false
 
   @doc "True when `id` is a conversation of the synthetic project."
   def conversation?(%{session: %__MODULE__{conversations: rows}}, id), do: Map.has_key?(rows, id)
@@ -296,6 +318,169 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.Session do
         true -> DTO.ConversationList.validate(page)
       end
     end
+  end
+
+  @project "00000000-0000-4000-8000-00000000f0a0"
+  @live_states [:running, :streaming, :retrying, :waiting_approval]
+
+  @doc "The id of the synthetic project Home's overview starts with."
+  def project_id, do: @project
+
+  @doc """
+  orbit §3.1.2: `{:conversation_search, query, limit, bytes}`: the synthetic
+  project's conversations whose title or newest prompt holds the query
+  (case-insensitive substring), newest first, as one `conversation_list` page.
+  """
+  def conversation_search(script, %{
+        kind: {:conversation_search, query, limit, bytes},
+        request_id: request_id
+      }) do
+    session = script.session
+    needle = String.downcase(query)
+
+    rows =
+      session.conversations
+      |> Map.values()
+      |> Enum.sort_by(&{-&1.updated_at, &1.id})
+      |> Enum.map(&summary(script, &1))
+      |> Enum.filter(fn row ->
+        String.contains?(String.downcase(row.title), needle) or
+          String.contains?(String.downcase(row.last_prompt || ""), needle)
+      end)
+      |> Enum.take(limit)
+
+    page = %DTO.ConversationList{
+      project: "swarm-code",
+      current_id: session.current,
+      items: rows,
+      before_cursor: nil,
+      after_cursor: nil,
+      request_id: request_id,
+      presence: :covered,
+      covered_ids: Enum.map(rows, & &1.id),
+      through_sequence: script.sequence
+    }
+
+    if :erlang.external_size(page) > bytes,
+      do: {:error, AdmissionError.new(:capacity_exceeded)},
+      else: DTO.ConversationList.validate(page)
+  end
+
+  @doc """
+  orbit §3.1.1: `{:home_overview, projects, per_project, bytes}`: the synthetic
+  project first (its conversations, its running runs), then the scripted
+  `home.projects`. `revision` is the home revision the source holds.
+  """
+  def home_overview(script, request, revision \\ 0)
+
+  def home_overview(
+        script,
+        %{kind: {:home_overview, projects, per_project, bytes}, request_id: request_id},
+        revision
+      ) do
+    session = script.session
+    extra = session.home || %{}
+
+    live = live_runs(script)
+
+    conversations =
+      session.conversations
+      |> Map.values()
+      |> Enum.sort_by(&{-&1.updated_at, &1.id})
+
+    here =
+      %DTO.HomeProject{
+        id: @project,
+        name: "swarm-code",
+        root_path: "/Users/dev/dev/swarm-code",
+        current: true,
+        last_opened_at: script.session.conversations |> Map.values() |> newest_update(),
+        conversation_count: length(conversations),
+        live: Enum.count(live, &(&1.project_id == @project)),
+        waiting: Enum.sum(Enum.map(conversations, &waiting_count(script, &1.id))),
+        conversations: conversations |> Enum.take(per_project) |> Enum.map(&bead(script, &1))
+      }
+
+    others =
+      extra
+      |> Map.get(:projects, [])
+      |> Enum.map(fn project ->
+        %{project | current: false, conversations: Enum.take(project.conversations, per_project)}
+      end)
+
+    runs = Map.get(extra, :live_runs) || live
+
+    body = %DTO.HomeOverview{
+      request_id: request_id,
+      state: :ready,
+      revision: revision,
+      project_id: @project,
+      projects: Enum.take([here | others], projects),
+      live_runs: Enum.take(runs, 5),
+      live_overflow: Map.get(extra, :live_overflow, max(length(runs) - 5, 0)),
+      waiting_total:
+        Map.get(
+          extra,
+          :waiting_total,
+          Enum.sum(Enum.map(conversations, &waiting_count(script, &1.id)))
+        ),
+      month: Map.get(extra, :month, %DTO.HomeMonth{spend_usd: 0.0, budget_usd: nil}),
+      next_scheduled: Map.get(extra, :next_scheduled)
+    }
+
+    cond do
+      :erlang.external_size(body) > bytes -> {:error, AdmissionError.new(:capacity_exceeded)}
+      true -> DTO.HomeOverview.validate(body)
+    end
+  end
+
+  defp newest_update([]), do: nil
+  defp newest_update(rows), do: rows |> Enum.map(& &1.updated_at) |> Enum.max()
+
+  defp waiting_count(script, conversation_id) do
+    Enum.count(script.interactions, fn {_, q} ->
+      q.conversation_id == conversation_id and q.state == :pending
+    end)
+  end
+
+  # The newest running run of the conversation names its bead's kind.
+  defp bead(script, row) do
+    running =
+      script.runs
+      |> Map.values()
+      |> Enum.filter(&(&1.conversation_id == row.id and &1.state in @live_states))
+      |> Enum.sort_by(&{-&1.created_sequence, &1.id})
+
+    %DTO.HomeConversation{
+      id: row.id,
+      title: row.title,
+      updated_at: row.updated_at,
+      live: running != [],
+      live_kind: with([run | _] <- running, do: run.kind, else: (_ -> nil)),
+      waiting: waiting_count(script, row.id),
+      unread: false
+    }
+  end
+
+  # Every running run of the synthetic project, oldest first.
+  defp live_runs(script) do
+    script.runs
+    |> Map.values()
+    |> Enum.filter(
+      &(&1.state in @live_states and
+          Map.has_key?(script.session.conversations, &1.conversation_id))
+    )
+    |> Enum.sort_by(&{&1.created_sequence, &1.id})
+    |> Enum.map(fn run ->
+      %DTO.HomeRun{
+        id: run.id,
+        project_id: @project,
+        conversation_id: run.conversation_id,
+        kind: run.kind,
+        progress: run.progress,
+        started_at: run.started_at || 0
+      }
+    end)
   end
 
   defp summary(script, row) do

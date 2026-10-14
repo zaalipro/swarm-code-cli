@@ -464,6 +464,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
       :conversation_list ->
         struct!(DTO.ConversationList, attrs)
 
+      :home_overview ->
+        struct!(DTO.HomeOverview, attrs)
+
       :library_snapshot ->
         struct!(DTO.LibrarySnapshot, attrs ++ [feature: elem(req.kind, 1)])
 
@@ -562,7 +565,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
               :settings_update,
               :settings_task,
               :desktop_running,
-              :vitals
+              :vitals,
+              :home_stale
             ],
        do: slot == :shell
 
@@ -688,6 +692,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
   defp response?(:transcript_window, body), do: match?(%DTO.TranscriptWindow{}, body)
   defp response?(:pending_interactions, body), do: match?(%DTO.PendingInteractionWindow{}, body)
   defp response?(:conversation_list, body), do: match?(%DTO.ConversationList{}, body)
+  defp response?(:home_overview, body), do: match?(%DTO.HomeOverview{}, body)
   defp response?(:library_snapshot, body), do: match?(%DTO.LibrarySnapshot{}, body)
   defp response?(:agent_detail, body), do: match?(%DTO.AgentDetail{}, body)
 

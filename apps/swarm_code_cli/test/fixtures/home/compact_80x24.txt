@@ -1,0 +1,24 @@
+ ⬢ swarm-code-cli   ▌ home                                          ncode 0.2.2
+
+  ⢎⡁▂▃▅▆█ ●   ▰▰▰▰▰▰▱▱▱▱ $38.40 of $60 · 3 live · 1 needs you
+              ○ nightly deps audit in 14 min · ⎇ main +3
+
+  swarm-code-cli  ──────!───●──────────●──────●─●────────○───○──○─○─────────  9
+  swarm-code      ────────────────────●───────●──────────○───○───○────○─────  6
+  llmotions       ──────────────●────────────────────────────○───────○──────  3
+  ailogic         ───────────────────────────────────────────────────○───○──  2
+                  now                   1 h              1 d       7 d  30 d
+  resume                                                Alt-1…9 open   ↓ search
+ ▌ 1 ! rate-limit chip wiring            approval waiting             2 min ago
+   2 ● MCP fixture isolation             swarm · 60%                  6 min ago
+   3 ● paste width regression                                        52 min ago
+   4 ● reaper ownership for kill_async   unread                         3 h ago
+   5 ● workflow host file reads                                         5 h ago
+   6 ○ dashboard launch brief                                          26 h ago
+   7 ○ settings strata hues                                             2 d ago
+   8 ○ history search ranking                                           4 d ago
+   9 ○ side panel lane colours                                          6 d ago
+
+ › Type to start a new conversation…
+   Enter new   Esc latest   Tab map
+ Build · auto · opus 5.5 · xhigh · 1 waiting                            F1 keys

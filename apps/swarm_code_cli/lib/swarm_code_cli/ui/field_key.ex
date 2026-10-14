@@ -9,6 +9,7 @@ defmodule SwarmCodeCLI.UI.FieldKey do
           | {:question_other, binary(), non_neg_integer()}
           | {:research_question, binary()}
           | {:feature_field, binary(), binary()}
+          | {:home, :filter}
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_field_key}
   def validate({:layer_query, layer_id, kind} = key)
@@ -34,6 +35,9 @@ defmodule SwarmCodeCLI.UI.FieldKey do
       do: {:ok, key},
       else: {:error, :invalid_field_key}
   end
+
+  # orbit: the search text of Home's resume list.
+  def validate({:home, :filter} = key), do: {:ok, key}
 
   def validate(_key), do: {:error, :invalid_field_key}
 

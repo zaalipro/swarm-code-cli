@@ -5,12 +5,17 @@ defmodule SwarmCodeCLI.UI.DraftKey do
 
   # `{:agent, node_id}` (pass 72) is the agent overlay's composer: what it
   # steers goes to that one agent.
+  # orbit D9: `{source_epoch, :home}` is Home's composer, the session's.
   @type t ::
-          {binary(), :main | {:thread, binary()} | {:edit, binary()} | {:agent, binary()}}
+          {binary(), :main | :home | {:thread, binary()} | {:edit, binary()} | {:agent, binary()}}
 
   @spec validate(term()) :: {:ok, t()} | {:error, :invalid_draft_key}
   def validate({conversation_id, :main} = key) do
     if Intent.valid_id?(conversation_id), do: {:ok, key}, else: {:error, :invalid_draft_key}
+  end
+
+  def validate({epoch, :home} = key) do
+    if Intent.valid_id?(epoch), do: {:ok, key}, else: {:error, :invalid_draft_key}
   end
 
   def validate({conversation_id, {kind, subject_id}} = key)
