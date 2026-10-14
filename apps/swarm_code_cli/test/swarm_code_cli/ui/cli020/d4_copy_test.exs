@@ -76,6 +76,76 @@ defmodule SwarmCodeCLI.UI.Cli020.D4CopyTest do
     refute_received {:terminal_copy, _, _, _}
   end
 
+  # orbit int (lane U issue 16): Home's `y` on the map says which command it
+  # copied; pbcopy's success used to overwrite that with "Copied 1 line.".
+  test "Home's copy keeps the words that name the command once pbcopy took it" do
+    test = self()
+
+    gated = fn _exe, [_, _, _, file], _ms ->
+      send(test, {:ran, self(), File.read!(file)})
+
+      receive do
+        :go -> {:ok, 0, ""}
+      end
+    end
+
+    runtime =
+      R.start(
+        os_type: {:unix, :darwin},
+        env: %{},
+        command_runner: gated,
+        init: [home?: true]
+      )
+
+    until_map(runtime)
+    SessionRuntime.action(runtime, {:home, :focus_next})
+    SessionRuntime.action(runtime, {:home, :focus_next})
+    assert SessionRuntime.snapshot(runtime).home.focus == :map
+    SessionRuntime.action(runtime, {:home, :copy})
+
+    assert_receive {:ran, job, command}, 5_000
+    assert command =~ ~r/^ncode .+ -r [0-9a-f]{8}$/
+    words = "Copied: " <> command <> " — run it in a new terminal tab."
+    assert notice(runtime) == {:command_feedback, words}
+
+    ref = Process.monitor(job)
+    send(job, :go)
+    assert_receive {:DOWN, ^ref, :process, _, _}, 5_000
+    until_settled(runtime)
+    assert notice(runtime) == {:command_feedback, words}
+  end
+
+  test "a plain copy after Home's still says how many lines it copied" do
+    runtime =
+      R.start(os_type: {:unix, :darwin}, env: %{}, command_runner: runner(self(), 0))
+
+    :sys.replace_state(runtime, fn state ->
+      %{state | ui: %{state.ui | notice: {:command_feedback, "Copied: ncode /a -r 1234abcd — x"}}}
+    end)
+
+    R.effect(runtime, {:copy, "one\ntwo"})
+    assert_receive {:ran, _, _, _, "one\ntwo"}
+    until_settled(runtime)
+    assert notice(runtime) == {:command_feedback, "Copied 2 lines."}
+  end
+
+  defp until_map(runtime, attempts \\ 200)
+  defp until_map(_runtime, 0), do: flunk("Home's overview never arrived")
+
+  defp until_map(runtime, n) do
+    case SessionRuntime.snapshot(runtime).home do
+      %{overview: %{state: :ready, projects: [_ | _]}} -> :ok
+      _ -> until_map(runtime, n - 1)
+    end
+  end
+
+  defp until_settled(runtime, attempts \\ 200)
+  defp until_settled(_runtime, 0), do: flunk("the copy job never settled")
+
+  defp until_settled(runtime, n) do
+    if :sys.get_state(runtime).jobs == %{}, do: :ok, else: until_settled(runtime, n - 1)
+  end
+
   test "a terminal that never answers says it cannot take a copy from ncode" do
     runtime = R.start(os_type: {:unix, :linux}, env: %{})
     R.effect(runtime, {:copy, "x"})
