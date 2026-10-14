@@ -498,8 +498,56 @@ defmodule SwarmCodeCLI.UI.Fixtures do
   runs, $38.40 of $60 this month, one approval waiting and a scheduled task.
   `now` is unix milliseconds (the fake source's clock by default).
   """
-  @spec home_overview(integer()) :: DTO.HomeOverview.t()
-  def home_overview(now \\ @clock_ms) do
+  @spec home_overview(integer(), keyword()) :: DTO.HomeOverview.t()
+  def home_overview(now \\ @clock_ms, opts \\ []) do
+    overview = main_overview(now)
+
+    case Keyword.get(opts, :scene, :main) do
+      :first_run -> first_run_overview(overview, now)
+      _ -> overview
+    end
+  end
+
+  # D-first-run: a project with nothing in it yet is innermost, the others have
+  # nothing live or waiting but the one research run in llmotions.
+  defp first_run_overview(overview, now) do
+    ail = Enum.find(overview.projects, &(&1.name == "ailogic"))
+    others = Enum.reject(overview.projects, &(&1.name == "ailogic"))
+
+    quiet = fn project ->
+      conversations =
+        Enum.map(project.conversations, fn conversation ->
+          if project.name == "llmotions",
+            do: conversation,
+            else: %{conversation | live: false, live_kind: nil, waiting: 0}
+        end)
+
+      live = if project.name == "llmotions", do: project.live, else: 0
+      %{project | current: false, waiting: 0, live: live, conversations: conversations}
+    end
+
+    ail = %{
+      ail
+      | current: true,
+        last_opened_at: now,
+        conversation_count: 0,
+        conversations: [],
+        live: 0,
+        waiting: 0
+    }
+
+    %{
+      overview
+      | project_id: ail.id,
+        projects: [ail | Enum.map(others, quiet)],
+        live_runs: Enum.filter(overview.live_runs, &(&1.kind == :research)),
+        waiting_total: 0,
+        month: %DTO.HomeMonth{spend_usd: 12.1, budget_usd: 60.0},
+        next_scheduled: nil
+    }
+  end
+
+  defp main_overview(now) do
     ago = &(now - &1 * 60_000)
     {cli_id, cli_name, cli_root} = Enum.at(@home_projects, 0)
 
@@ -608,8 +656,34 @@ defmodule SwarmCodeCLI.UI.Fixtures do
   The conversation list of the mock's own project, as the resume list shows it
   (`conversation.list`): nine rows, the first current, newest first.
   """
-  @spec home_list(integer()) :: DTO.ConversationList.t()
-  def home_list(now \\ @clock_ms) do
+  @spec home_list(integer(), keyword()) :: DTO.ConversationList.t()
+  def home_list(now \\ @clock_ms, opts \\ [])
+
+  def home_list(now, scene: :first_run) do
+    id = home_conversation_id(elem(Enum.at(@home_projects, 3), 0), 1)
+
+    item = %DTO.ConversationSummary{
+      id: id,
+      title: "New conversation",
+      created_at: now,
+      updated_at: now,
+      run_count: 0,
+      current: true,
+      last_prompt: nil
+    }
+
+    %DTO.ConversationList{
+      project: "ailogic",
+      current_id: id,
+      items: [item],
+      request_id: nil,
+      presence: :covered,
+      covered_ids: [id],
+      through_sequence: 0
+    }
+  end
+
+  def home_list(now, _opts) do
     items =
       for {{title, m, state, runs, born, lp}, n} <- Enum.with_index(@home_cli, 1) do
         %DTO.ConversationSummary{
@@ -647,16 +721,38 @@ defmodule SwarmCodeCLI.UI.Fixtures do
   @spec home_state(Size.t(), Capabilities.t(), keyword()) :: State.t()
   def home_state(%Size{} = size, %Capabilities{} = capabilities, opts \\ []) do
     capabilities = %{capabilities | size: size}
-    overview = Keyword.get(opts, :overview, home_overview())
-    list = Keyword.get(opts, :list, home_list())
-    conversation = home_conversation_id(@home_project, 1)
+    scene = Keyword.get(opts, :scene, :main)
+    first_run? = scene == :first_run
+    overview = Keyword.get(opts, :overview, home_overview(@clock_ms, scene: scene))
+    list = Keyword.get(opts, :list, home_list(@clock_ms, scene: scene))
+    project = if first_run?, do: Enum.at(@home_projects, 3), else: Enum.at(@home_projects, 0)
+
+    conversation =
+      if first_run?,
+        do: home_conversation_id(elem(project, 0), 1),
+        else: home_conversation_id(@home_project, 1)
+
+    # D-first-run is an untrusted read-only project; D-interact has the map focused
+    # on llmotions' newest conversation.
+    scene_workspace =
+      if first_run?,
+        do: [
+          project: "ailogic",
+          approval_mode: :read_only,
+          trusted: false,
+          git_branch: nil,
+          git_dirty: nil
+        ],
+        else: []
+
+    scene_home = if scene == :interact, do: [focus: :map, orbit: 2, bead: 0], else: []
 
     workspace =
       struct!(
         %DTO.WorkspaceSnapshot{},
         Keyword.merge(
           [
-            project: "swarm-code-cli",
+            project: elem(project, 1),
             approval_mode: :auto,
             trusted: true,
             chat_model: "opus 5.5",
@@ -665,7 +761,7 @@ defmodule SwarmCodeCLI.UI.Fixtures do
             git_branch: "main",
             git_dirty: 3
           ],
-          Keyword.get(opts, :workspace, [])
+          Keyword.merge(scene_workspace, Keyword.get(opts, :workspace, []))
         )
       )
 
@@ -679,7 +775,7 @@ defmodule SwarmCodeCLI.UI.Fixtures do
     home =
       struct!(
         %SwarmCodeCLI.UI.Home{generation: 1, overview: overview},
-        Keyword.get(opts, :home, [])
+        Keyword.merge(scene_home, Keyword.get(opts, :home, []))
       )
 
     %State{
@@ -716,7 +812,7 @@ defmodule SwarmCodeCLI.UI.Fixtures do
       conversations: list,
       launch_facts: %{
         cli_version: "0.2.2",
-        project_root: "/Users/dev/dev/swarm-code-cli",
+        project_root: elem(project, 2),
         home: "/Users/dev"
       }
     }

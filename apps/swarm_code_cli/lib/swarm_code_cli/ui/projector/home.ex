@@ -421,12 +421,39 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
             do: Canvas.paint(acc, row, col, col + 1, :selection),
             else: acc
 
-        acc
-        |> Canvas.clear_braille(row, col - 1, col)
-        |> Canvas.clear_braille(row, col + 1, col + 2)
+        acc =
+          acc
+          |> Canvas.clear_braille(row, col - 1, col)
+          |> Canvas.clear_braille(row, col + 1, col + 2)
+
+        if k == selected_orbit and index == state.home.bead,
+          do: selected_label(acc, state, row, col + 2, conversation),
+          else: acc
       end)
 
     {canvas, spots}
+  end
+
+  # The bead the map points at is named beside it: its title on the selection
+  # fill and its age after it (D5).
+  defp selected_label(canvas, state, row, col, conversation) do
+    title = Canvas.clip(canvas, conversation.title, 28)
+
+    age =
+      String.replace_suffix(
+        SwarmCodeCLI.UI.Switcher.ago(conversation.updated_at, state.now) || "",
+        " ago",
+        ""
+      )
+
+    parts = [{" " <> title <> " ", {:text_primary, [:bold]}}, {" " <> age, :text_faint}]
+    chosen = Canvas.cells(canvas, " " <> title <> " ")
+
+    canvas =
+      Canvas.clear_braille(canvas, row, col - 1, col + Canvas.parts_cells(canvas, parts) + 1)
+
+    {canvas, _} = Canvas.puts(canvas, row, col, parts)
+    Canvas.paint(canvas, row, col, col + chosen, :selection)
   end
 
   # Each orbit is named at its top ("now") and counted at its bottom (30 d).
@@ -575,7 +602,12 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
           |> List.flatten()
           |> Enum.drop(1)
 
-        more = if live.overflow > 0, do: [{" +#{live.overflow}", :text_faint}], else: []
+        more =
+          cond do
+            live.overflow > 0 -> [{" +#{live.overflow}", :text_faint}]
+            live.project -> [{" in " <> live.project, :text_faint}]
+            true -> []
+          end
 
         [{"bars ", :text_ghost}, {"#{live.count} live", :text_primary}, {" · ", :text_ghost}] ++
           kinds ++ more
@@ -609,6 +641,12 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
   # ---------------------------------------------------- the resume list zone
 
   defp resume(canvas, state, grid, tier) do
+    if View.first_run?(state),
+      do: first_run(canvas, state, grid, tier),
+      else: resume_list(canvas, state, grid, tier)
+  end
+
+  defp resume_list(canvas, state, grid, tier) do
     cols = list_layout(grid, canvas.width)
     header = grid.header_row
     extra = max(draft_rows(state, canvas.width) - 1, 0)
@@ -638,7 +676,15 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
           canvas
 
         {col, listed} ->
-          preview(canvas, state, header, col, Enum.find(listed, & &1.selected?) || hd(listed))
+          selected = Enum.find(listed, & &1.selected?) || hd(listed)
+
+          case View.map_target(state) do
+            %{project: %{current: false} = project} ->
+              foreign_preview(canvas, state, header, col, selected, project)
+
+            _ ->
+              preview(canvas, state, header, col, selected)
+          end
       end
 
     if grid.wide_extras?, do: before_you_start(canvas, state, grid, rows, tier), else: canvas
@@ -728,6 +774,9 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
               else: [{filter, :text_primary}]
             )
 
+        View.foreign?(state) ->
+          [{View.map_target(state).project.name <> " · opens in its own tab", :text_faint}]
+
         grid.class in [:compact, :minimal] ->
           [{"resume", :text_faint}]
 
@@ -737,13 +786,18 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
 
     {canvas, _} = Canvas.puts(canvas, row, cols.left, left)
 
-    hint = [
-      {digits_label(state), {:text_muted, [:bold]}},
-      {" open", :text_faint},
-      {"   ", :text_primary},
-      {down_label(state), {:text_muted, [:bold]}},
-      {" " <> cols.search, :text_faint}
-    ]
+    hint =
+      if state.home.focus == :map do
+        [{updown_label(state), {:text_muted, [:bold]}}, {" star", :text_faint}]
+      else
+        [
+          {digits_label(state), {:text_muted, [:bold]}},
+          {" open", :text_faint},
+          {"   ", :text_primary},
+          {down_label(state), {:text_muted, [:bold]}},
+          {" " <> cols.search, :text_faint}
+        ]
+      end
 
     Canvas.rputs(canvas, row, cols.end, hint) |> elem(0)
   end
@@ -782,14 +836,14 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
       end
 
     canvas =
-      if cols.runs,
+      if cols.runs && entry.runs,
         do: canvas |> Canvas.put(row, cols.runs, entry.runs, :text_faint) |> elem(0),
         else: canvas
 
     {canvas, _} = Canvas.rputs(canvas, row, cols.end, [{entry.age, :text_faint}])
 
     if entry.selected? do
-      background = if state.home.focus == :list, do: :selection, else: :hover
+      background = if state.home.focus in [:list, :map], do: :selection, else: :hover
       Canvas.paint(canvas, row, cols.fill_from, cols.fill, background)
     else
       canvas
@@ -865,6 +919,229 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
         key_pairs([{key_label(state, :home_enter, "Enter"), "open"}])
       )
       |> elem(0)
+    end
+  end
+
+  # A bead of another project: its title, where it lives, what it is doing, and the
+  # command that opens it there (Enter copies it). No prompt, no run count: the
+  # overview does not carry them, so those rows stay blank.
+  defp foreign_preview(canvas, state, header, col, _entry, project) do
+    %{conversation: conversation} = View.map_target(state)
+    data = View.foreign_preview(state, %{summary: conversation}, project)
+    width = canvas.width - 2 - col
+    tier = Glyph.tier(state.capabilities)
+
+    {canvas, _} =
+      Canvas.put(
+        canvas,
+        header,
+        col,
+        Canvas.clip(canvas, data.title, width),
+        {:text_primary, [:bold]}
+      )
+
+    {canvas, _} =
+      Canvas.puts(canvas, header + 1, col, [
+        {Canvas.clip(canvas, data.where, width), :text_muted},
+        {Canvas.clip(
+           canvas,
+           " · " <> data.path,
+           max(width - Canvas.cells(canvas, data.where), 0)
+         ), :text_faint}
+      ])
+
+    canvas =
+      cond do
+        data.live ->
+          {kind, progress} = data.live
+          role = if kind, do: Mark.kind_role(kind), else: :accent
+
+          words =
+            Enum.join(
+              Enum.reject(
+                [kind && Atom.to_string(kind), "live", progress && "#{progress}%"],
+                &(&1 in [nil, false])
+              ),
+              " · "
+            )
+
+          Canvas.puts(canvas, header + 2, col, [
+            {Glyph.get(:dot_on, tier), {role, [:bold]}},
+            {" " <> words, role}
+          ])
+          |> elem(0)
+
+        data.waiting > 0 ->
+          Canvas.puts(canvas, header + 2, col, [
+            {Glyph.get(:bang, tier), {:warning, [:bold]}},
+            {" " <> View.waiting_words(data.waiting), :warning}
+          ])
+          |> elem(0)
+
+        true ->
+          canvas
+      end
+
+    {canvas, _} =
+      Canvas.put(canvas, header + 3, col, Canvas.clip(canvas, data.facts, width), :text_faint)
+
+    {canvas, _} =
+      Canvas.puts(canvas, header + 8, col, [
+        {key_label(state, :home_enter, "Enter"), {:text_muted, [:bold]}},
+        {" copies the command to open it", :text_faint}
+      ])
+
+    {canvas, _} =
+      Canvas.put(canvas, header + 9, col, Canvas.clip(canvas, data.command, width), :text_primary)
+
+    canvas
+  end
+
+  # ---------------------------------------------------------------- first run
+
+  # D11: nothing to resume here. The welcome card stands where the list would,
+  # and (where there is room) the newest conversations of the other projects at
+  # its right, which Alt-1..5 copy the commands of.
+  defp first_run(canvas, state, grid, tier) do
+    row = grid.header_row
+    col = 4
+    limit = composer_top(state, grid, canvas.width) - 1
+    workspace = Map.get(state.read_model.snapshots, :workspace)
+    {headline, detail} = welcome_words(state)
+    mark = :assistant_mark |> SwarmCodeCLI.UI.Projector.Support.glyph(state) |> SafeText.value()
+    room = fn at -> canvas.width - 2 - at end
+
+    lines = [
+      {0, col, [{mark <> " ", {:accent, [:bold]}}, {headline, {:text_primary, [:bold]}}]},
+      {1, col + 2, [{Canvas.clip(canvas, detail, room.(col + 2)), :text_muted}]},
+      {3, col + 2,
+       [
+         {String.pad_trailing(key_label(state, :home_enter, "Enter"), 9), {:text_muted, [:bold]}},
+         {"send", :text_muted}
+       ]},
+      {4, col + 2,
+       [{String.pad_trailing("/", 9), {:text_muted, [:bold]}}, {"commands", :text_muted}]},
+      {5, col + 2,
+       [
+         {String.pad_trailing(key_label(state, :command_palette, "Ctrl-P"), 9),
+          {:text_muted, [:bold]}},
+         {Canvas.clip(canvas, "workflows, research, memory, settings", room.(col + 11)),
+          :text_muted}
+       ]}
+    ]
+
+    lines = lines ++ untrusted_lines(workspace, col + 2, room.(col + 2), canvas)
+
+    canvas =
+      Enum.reduce(lines, canvas, fn {offset, at, parts}, acc ->
+        if row + offset < limit,
+          do: Canvas.puts(acc, row + offset, at, parts) |> elem(0),
+          else: acc
+      end)
+
+    canvas = if grid.preview?, do: elsewhere(canvas, state, grid, row), else: canvas
+    if grid.wide_extras?, do: before_you_start(canvas, state, grid, 9, tier), else: canvas
+  end
+
+  defp welcome_words(state) do
+    case SwarmCodeCLI.UI.Projector.Composer.mode_label(state) do
+      "Plan" -> {"Ready to plan", "Describe the change and I will map the safest steps."}
+      "Ultra" -> {"Ready for ultra", "Big tasks become staged workflows with visible progress."}
+      "Workflow" -> {"Workflow authoring", "Describe the automation you want to create."}
+      "Consensus" -> {"Ready for consensus", "Ask for a plan that a second model will judge."}
+      _ -> {"Ready to build", "Ask for a change, inspect the project, or choose a mode."}
+    end
+  end
+
+  # The two lines of an untrusted project: the trust it needs and the approval
+  # mode it has. Both come from the workspace snapshot (D18).
+  defp untrusted_lines(%{trusted: false} = workspace, col, room, canvas) do
+    trust = [
+      {7, col,
+       [
+         {"! untrusted", {:warning, [:bold]}},
+         {" · ", :text_ghost},
+         {"/trust", {:text_muted, [:bold]}},
+         {Canvas.clip(canvas, " reads AGENTS.md and allows edits", max(room - 20, 0)),
+          :text_muted}
+       ]}
+    ]
+
+    approval =
+      if Map.get(workspace, :approval_mode) == :read_only,
+        do: [
+          {8, col,
+           [
+             {"/approval", {:text_muted, [:bold]}},
+             {Canvas.clip(canvas, " auto lets it edit; read-only now", max(room - 9, 0)),
+              :text_faint}
+           ]}
+        ],
+        else: []
+
+    trust ++ approval
+  end
+
+  defp untrusted_lines(_workspace, _col, _room, _canvas), do: []
+
+  defp elsewhere(canvas, state, grid, row) do
+    col = if grid.class == :orbit_l, do: 96, else: 65
+    last = canvas.width - 2
+    rows = View.elsewhere(state, 5)
+
+    if canvas.width - 2 - col < 50 or rows == [] do
+      canvas
+    else
+      {canvas, _} = Canvas.put(canvas, row, col, "recently, elsewhere", :text_faint)
+
+      {canvas, _} =
+        Canvas.rputs(canvas, row, last, [
+          {String.replace_suffix(digits_label(state), "9", "5"), {:text_muted, [:bold]}},
+          {" copy", :text_faint}
+        ])
+
+      room = last - col - 5 - 23
+
+      canvas =
+        rows
+        |> Enum.with_index(1)
+        |> Enum.reduce(canvas, fn {entry, j}, acc ->
+          {text, role, bold?} = entry.bead
+          role = if bold?, do: {role, [:bold]}, else: role
+
+          {acc, _} =
+            Canvas.puts(acc, row + j, col, [
+              {Integer.to_string(entry.n), {:text_muted, [:bold]}},
+              {"  ", :text_primary},
+              {text, role},
+              {" ", :text_primary},
+              {Canvas.clip(acc, entry.conversation.title, room), :text_primary}
+            ])
+
+          Canvas.rputs(acc, row + j, last, [
+            {Canvas.clip(acc, entry.project.name, 16), :text_faint},
+            {"  ", :text_primary},
+            {String.pad_leading(entry.age, 6), :text_faint}
+          ])
+          |> elem(0)
+        end)
+
+      {canvas, _} =
+        Canvas.put(
+          canvas,
+          row + 7,
+          col,
+          "Another project opens in its own tab: Enter copies",
+          :text_faint
+        )
+
+      {canvas, _} =
+        Canvas.puts(canvas, row + 8, col, [
+          {"the command, ", :text_faint},
+          {Canvas.clip(canvas, hd(rows).command, last - col - 13), :text_muted}
+        ])
+
+      canvas
     end
   end
 
@@ -978,7 +1255,22 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
     end
   end
 
-  defp placeholder(state), do: if(small?(state), do: @small_placeholder, else: @placeholder)
+  defp placeholder(state) do
+    cond do
+      View.first_run?(state) and small?(state) ->
+        "Type to start the first conversation…"
+
+      View.first_run?(state) ->
+        "Type to start the first conversation in " <>
+          View.project_name(state) <> ", or / for commands…"
+
+      small?(state) ->
+        @small_placeholder
+
+      true ->
+        @placeholder
+    end
+  end
 
   # The two classes with no preview and no room for sentences in the hint row.
   defp small?(state) do
@@ -1001,13 +1293,36 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
 
     cond do
       state.home.focus != :composer ->
+        # The next stop of Tab, named: composer, then the list, then the map.
+        next = if state.home.focus == :list, do: "the map", else: "the composer"
+
         key_pairs([
           {escape, "back to the composer"},
-          {key_label(state, :home_focus_next, "Tab"), "next"}
+          {key_label(state, :home_focus_next, "Tab"), "next: " <> next}
         ])
 
       (command = Keymap.local_command(text)) != nil ->
         key_pairs([{enter, "run /" <> Atom.to_string(command)}])
+
+      View.first_run?(state) ->
+        trust? =
+          Map.get(Map.get(state.read_model.snapshots, :workspace) || %{}, :trusted) == false
+
+        if small?(state) do
+          key_pairs(
+            [{enter, "first"}] ++
+              if(map_drawn?(state),
+                do: [{key_label(state, :home_focus_next, "Tab"), "map"}],
+                else: []
+              )
+          )
+        else
+          key_pairs(
+            [{enter, "first conversation here"}] ++
+              if(trust?, do: [{"/trust", "lets it edit files"}], else: []) ++
+              [{key_label(state, :settings_open, "F2"), "settings"}]
+          )
+        end
 
       true ->
         title =
@@ -1078,6 +1393,17 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
       state.capabilities.ascii?
     ) ||
       "Alt-1…9"
+  end
+
+  defp updown_label(state) do
+    labels =
+      for id <- [:home_up, :home_down],
+          %{} = binding <- [Bindings.fetch(id)],
+          key = Bindings.key_in_context(binding, :home_map, Keymap.overrides(state)),
+          key != nil,
+          do: KeyLabel.label(key, state.capabilities.ascii?)
+
+    if length(labels) == 2, do: Enum.join(labels), else: "↑↓"
   end
 
   defp down_label(state) do

@@ -44,7 +44,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     right =
       toast ||
         cond do
-          home? -> home_hints(state, context, if(class in [:xl, :wide, :medium], do: 3, else: 1))
+          home? -> home_hints(state, context, if(class in [:xl, :wide, :medium], do: 4, else: 1))
           select_mode?(state) -> select_hints(state)
           true -> hints(state, context, budget)
         end
@@ -901,6 +901,8 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
     # A narrow row keeps one hint: the way out of the composer (the last, the
     # keys sheet) or the strongest of the list and the map.
+    hints = home_hint_words(state, context, hints)
+
     hints =
       cond do
         length(hints) <= budget -> hints
@@ -917,6 +919,29 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     end)
     |> hint_spans(state)
   end
+
+  # First run copies commands instead of opening rows, so the digits are not
+  # advertised; on another project's bead Enter copies its command (D5).
+  defp home_hint_words(state, :home_composer, hints) do
+    if SwarmCodeCLI.UI.Home.View.first_run?(state),
+      do: Enum.reject(hints, &match?({:digits, _}, &1)),
+      else: hints
+  end
+
+  defp home_hint_words(state, :home_map, hints) do
+    if SwarmCodeCLI.UI.Home.View.foreign?(state) do
+      hints
+      |> Enum.reject(&match?({[:home_copy], _}, &1))
+      |> Enum.map(fn
+        {[:home_enter], _} -> {[:home_enter], "copy command"}
+        other -> other
+      end)
+    else
+      hints
+    end
+  end
+
+  defp home_hint_words(_state, _context, hints), do: hints
 
   @doc false
   # The key words of a Home hint: one id prints its first key in the context,

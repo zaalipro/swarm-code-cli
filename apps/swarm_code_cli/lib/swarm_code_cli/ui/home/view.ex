@@ -12,7 +12,7 @@ defmodule SwarmCodeCLI.UI.Home.View do
   """
 
   alias SwarmCodeCLI.UI.Home
-  alias SwarmCodeCLI.UI.Home.{Mark, Orbits}
+  alias SwarmCodeCLI.UI.Home.{CopyCommand, Mark, Orbits}
   alias SwarmCodeCLI.UI.DataSource.DTO
   alias SwarmCodeCLI.UI.Switcher
 
@@ -164,15 +164,38 @@ defmodule SwarmCodeCLI.UI.Home.View do
     end
   end
 
-  @doc "The live runs as the legend names them: `%{count, overflow, kinds: [atom]}`."
-  @spec live(map()) :: %{count: non_neg_integer(), overflow: non_neg_integer(), kinds: [atom()]}
+  @doc """
+  The live runs as the legend names them: `%{count, overflow, kinds, project}`.
+  `project` is the name of the project a single run belongs to (the legend then
+  says where it runs), else nil.
+  """
+  @spec live(map()) :: %{
+          count: non_neg_integer(),
+          overflow: non_neg_integer(),
+          kinds: [atom()],
+          project: binary() | nil
+        }
   def live(state) do
     case overview(state) do
       nil ->
-        %{count: 0, overflow: 0, kinds: []}
+        %{count: 0, overflow: 0, kinds: [], project: nil}
 
-      %{live_runs: runs, live_overflow: overflow} ->
-        %{count: length(runs) + overflow, overflow: overflow, kinds: Enum.map(runs, & &1.kind)}
+      %{live_runs: runs, live_overflow: overflow} = overview ->
+        project =
+          with [run] <- runs,
+               0 <- overflow,
+               %{name: name} <- Enum.find(overview.projects, &(&1.id == run.project_id)) do
+            name
+          else
+            _ -> nil
+          end
+
+        %{
+          count: length(runs) + overflow,
+          overflow: overflow,
+          kinds: Enum.map(runs, & &1.kind),
+          project: project
+        }
     end
   end
 
@@ -260,7 +283,8 @@ defmodule SwarmCodeCLI.UI.Home.View do
   @doc """
   The window of the list on screen: `%{start, rows, total}`. `rows` are the
   visible entries (at most `list_rows`), each keeping the digit that opens it
-  (1..9, by its place in the window).
+  (1..9, by its place in the window). With the map focused on another project's
+  bead the list is that project's conversations (D5), selected by the bead.
   """
   @spec list(map(), pos_integer()) :: %{
           start: non_neg_integer(),
@@ -268,9 +292,19 @@ defmodule SwarmCodeCLI.UI.Home.View do
           rows: [map()]
         }
   def list(state, list_rows) do
-    all = Home.rows(state)
+    case map_target(state) do
+      %{project: %{current: false} = project} ->
+        window(state, project.conversations, state.home.bead, list_rows)
+
+      _ ->
+        # With the map focused the bead is the cursor, here as well as elsewhere.
+        selected = if state.home.focus == :map, do: state.home.bead, else: state.home.selected
+        window(state, Home.rows(state), selected, list_rows)
+    end
+  end
+
+  defp window(state, all, selected, list_rows) do
     total = length(all)
-    selected = state.home.selected
     start = window_start(selected, list_rows, total)
 
     rows =
@@ -293,7 +327,7 @@ defmodule SwarmCodeCLI.UI.Home.View do
     end
   end
 
-  defp entry(state, %DTO.ConversationSummary{} = summary, index, selected?) do
+  defp entry(state, summary, index, selected?) do
     run = live_run(state, summary)
 
     %{
@@ -303,7 +337,7 @@ defmodule SwarmCodeCLI.UI.Home.View do
       bead: Orbits.bead(bead_source(summary, run), state.now, bead_tier(state)),
       title_role: title_role(summary, state.now),
       words: state_words(summary, run),
-      runs: runs_words(summary.run_count),
+      runs: if(Map.get(summary, :run_count), do: runs_words(summary.run_count)),
       age: Switcher.ago(summary.updated_at, state.now) || ""
     }
   end
@@ -336,10 +370,13 @@ defmodule SwarmCodeCLI.UI.Home.View do
 
   defp state_words(%{waiting: waiting}, _run) when waiting > 0, do: {"approval waiting", :warning}
 
-  defp state_words(%{live: true}, run) do
+  defp state_words(%{live: true} = summary, run) do
     case run do
       nil ->
-        {"live", :accent}
+        case Map.get(summary, :live_kind) do
+          nil -> {"live", :accent}
+          kind -> {Atom.to_string(kind), Mark.kind_role(kind)}
+        end
 
       %{kind: kind, progress: nil} ->
         {Atom.to_string(kind), Mark.kind_role(kind)}
@@ -372,6 +409,116 @@ defmodule SwarmCodeCLI.UI.Home.View do
       last_prompt: summary.last_prompt,
       waiting: summary.waiting
     }
+  end
+
+  @doc """
+  The preview of a bead of another project (D5): the overview knows a title, an
+  age, and whether it is live or waiting, but no prompt and no run count. The
+  copy command is what Enter puts on the clipboard.
+  """
+  @spec foreign_preview(map(), map(), DTO.HomeProject.t()) :: map()
+  def foreign_preview(state, %{summary: conversation}, project) do
+    home = launch_fact(state, :home)
+    run = live_run(state, conversation)
+    updated = Switcher.ago(conversation.updated_at, state.now)
+
+    live =
+      if conversation.live do
+        kind = (run && run.kind) || Map.get(conversation, :live_kind)
+        progress = run && run.progress
+        {kind, progress}
+      end
+
+    facts =
+      case run do
+        %{started_at: started} when is_integer(started) ->
+          "started " <> (Switcher.ago(started, state.now) || "")
+
+        _ ->
+          if updated, do: "updated " <> updated, else: ""
+      end
+
+    %{
+      title: conversation.title,
+      where: project.name,
+      path: CopyCommand.abbreviate(project.root_path, home),
+      live: live,
+      waiting: conversation.waiting,
+      facts: facts,
+      command: CopyCommand.command(project.root_path, conversation.id, home)
+    }
+  end
+
+  @doc """
+  The bead the project map points at: `%{project, conversation, index}`, or nil
+  unless the map has the focus (and the orbit exists).
+  """
+  @spec map_target(map()) ::
+          %{project: DTO.HomeProject.t(), conversation: term(), index: integer()} | nil
+  def map_target(%{home: %Home{focus: :map} = home} = state) do
+    case Enum.at(projects(state), home.orbit) do
+      nil ->
+        nil
+
+      project ->
+        %{
+          project: project,
+          conversation: Enum.at(project.conversations, home.bead),
+          index: home.bead
+        }
+    end
+  end
+
+  def map_target(_state), do: nil
+
+  @doc "Whether the map points at a bead of another project (Enter then copies a command)."
+  @spec foreign?(map()) :: boolean()
+  def foreign?(state) do
+    match?(%{project: %{current: false}}, map_target(state))
+  end
+
+  @doc """
+  First run (D11): the project has nothing to resume, no search is shown, and the
+  conversation list has answered (before that the list zone is just empty).
+  """
+  @spec first_run?(map()) :: boolean()
+  def first_run?(
+        %{home: %Home{filter: "", search: nil}, conversations: %DTO.ConversationList{}} = state
+      ),
+      do: Home.rows(state) == []
+
+  def first_run?(_state), do: false
+
+  @doc """
+  The newest conversations of the other projects, `count` at most (the first-run
+  card's "recently, elsewhere"): `%{n, project, conversation, bead, age, command}`.
+  """
+  @spec elsewhere(map(), pos_integer()) :: [map()]
+  def elsewhere(state, count) do
+    home = launch_fact(state, :home)
+
+    state
+    |> projects()
+    |> Enum.reject(& &1.current)
+    |> Enum.flat_map(fn project -> Enum.map(project.conversations, &{project, &1}) end)
+    |> Enum.sort_by(fn {_project, conversation} -> conversation.updated_at end, :desc)
+    |> Enum.take(count)
+    |> Enum.with_index(1)
+    |> Enum.map(fn {{project, conversation}, n} ->
+      %{
+        n: n,
+        project: project,
+        conversation: conversation,
+        bead: Orbits.bead(conversation, state.now, bead_tier(state)),
+        age:
+          String.replace_suffix(
+            Switcher.ago(conversation.updated_at, state.now) || "",
+            " ago",
+            ""
+          ),
+        command: CopyCommand.command(project.root_path, conversation.id, home)
+      }
+    end)
   end
 
   @doc "`1 approval waiting` / `3 approvals waiting`."

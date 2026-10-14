@@ -1,0 +1,36 @@
+ ⬢ swarm-code-cli   ▌ home                                                                                  ncode 0.2.2
+                                        swarm-code-cli       swarm-code        llmotions        ailogic
+                 ⣀⣀⣤⣤⣤⣤⣤⣄⣀           ⠈ ⠂⠄⡀                  ⠈⠠                ⠈⢢                ⠡                   now
+             ⣀⣤⣶⣿⣿⡿⠿⠿⠿⠿⠿⠿⠿                ⠁⠂⢄                 ⠈⠄                ⠱⡀               ⠡
+           ⣠⣾⣿⡿⠛⠉                             !                 ⠡                ⠱⡀               ⠅
+         ⢠⣾⣿⠟⠁                 ⣾⣷               ●                ⠈⠄               ⠱⡀              ⠈⠄
+        ⣰⣿⣿⠋               ⣀  ⢸⣿⣿                ⠈⢆               ⠈⠄               ●  competitor pricing scan  12 min
+       ⢠⣿⣿⠃               ⣸⣿⡇ ⣼⣿⡇                  ⢣               ●               ⠘⡄              ⠈⠄
+       ⣼⣿⡏           ⢀⣶⣦  ⣿⣿⠃ ⣿⣿⠃                   ●               ⠅               ⡇               ⠅               1 h
+       ⣿⣿⠃       ⣀⣄  ⢸⣿⡿ ⢰⣿⣿ ⢰⣿⣿                    ●               ●               ⡇               ⠅
+       ⣿⣿⡄   ⢀⡀  ⣿⣿⠃ ⢺⣿⠇ ⢸⣿⡏ ⢸⣿⡏                    ●               ⠅               ⡇               ⠅
+       ⢻⣿⣇  ⢠⣿⣿ ⢰⣿⣿ ⢠⣶⣶  ⣿⣿⡇ ⣿⣿⡇                   ⢠⠃               ⠅               ⡇               ⠅
+       ⠘⣿⣿⡄ ⢸⣿⡟ ⢸⣿⡏ ⠈⣛⠋ ⢀⣿⣿ ⢠⣿⣿                    ○               ○               ⢰⠁              ⠠⠁               1 d
+        ⠘⣿⣿⣆⠈⠛⠁ ⣿⣿⡇ ⣸⣿⡇ ⢸⣿⡿ ⠸⠿⠟                  ○                ○                ○               ⠨
+         ⠈⢻⣿⣷⣄  ⠻⠟  ⣿⣿⠇ ⢸⣿⠇                     ○                ○                ⡸               ⠠⠁
+           ⠙⠿⣿⣷⣦⣄⡀  ⠉⠉    ⣀⣤⣤⡀               ○ ⠁                ⠄⠁               ○                ○                 7 d
+             ⠈⠙⠿⢿⣿⣿⣷⣶⣶⣶⣶⣾⣿⣿⡿⠟⠁            ⡠⠐⠈                 ○                 ⡔⠁               ○
+                  ⠉⠉⠉⠛⠋⠉⠉⠉           ⡀⠠⠐ ⠁                  ⠠⠈                ⢀⠎                ⠌                  30 d
+                                      9 · 1 live            6                  3 · 1 live       2
+    ring ▰▰▰▰▰▰▱▱▱▱  $38.40 of $60          ○ nightly deps audit · scheduled · in 14 min
+    bars 3 live · swarm research chat
+    dot  1 needs you · Ctrl-N go
+
+    llmotions · opens in its own tab                                  ↑↓ star    competitor pricing scan
+  ▌ 1  ● competitor pricing scan          research · 25%           12 min ago    llmotions · ~/dev/llmotions
+    2  ○ landing hero copy                                            2 d ago    ● research · live · 25%
+    3  ○ pricing table refactor                                       9 d ago    started 14 min ago
+
+
+
+
+                                                                                 Enter copies the command to open it
+                                                                                 ncode ~/dev/llmotions -r 7c1e9a2b
+ › Type to start a new conversation, or / for commands…
+   Esc back to the composer   Tab next: the composer
+ Build · auto · opus 5.5 · xhigh · ⎇ main +3 · 1 waiting             ←→ orbit   ↑↓ star   Enter copy command   Esc back
