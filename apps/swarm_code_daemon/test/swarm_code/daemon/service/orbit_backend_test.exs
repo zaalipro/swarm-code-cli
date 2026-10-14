@@ -829,6 +829,28 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
                      3_000
     end
 
+    # orbit int (lane S issue 6): runs of conversations the backend does not
+    # have open end without a `run_update` here; the global notices still move
+    # Home. An info notice or a workflow library change does not.
+    test "a run finishing anywhere, and research or workflow runs changing, arm it", c do
+      for event <- [
+            {:notification, :finished, "Swarm finished: elsewhere"},
+            {:workflow_runs_changed},
+            {:research_runs_changed}
+          ] do
+        before = :sys.get_state(c.backend).home_revision
+        send(c.backend, event)
+
+        assert_receive {:service_delta, _, "shell", %{"kind" => "home_stale"} = delta}, 3_000
+        assert delta["body"] == %{"revision" => before + 1}
+      end
+
+      send(c.backend, {:notification, :info, "just a note"})
+      send(c.backend, {:workflows_changed})
+      refute_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 800
+      assert :sys.get_state(c.backend).home_timer == nil
+    end
+
     test "stopping the backend cancels a pending timer", c do
       send(c.backend, {:waiting_changed})
       timer = :sys.get_state(c.backend).home_timer

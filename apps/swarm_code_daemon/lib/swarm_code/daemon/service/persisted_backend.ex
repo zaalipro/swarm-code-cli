@@ -607,11 +607,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass70 C5 (arch F10): the domain's own notices become toasts on the shell
   # watch. "Waiting" comes from `:waiting_changed` instead, which knows the
   # conversation.
+  #
+  # orbit int (lane S issue 6): a swarm, workflow or research run that finished
+  # in any conversation (the notice is global) is also a Home trigger, so a
+  # Home left open sees a background run end.
   def handle_info({:notification, kind, message}, state) when is_binary(message) do
     case kind do
-      :finished -> {:noreply, toast(state, "success", "Finished", message, nil)}
-      :info -> {:noreply, toast(state, "info", "ncode", message, nil)}
-      _waiting -> {:noreply, state}
+      :finished ->
+        {:noreply, state |> toast("success", "Finished", message, nil) |> arm_home_stale()}
+
+      :info ->
+        {:noreply, toast(state, "info", "ncode", message, nil)}
+
+      _waiting ->
+        {:noreply, state}
     end
   end
 
@@ -644,9 +653,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   # Runs of this conversation may be research or workflow runs; the library
   # itself is read on demand, so a changed workflow file needs no delta.
+  # orbit int (lane S issue 6): the two run events are global (any
+  # conversation's research or workflow run), so they are Home triggers too.
   def handle_info({event}, state)
-      when event in [:research_runs_changed, :workflow_runs_changed, :workflows_changed],
-      do: {:noreply, schedule_refresh(state)}
+      when event in [:research_runs_changed, :workflow_runs_changed],
+      do: {:noreply, state |> arm_home_stale() |> schedule_refresh()}
+
+  def handle_info({:workflows_changed}, state), do: {:noreply, schedule_refresh(state)}
 
   def handle_info({:rate_limit, provider_id, snapshot}, state)
       when is_binary(provider_id) and is_map(snapshot),
