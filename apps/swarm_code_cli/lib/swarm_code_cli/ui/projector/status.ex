@@ -44,7 +44,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     right =
       toast ||
         cond do
-          home? -> home_hints(state, context)
+          home? -> home_hints(state, context, if(class in [:xl, :wide, :medium], do: 3, else: 1))
           select_mode?(state) -> select_hints(state)
           true -> hints(state, context, budget)
         end
@@ -893,12 +893,22 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
 
   # orbit: Home's hints for its focus, from `HomeBindings.hints/1`, so a key the
   # user rebound is spelled as rebound and the row agrees with docs/keybindings.md.
-  defp home_hints(state, context) do
+  defp home_hints(state, context, budget) do
     overrides = SwarmCodeCLI.UI.Keymap.overrides(state)
     ascii? = state.capabilities.ascii?
 
-    context
-    |> SwarmCodeCLI.UI.Keymap.HomeBindings.hints()
+    hints = SwarmCodeCLI.UI.Keymap.HomeBindings.hints(context)
+
+    # A narrow row keeps one hint: the way out of the composer (the last, the
+    # keys sheet) or the strongest of the list and the map.
+    hints =
+      cond do
+        length(hints) <= budget -> hints
+        context == :home_composer -> Enum.take(hints, -budget)
+        true -> Enum.take(hints, budget)
+      end
+
+    hints
     |> Enum.flat_map(fn {ids, words} ->
       case home_key_words(ids, context, overrides, ascii?) do
         nil -> []

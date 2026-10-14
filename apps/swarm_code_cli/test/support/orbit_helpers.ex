@@ -217,7 +217,7 @@ defmodule SwarmCodeCLI.OrbitHelpers do
   @doc "Home's own draft text."
   def home_draft(state) do
     SwarmCodeCLI.UI.Editor.text(
-      SwarmCodeCLI.UI.Drafts.fetch(state.drafts, {@epoch, :home}).editor
+      SwarmCodeCLI.UI.Drafts.fetch(state.drafts, {state.source_epoch, :home}).editor
     )
   end
 

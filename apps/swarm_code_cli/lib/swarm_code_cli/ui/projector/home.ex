@@ -31,14 +31,86 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
   alias SwarmCodeCLI.UI.Scene.{Cursor, Rect, Region}
   alias SwarmCodeCLI.UI.Settings.Glyphs
 
-  # How the list and the preview sit on each orbit class (columns).
-  @columns %{
-    orbit_m: %{title: 32, words: 42, runs: 60, end: 77, preview: 81},
-    orbit_l: %{title: 36, words: 48, runs: 70, end: 92, preview: 97},
-    orbit_s: %{title: 32, words: 42, runs: 60, end: nil, preview: nil}
-  }
+  # How the list and the preview sit on each class: the column of the marker,
+  # the digit, the bead and the title; where the state words and the run count
+  # start; the right edge of the ages (`end`) and of the selected row's fill
+  # (`fill`, exclusive); the preview column. The orbit classes follow the
+  # designer's 120 x 36 and 160 x 44 frames, the small classes the 80 x 24 one.
+  defp list_layout(%{class: :orbit_m}, _width),
+    do: %{
+      marker: 2,
+      digit: 4,
+      bead: 7,
+      title_at: 9,
+      title: 32,
+      words: 42,
+      runs: 60,
+      end: 77,
+      fill: 78,
+      fill_from: 3,
+      preview: 81,
+      left: 4,
+      search: "search all"
+    }
+
+  defp list_layout(%{class: :orbit_l}, _width),
+    do: %{
+      marker: 2,
+      digit: 4,
+      bead: 7,
+      title_at: 9,
+      title: 36,
+      words: 48,
+      runs: 70,
+      end: 92,
+      fill: 93,
+      fill_from: 3,
+      preview: 97,
+      left: 4,
+      search: "search all"
+    }
+
+  defp list_layout(%{class: :orbit_s}, width),
+    do: %{
+      marker: 2,
+      digit: 4,
+      bead: 7,
+      title_at: 9,
+      title: 32,
+      words: 42,
+      runs: 60,
+      end: width - 3,
+      fill: width - 2,
+      fill_from: 3,
+      preview: nil,
+      left: 4,
+      search: "search all"
+    }
+
+  # :compact and :minimal: no run counts, no preview; the state words sit at
+  # column 41 (earlier on a narrow screen, so they never meet the age).
+  defp list_layout(_grid, width) do
+    words = min(41, width - 28)
+
+    %{
+      marker: 1,
+      digit: 3,
+      bead: 5,
+      title_at: 7,
+      title: words - 8,
+      words: words,
+      runs: nil,
+      end: width - 1,
+      fill: width - 1,
+      fill_from: 2,
+      preview: nil,
+      left: 2,
+      search: "search"
+    }
+  end
 
   @placeholder "Type to start a new conversation, or / for commands…"
+  @small_placeholder "Type to start a new conversation…"
 
   @doc "Home's regions and cursor, or nil while it is closed or the terminal is too small."
   @spec project(map(), term()) :: nil | {[Region.t()], Cursor.t() | nil}
@@ -81,11 +153,151 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
     |> composer(state, grid, tier)
   end
 
-  defp draw(canvas, state, grid, tier) do
-    # :compact and :minimal arrive with U6.
+  defp draw(canvas, state, %{class: :compact} = grid, tier) do
     canvas
     |> title_row(state)
+    |> summary_rows(state, tier, true)
+    |> line_orbits(state, grid, tier)
+    |> resume(state, grid, tier)
     |> composer(state, grid, tier)
+  end
+
+  defp draw(canvas, state, grid, tier) do
+    canvas
+    |> title_row(state)
+    |> summary_rows(state, tier, false)
+    |> resume(state, grid, tier)
+    |> composer(state, grid, tier)
+  end
+
+  # ------------------------------------------- compact and minimal summary
+
+  # Rows 2 and 3 of the two small classes: the inline glyph with the ring's
+  # words, then the scheduled task and the branch.
+  defp summary_rows(canvas, state, tier, gauge?) do
+    opts = View.mark_opts(state)
+    ring = View.ring(state)
+    ready? = View.overview(state) != nil
+    {canvas, _} = Canvas.puts(canvas, 2, 2, Mark.inline(tier, opts))
+
+    words =
+      if ready? do
+        live = View.live(state)
+        waiting = View.waiting(state)
+
+        [
+          ring.words && {ring.words, :text_muted},
+          live.count > 0 && {"#{live.count} live", :text_primary},
+          waiting > 0 && {"#{waiting} needs you", {:warning, [:bold]}}
+        ]
+        |> Enum.filter(& &1)
+        |> Enum.intersperse({" · ", :text_ghost})
+      else
+        [{"…", :text_ghost}]
+      end
+
+    lead =
+      cond do
+        not gauge? -> []
+        true -> gauge(ring.frac, tier) ++ [{" ", :text_primary}]
+      end
+
+    {canvas, _} = Canvas.puts(canvas, 2, 14, lead ++ words)
+
+    scheduled =
+      case View.scheduled(state) do
+        nil ->
+          []
+
+        {name, project, minutes} ->
+          [
+            {Glyph.get(:dot_off, tier), {:info, [:bold]}},
+            {" " <> name, :text_muted}
+          ] ++
+            if(project, do: [{" · " <> project, :text_faint}], else: []) ++
+            [{" " <> View.in_words(minutes), :text_muted}]
+      end
+
+    branch =
+      case View.branch(state) do
+        nil ->
+          []
+
+        {name, dirty} ->
+          mark = if canvas.ascii?, do: "br: ", else: "⎇ "
+          [{mark <> name <> if(dirty && dirty > 0, do: " +#{dirty}", else: ""), :text_muted}]
+      end
+
+    Canvas.puts(canvas, 3, 14, join_parts(scheduled, branch)) |> elem(0)
+  end
+
+  defp join_parts([], branch), do: branch
+  defp join_parts(scheduled, []), do: scheduled
+  defp join_parts(scheduled, branch), do: scheduled ++ [{" · ", :text_ghost}] ++ branch
+
+  # --------------------------------------------------------- line orbits
+
+  # Each project's orbit unrolled: its name, a rule with the beads along it by
+  # age on the log scale, and the count at the right edge; the age ticks below.
+  defp line_orbits(canvas, _state, %{orbit_slots: 0}, _tier), do: canvas
+
+  defp line_orbits(canvas, state, grid, tier) do
+    {t0, t1} = Grid.line_range(canvas.width)
+    projects = state |> View.projects() |> Enum.take(grid.orbit_slots)
+    ghost_rule = if canvas.ascii?, do: "-", else: "─"
+    rule = String.duplicate(ghost_rule, t1 - t0 + 1)
+
+    shown =
+      case projects do
+        [] ->
+          [%{name: View.project_name(state), current: true, conversations: [], count: nil}]
+
+        _ ->
+          Enum.map(
+            projects,
+            &%{
+              name: &1.name,
+              current: &1.current,
+              conversations: &1.conversations,
+              count: &1.conversation_count
+            }
+          )
+      end
+
+    canvas =
+      shown
+      |> Enum.take(grid.orbit_slots)
+      |> Enum.with_index()
+      |> Enum.reduce(canvas, fn {project, k}, acc ->
+        row = grid.r_top + k
+        name_role = if project.current, do: {:text_primary, [:bold]}, else: :text_muted
+        {acc, _} = Canvas.put(acc, row, 2, Canvas.clip(acc, project.name, t0 - 3), name_role)
+
+        {acc, _} =
+          Canvas.put(acc, row, t0, rule, if(project.current, do: :text_faint, else: :text_ghost))
+
+        acc =
+          Enum.reduce(project.conversations, acc, fn conversation, acc2 ->
+            {text, role, bold?} = Orbits.bead(conversation, state.now, tier)
+            x = Orbits.line_x(t0, t1, Orbits.age_minutes(conversation, state.now))
+            Canvas.put(acc2, row, x, text, if(bold?, do: {role, [:bold]}, else: role)) |> elem(0)
+          end)
+
+        case project.count do
+          nil ->
+            acc
+
+          count ->
+            Canvas.rputs(acc, row, acc.width - 1, [{Integer.to_string(count), :text_faint}])
+            |> elem(0)
+        end
+      end)
+
+    tick_row = grid.r_bot + 1
+
+    Enum.reduce(Orbits.line_ticks(t0, t1), canvas, fn {col, label}, acc ->
+      Canvas.put(acc, tick_row, col, label, :text_ghost) |> elem(0)
+    end)
   end
 
   # ------------------------------------------------------------- title row
@@ -285,30 +497,6 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
   end
 
   defp ring_row(canvas, state, row, grid, ring, tier, pending) do
-    lit_role =
-      cond do
-        ring.frac == nil -> :text_ghost
-        ring.frac >= 1.0 -> :error
-        ring.frac >= 0.9 -> :warning
-        true -> :accent
-      end
-
-    lit = View.gauge_cells(ring.frac)
-    on = Glyph.get(:gauge_on, tier)
-    off = Glyph.get(:gauge_off, tier)
-
-    gauge =
-      if tier == :ascii do
-        [
-          {"[", :text_ghost},
-          {String.duplicate(on, lit), lit_role},
-          {String.duplicate(off, 10 - lit), :text_ghost},
-          {"]", :text_ghost}
-        ]
-      else
-        [{String.duplicate(on, lit), lit_role}, {String.duplicate(off, 10 - lit), :text_ghost}]
-      end
-
     # The words end two cells before the scheduled task, which starts at its column.
     room = scheduled_col(grid) - 2 - (4 + 5 + 10 + 2)
 
@@ -319,9 +507,34 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
         true -> []
       end
 
-    {canvas, _} = Canvas.puts(canvas, row, 4, [{"ring ", :text_ghost}] ++ gauge ++ words)
     _ = state
+
+    {canvas, _} =
+      Canvas.puts(canvas, row, 4, [{"ring ", :text_ghost}] ++ gauge(ring.frac, tier) ++ words)
+
     canvas
+  end
+
+  # The ten-cell gauge of a fraction: lit cells in the ring's role, the rest ghost.
+  defp gauge(frac, tier) do
+    lit_role =
+      cond do
+        frac == nil -> :text_ghost
+        frac >= 1.0 -> :error
+        frac >= 0.9 -> :warning
+        true -> :accent
+      end
+
+    lit = View.gauge_cells(frac)
+    on = Glyph.get(:gauge_on, tier)
+    off = Glyph.get(:gauge_off, tier)
+
+    cells = [
+      {String.duplicate(on, lit), lit_role},
+      {String.duplicate(off, 10 - lit), :text_ghost}
+    ]
+
+    if tier == :ascii, do: [{"[", :text_ghost}] ++ cells ++ [{"]", :text_ghost}], else: cells
   end
 
   defp scheduled_row(canvas, state, row, grid, tier) do
@@ -396,84 +609,165 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
   # ---------------------------------------------------- the resume list zone
 
   defp resume(canvas, state, grid, tier) do
-    cols = Map.fetch!(@columns, grid.class)
-    list_end = cols.end || canvas.width - 3
+    cols = list_layout(grid, canvas.width)
     header = grid.header_row
-    project = View.project_name(state)
     extra = max(draft_rows(state, canvas.width) - 1, 0)
-    list = View.list(state, max(grid.list_rows - extra, 1))
+    rows = max(grid.list_rows - extra, 1)
+    list = View.list(state, rows)
 
-    canvas = resume_header(canvas, state, header, project, list_end, tier)
+    canvas = resume_header(canvas, state, grid, cols)
 
     canvas =
       list.rows
       |> Enum.with_index()
       |> Enum.reduce(canvas, fn {entry, index}, acc ->
-        list_row(acc, state, grid.list_first + index, entry, cols, list_end)
+        list_row(acc, state, grid.list_first + index, entry, cols)
       end)
 
-    canvas = if list.rows == [], do: empty_list(canvas, state, grid.list_first), else: canvas
+    canvas =
+      if list.rows == [],
+        do: empty_list(canvas, state, grid.list_first, cols.left),
+        else: canvas
 
-    case {cols.preview, list.rows} do
-      {nil, _} ->
-        canvas
+    canvas =
+      case {cols.preview, list.rows} do
+        {nil, _} ->
+          canvas
 
-      {_, []} ->
-        canvas
+        {_, []} ->
+          canvas
 
-      {col, rows} ->
-        preview(canvas, state, header, col, Enum.find(rows, & &1.selected?) || hd(rows))
+        {col, listed} ->
+          preview(canvas, state, header, col, Enum.find(listed, & &1.selected?) || hd(listed))
+      end
+
+    if grid.wide_extras?, do: before_you_start(canvas, state, grid, rows, tier), else: canvas
+  end
+
+  # The wide class's last block: the provider windows, the branch, what is
+  # uncommitted. MCP status is not on the shell snapshot, so it is not shown.
+  defp before_you_start(canvas, state, grid, list_rows, tier) do
+    row = grid.list_first + list_rows + 1
+    segments = start_segments(canvas, state, tier)
+
+    if segments == [] or row + 1 >= composer_top(state, grid, canvas.width) do
+      canvas
+    else
+      {canvas, _} = Canvas.put(canvas, row, 4, "before you start something big", :text_faint)
+
+      {canvas, _} =
+        Enum.reduce(segments, {canvas, 4}, fn parts, {acc, col} ->
+          cells = Canvas.parts_cells(acc, parts)
+          gap = if col == 4, do: 0, else: 5
+
+          if col + gap + cells <= acc.width - 2 do
+            Canvas.puts(acc, row + 1, col + gap, parts)
+          else
+            {acc, col}
+          end
+        end)
+
+      canvas
     end
   end
 
-  defp resume_header(canvas, state, row, project, list_end, _tier) do
+  defp start_segments(canvas, state, tier) do
+    limits =
+      for limit <- View.limits(state, 3) do
+        percent = round(limit.used_percent)
+        lit = percent |> div(10) |> min(10) |> max(0)
+
+        [{limit.provider, :text_muted}] ++
+          if(limit.scope in [nil, ""], do: [], else: [{" " <> limit.scope, :text_faint}]) ++
+          [
+            {" ", :text_primary},
+            {String.duplicate(Glyph.get(:gauge_on, tier), lit), :text_muted},
+            {String.duplicate(Glyph.get(:gauge_off, tier), 10 - lit), :text_ghost},
+            {" #{percent}%", :text_faint}
+          ]
+      end
+
+    branch =
+      case View.branch(state) do
+        nil ->
+          []
+
+        {name, dirty} ->
+          mark = if canvas.ascii?, do: "br:", else: "⎇"
+
+          words =
+            case dirty do
+              nil -> ""
+              0 -> " · clean"
+              1 -> " · 1 file uncommitted"
+              n -> " · #{n} files uncommitted"
+            end
+
+          [[{mark, :text_muted}, {" " <> name <> words, :text_muted}]]
+      end
+
+    limits ++ branch
+  end
+
+  # The first row the composer occupies (it grows upwards with the draft).
+  defp composer_top(state, grid, width),
+    do: grid.composer_row - (draft_rows(state, width) - 1)
+
+  defp resume_header(canvas, state, grid, cols) do
+    row = grid.header_row
     searching? = state.home.focus == :list or state.home.filter != ""
 
     left =
-      if searching? do
-        filter = state.home.filter
+      cond do
+        searching? ->
+          filter = state.home.filter
 
-        [{"search ", :text_faint}] ++
-          if(filter == "",
-            do: [{"type to search every conversation", :text_ghost}],
-            else: [{filter, :text_primary}]
-          )
-      else
-        [{"resume in " <> project, :text_faint}]
+          [{"search ", :text_faint}] ++
+            if(filter == "",
+              do: [{"type to search every conversation", :text_ghost}],
+              else: [{filter, :text_primary}]
+            )
+
+        grid.class in [:compact, :minimal] ->
+          [{"resume", :text_faint}]
+
+        true ->
+          [{"resume in " <> View.project_name(state), :text_faint}]
       end
 
-    {canvas, _} = Canvas.puts(canvas, row, 4, left)
+    {canvas, _} = Canvas.puts(canvas, row, cols.left, left)
 
-    hint =
-      [
-        {digits_label(state), {:text_muted, [:bold]}},
-        {" open", :text_faint},
-        {"   ", :text_primary},
-        {down_label(state), {:text_muted, [:bold]}},
-        {" search all", :text_faint}
-      ]
+    hint = [
+      {digits_label(state), {:text_muted, [:bold]}},
+      {" open", :text_faint},
+      {"   ", :text_primary},
+      {down_label(state), {:text_muted, [:bold]}},
+      {" " <> cols.search, :text_faint}
+    ]
 
-    Canvas.rputs(canvas, row, list_end, hint) |> elem(0)
+    Canvas.rputs(canvas, row, cols.end, hint) |> elem(0)
   end
 
-  defp list_row(canvas, state, row, entry, cols, list_end) do
+  defp list_row(canvas, state, row, entry, cols) do
     {bead, bead_role, bold?} = entry.bead
     bead_role = if bold?, do: {bead_role, [:bold]}, else: bead_role
     marker = Glyphs.for_caps(:focus_bar, state.capabilities)
 
     canvas =
       if entry.selected?,
-        do: canvas |> Canvas.put(row, 2, marker, :accent) |> elem(0),
+        do: canvas |> Canvas.put(row, cols.marker, marker, :accent) |> elem(0),
         else: canvas
 
-    {canvas, _} = Canvas.put(canvas, row, 4, Integer.to_string(entry.n), {:text_muted, [:bold]})
-    {canvas, _} = Canvas.put(canvas, row, 7, bead, bead_role)
+    {canvas, _} =
+      Canvas.put(canvas, row, cols.digit, Integer.to_string(entry.n), {:text_muted, [:bold]})
+
+    {canvas, _} = Canvas.put(canvas, row, cols.bead, bead, bead_role)
 
     {canvas, _} =
       Canvas.put(
         canvas,
         row,
-        9,
+        cols.title_at,
         Canvas.clip(canvas, entry.summary.title, cols.title),
         entry.title_role
       )
@@ -487,24 +781,28 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
           Canvas.put(canvas, row, cols.words, Canvas.clip(canvas, text, 16), role) |> elem(0)
       end
 
-    {canvas, _} = Canvas.put(canvas, row, cols.runs, entry.runs, :text_faint)
-    {canvas, _} = Canvas.rputs(canvas, row, list_end, [{entry.age, :text_faint}])
+    canvas =
+      if cols.runs,
+        do: canvas |> Canvas.put(row, cols.runs, entry.runs, :text_faint) |> elem(0),
+        else: canvas
+
+    {canvas, _} = Canvas.rputs(canvas, row, cols.end, [{entry.age, :text_faint}])
 
     if entry.selected? do
       background = if state.home.focus == :list, do: :selection, else: :hover
-      Canvas.paint(canvas, row, 3, list_end + 1, background)
+      Canvas.paint(canvas, row, cols.fill_from, cols.fill, background)
     else
       canvas
     end
   end
 
-  defp empty_list(canvas, state, row) do
+  defp empty_list(canvas, state, row, col) do
     words =
       if state.home.filter != "",
         do: "No conversation matches \"" <> state.home.filter <> "\".",
         else: "No conversations yet."
 
-    Canvas.put(canvas, row, 4, words, :text_faint) |> elem(0)
+    Canvas.put(canvas, row, col, words, :text_faint) |> elem(0)
   end
 
   defp preview(canvas, state, header, col, entry) do
@@ -680,7 +978,20 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
     end
   end
 
-  defp placeholder(_state), do: @placeholder
+  defp placeholder(state), do: if(small?(state), do: @small_placeholder, else: @placeholder)
+
+  # The two classes with no preview and no room for sentences in the hint row.
+  defp small?(state) do
+    %{columns: columns, rows: rows} = state.size
+    tier = Glyph.tier(state.capabilities)
+    Grid.class(columns, rows, tier) in [:compact, :minimal]
+  end
+
+  defp map_drawn?(state) do
+    %{columns: columns, rows: rows} = state.size
+    tier = Glyph.tier(state.capabilities)
+    Grid.class(columns, rows, tier) != :minimal
+  end
 
   defp hint_parts(state) do
     text = state |> home_draft_text() |> String.trim()
@@ -707,10 +1018,23 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
 
         back = if state.home.entered == :boot, do: "continue the latest: ", else: "back to: "
 
-        key_pairs([
-          {enter, "new conversation in " <> project},
-          {escape, back <> Canvas.clip(Canvas.new(state, 200, 1), title, 40)}
-        ])
+        if small?(state) do
+          key_pairs(
+            [
+              {enter, "new"},
+              {escape, if(state.home.entered == :boot, do: "latest", else: "back")}
+            ] ++
+              if(map_drawn?(state),
+                do: [{key_label(state, :home_focus_next, "Tab"), "map"}],
+                else: []
+              )
+          )
+        else
+          key_pairs([
+            {enter, "new conversation in " <> project},
+            {escape, back <> Canvas.clip(Canvas.new(state, 200, 1), title, 40)}
+          ])
+        end
     end
   end
 

@@ -1,0 +1,44 @@
+ ⬢ swarm-code-cli   ▌ home                                                                                                                          ncode 0.2.2
+                                                swarm-code-cli               swarm-code               llmotions              ailogic
+                      ⣀⣀⣀⣀⣀⣀⣀⣀⡀               ⠁⠂⠠⢀                          ⠈⠠                       ⠈⠄                      ⠡                              now
+                 ⣀⣤⣶⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡷                  ⠈⠐⠠⡀                        ⠈⠠                       ⠡                      ⠡
+              ⣀⣴⣿⣿⣿⡿⠟⠛⠉⠉    ⠈⠉⠉⠁                       ! rate-limit chip wiring ⠈⠄                      ⠡                      ⠡
+            ⣠⣾⣿⣿⠿⠋⠁                   ⢀⡀                  ●                       ⠡                      ⠡                     ⠈⠄
+          ⢀⣴⣿⣿⠟⠁                     ⢰⣿⣿⡆                  ⠑⢄                      ⠡                      ⠡                     ⠨
+         ⢀⣾⣿⣿⠋                       ⣼⣿⣿                    ⠈⠢⡀                     ⠡                      ● competitor pricing scan
+        ⢀⣾⣿⣿⠃                   ⣾⣿⡆  ⣿⣿⡿                      ⠱⡀                     ⠅                     ⠨                     ⠨
+        ⣸⣿⣿⠃              ⢀⣀⡀  ⢰⣿⣿⡇ ⢰⣿⣿⡇                       ●                      ● pass 76 review notes                      ⠅                         1 h
+        ⣿⣿⡟               ⣾⣿⣿  ⢸⣿⣿⠃ ⢸⣿⣿⠃                        ⡇                     ⠅                     ⠅                     ⠅
+       ⢰⣿⣿⡇         ⢀⣤⣄  ⢀⣿⣿⡏  ⣿⣿⣿  ⣿⣿⣿                         ●                     ●                     ⠅                     ⠅
+       ⠘⣿⣿⡇         ⣼⣿⣿  ⢸⣿⣿⡇ ⢀⣿⣿⡏ ⢠⣿⣿⡇                         ●                     ⠅                     ⠅                     ⠅
+        ⣿⣿⣷    ⣾⣿⣷  ⣿⣿⡿ ⢀⣤⣭⣍  ⢸⣿⣿⠇ ⢸⣿⣿⠇                        ⢀⠇                     ⠅                     ⠅                     ⠅
+        ⢹⣿⣿⡆  ⢀⣿⣿⡇ ⢰⣿⣿⡇ ⠸⣿⣿⡿  ⣾⣿⣿  ⣾⣿⣿                         ⡜                     ⠠⠁                     ⠅                     ⠅
+         ⢿⣿⣿⡄ ⢸⣿⣿⠇ ⢸⣿⣿⠃ ⢀⣬⣭⡀  ⣿⣿⡟  ⣿⣿⡟                        ○                      ○                     ⠨                     ⠨                          1 d
+         ⠈⢿⣿⣿⣆ ⠉⠉  ⣿⣿⣿  ⢸⣿⣿⠃ ⢸⣿⣿⡇ ⠘⠿⠿⠃                       ○                      ○                      ○                     ⠌
+           ⠻⣿⣿⣷⣄   ⠻⠿⠇  ⣿⣿⣿  ⢸⣿⣿⠁                          ○                       ⠌                      ⠌                     ⠠⠁
+            ⠈⠻⣿⣿⣷⣤⣀     ⠻⠿⠃   ⠉⠁ ⢀⣀                      ○                        ○                      ⠌                      ⠅                           7 d
+              ⠈⠛⢿⣿⣿⣿⣶⣤⣤⣀⣀⣀⣀⣀⣀⣀⣤⣴⣾⣿⣿⡷                 ⢀⠠⠂⠁                       ○                       ○                      ○ fake provider script
+                 ⠈⠙⠻⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⠛⠉               ⡀⠄⠂⠁                         ⠌                       ⠌                      ○
+                       ⠈⠉⠉⠉⠉⠉                ⡀⠠⠐ ⠁                           ⠄⠁                      ⠠⠈                      ⠌                             30 d
+                                              9 · 1 live                     6                       3 · 1 live              2
+    ring ▰▰▰▰▰▰▱▱▱▱  $38.40 of $60                  ○ nightly deps audit · scheduled · in 14 min
+    bars 3 live · swarm research chat
+    dot  1 needs you · Ctrl-N go
+
+    resume in swarm-code-cli                                     Alt-1…9 open   ↓ search all     rate-limit chip wiring
+  ▌ 1  ! rate-limit chip wiring                 approval waiting      4 runs       2 min ago     4 runs · started 3 d ago · 2 min ago
+    2  ● MCP fixture isolation                  swarm · 60%           7 runs       6 min ago
+    3  ● paste width regression                                       3 runs      52 min ago     last prompt
+    4  ● reaper ownership for kill_async        unread                5 runs         3 h ago     wire the rate-limit chip into the
+    5  ● workflow host file reads                                     2 runs         5 h ago     status row and the side-panel strip
+    6  ○ dashboard launch brief                                       1 run         26 h ago
+    7  ○ settings strata hues                                         6 runs         2 d ago     ! 1 approval waiting
+    8  ○ history search ranking                                       2 runs         4 d ago
+    9  ○ side panel lane colours                                      9 runs         6 d ago     Enter open   Ctrl-N go to the approval
+
+    before you start something big
+    Anthropic 5 h window ▰▰▰▰▱▱▱▱▱▱ 41%     OpenAI daily ▰▱▱▱▱▱▱▱▱▱ 12%     ⎇ main · 3 files uncommitted
+
+ › Type to start a new conversation, or / for commands…
+   Enter new conversation in swarm-code-cli   Esc continue the latest: rate-limit chip wiring
+ Build · auto · opus 5.5 · xhigh · ⎇ main +3 · 1 waiting                                                                       Tab map   Alt-1…9 open   F1 keys

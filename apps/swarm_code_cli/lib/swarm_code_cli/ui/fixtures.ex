@@ -687,7 +687,27 @@ defmodule SwarmCodeCLI.UI.Fixtures do
       capabilities: capabilities,
       source_epoch: "fixture-epoch",
       destination: {:conversation, conversation},
-      read_model: %ReadModel{snapshots: %{workspace: workspace}},
+      read_model: %ReadModel{
+        snapshots: %{
+          workspace: workspace,
+          shell: %DTO.ShellSnapshot{
+            rate_limits: [
+              %DTO.RateLimit{
+                provider_id: "a0000000-0000-4000-8000-000000000001",
+                provider: "Anthropic",
+                scope: "5 h window",
+                used_percent: 41.0
+              },
+              %DTO.RateLimit{
+                provider_id: "a0000000-0000-4000-8000-000000000002",
+                provider: "OpenAI",
+                scope: "daily",
+                used_percent: 12.0
+              }
+            ]
+          }
+        }
+      },
       drafts: drafts,
       focus: "composer",
       revision: 1,

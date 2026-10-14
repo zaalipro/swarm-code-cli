@@ -108,16 +108,37 @@ defmodule SwarmCodeCLI.UI.Home.View do
       else: "$" <> :erlang.float_to_binary(cents / 100, decimals: 2)
   end
 
-  defp tightest_limit(state) do
-    shell = Map.get(state.read_model.snapshots, :shell)
+  defp tightest_limit(state), do: state |> limits(1) |> List.first()
+
+  @doc """
+  The provider windows the last responses reported, tightest first, at most
+  `count`: the live map by provider wins over the shell snapshot's list.
+  """
+  @spec limits(map(), pos_integer()) :: [map()]
+  def limits(state, count) do
     live = Map.get(state.read_model, :rate_limits, %{})
+    shell = Map.get(state.read_model.snapshots, :shell)
     listed = if shell, do: Map.get(shell, :rate_limits, []), else: []
 
     listed
     |> Enum.reject(&Map.has_key?(live, Map.get(&1, :provider_id)))
     |> Enum.concat(Map.values(live))
     |> Enum.filter(&is_number(Map.get(&1, :used_percent)))
-    |> Enum.max_by(& &1.used_percent, fn -> nil end)
+    |> Enum.sort_by(& &1.used_percent, :desc)
+    |> Enum.take(count)
+  end
+
+  @doc "The Git branch and its changed-path count from the workspace snapshot: `{branch, dirty | nil}` or nil."
+  @spec branch(map()) :: {binary(), non_neg_integer() | nil} | nil
+  def branch(state) do
+    case Map.get(state.read_model.snapshots, :workspace) do
+      %{git_branch: branch} = workspace when is_binary(branch) and branch != "" ->
+        dirty = Map.get(workspace, :git_dirty)
+        {branch, if(is_integer(dirty), do: dirty)}
+
+      _ ->
+        nil
+    end
   end
 
   @doc "The gauge's lit cells out of ten for a fraction (a number, never more than ten)."

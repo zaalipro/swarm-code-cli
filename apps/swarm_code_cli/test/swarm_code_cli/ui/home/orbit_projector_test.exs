@@ -6,7 +6,8 @@ defmodule SwarmCodeCLI.UI.Home.OrbitProjectorTest do
   """
   use ExUnit.Case, async: true
 
-  import SwarmCodeCLI.OrbitHelpers, only: [fixture: 0, fixture: 2, assert_golden: 2]
+  import SwarmCodeCLI.OrbitHelpers,
+    only: [fixture: 0, fixture: 1, fixture: 2, assert_golden: 2, home_draft: 1, step: 2]
 
   alias SwarmCodeCLI.Cli020EHelpers, as: H
   alias SwarmCodeCLI.UI.{Projector, Theme}
@@ -259,6 +260,7 @@ defmodule SwarmCodeCLI.UI.Home.OrbitProjectorTest do
       state = fixture()
       overview = %{state.home.overview | month: nil}
       state = %{state | home: %{state.home | overview: overview}}
+      state = put_in(state.read_model.snapshots[:shell], %DTO.ShellSnapshot{})
       assert %{frac: nil, words: "no budget set"} = Home.View.ring(state)
       assert Enum.at(rows(state), 19) =~ "no budget set"
     end
@@ -343,5 +345,169 @@ defmodule SwarmCodeCLI.UI.Home.OrbitProjectorTest do
       state = fixture({120, 36}, home: [entered: :key])
       assert Enum.at(rows(state), 34) =~ "Esc back to: rate-limit chip wiring"
     end
+  end
+
+  describe "80x24 (compact)" do
+    setup do
+      %{state: fixture({80, 24})}
+    end
+
+    test "the screen is the golden", %{state: state} do
+      assert_golden("compact_80x24.txt", H.screen_text(state))
+    end
+
+    test "row 2 holds the inline glyph and the ring's words", %{state: state} do
+      rows = rows(state)
+      assert String.starts_with?(Enum.at(rows, 2), "  ⢎⡁▂▃▅▆█ ●")
+      assert Enum.at(rows, 2) =~ "▰▰▰▰▰▰▱▱▱▱ $38.40 of $60 · 3 live · 1 needs you"
+      assert Enum.at(rows, 3) =~ "○ nightly deps audit in 14 min · ⎇ main +3"
+    end
+
+    test "rows 5 to 8 are the line orbits, row 9 their ticks", %{state: state} do
+      rows = rows(state)
+
+      for {row, name} <- Enum.zip(5..8, ["swarm-code-cli", "swarm-code", "llmotions", "ailogic"]) do
+        assert String.starts_with?(Enum.at(rows, row), "  " <> name)
+      end
+
+      assert Enum.at(rows, 5) =~ "!"
+      assert String.ends_with?(Enum.at(rows, 5), " 9")
+      assert String.ends_with?(Enum.at(rows, 8), " 2")
+      assert Enum.at(rows, 9) =~ "now"
+      assert Enum.at(rows, 9) =~ "30 d"
+    end
+
+    test "the list has no run counts and the selected row is filled", %{state: state} do
+      rows = rows(state)
+      assert Enum.at(rows, 10) =~ "resume"
+      assert Enum.at(rows, 10) =~ "Alt-1…9 open   ↓ search"
+      assert Enum.at(rows, 11) =~ "▌ 1 ! rate-limit chip wiring"
+      assert Enum.at(rows, 19) =~ "9 ○ side panel lane colours"
+      refute Enum.any?(11..19, &(Enum.at(rows, &1) =~ "runs"))
+      hover = Theme.style(:hover, state.capabilities).background.value
+      assert H.cell_style(H.plan(state), 40, 11).background == hover
+      assert H.cell_style(H.plan(state), 40, 12).background == nil
+    end
+
+    test "the composer, its hint and the status row", %{state: state} do
+      rows = rows(state)
+      assert Enum.at(rows, 21) =~ "› Type to start a new conversation…"
+      assert Enum.at(rows, 22) =~ "Enter new   Esc latest   Tab map"
+      assert Enum.at(rows, 23) =~ "auto · opus 5.5 · xhigh · 1 waiting"
+      assert Enum.at(rows, 23) =~ "F1 keys"
+      refute Enum.at(rows, 23) =~ "Tab map"
+    end
+
+    test "fewer rows drop the line orbits first and keep three list rows" do
+      for {columns, rows_count} <- [{80, 22}, {80, 20}, {72, 20}] do
+        state = fixture({columns, rows_count})
+        rows = rows(state)
+        assert length(rows) == rows_count
+        listed = Enum.count(rows, &(&1 =~ ~r/^ *▌? *\d [!●○] /u))
+        assert listed >= 3, "#{columns}x#{rows_count} lists #{listed}"
+      end
+
+      assert Enum.at(rows(fixture({80, 20})), 5) =~ "resume"
+    end
+  end
+
+  describe "110x32 (orbit_s)" do
+    setup do
+      %{state: fixture({110, 32})}
+    end
+
+    test "the screen is the golden", %{state: state} do
+      assert_golden("orbit_s_110x32.txt", H.screen_text(state))
+    end
+
+    test "three orbits, no preview, the list spans the width", %{state: state} do
+      rows = rows(state)
+      names = Enum.at(rows, 1)
+      assert names =~ "swarm-code-cli" and names =~ "swarm-code " and names =~ "llmotions"
+      refute names =~ "ailogic"
+      refute Enum.any?(rows, &(&1 =~ "last prompt"))
+      assert Enum.at(rows, 20) =~ "▌ 1"
+      assert String.length(Enum.at(rows, 20)) > 100
+      assert Enum.at(rows, 20) =~ ~r/2 min ago\s*$/
+    end
+  end
+
+  describe "160x44 (orbit_l)" do
+    setup do
+      %{state: fixture({160, 44})}
+    end
+
+    test "the screen is the golden", %{state: state} do
+      assert_golden("wide_160x44.txt", H.screen_text(state))
+    end
+
+    test "every orbit titles its newest bead", %{state: state} do
+      orbit_area = state |> rows() |> Enum.slice(2, 20) |> Enum.join("\n")
+
+      for title <- [
+            "rate-limit chip wiring",
+            "pass 76 review notes",
+            "competitor pricing scan",
+            "fake provider script"
+          ] do
+        assert orbit_area =~ title, "#{title} is beside its bead"
+      end
+    end
+
+    test "the last block names the provider windows and the branch", %{state: state} do
+      rows = rows(state)
+      assert Enum.at(rows, 38) =~ "before you start something big"
+      assert Enum.at(rows, 39) =~ "Anthropic 5 h window ▰▰▰▰▱▱▱▱▱▱ 41%"
+      assert Enum.at(rows, 39) =~ "OpenAI daily ▰▱▱▱▱▱▱▱▱▱ 12%"
+      assert Enum.at(rows, 39) =~ "⎇ main · 3 files uncommitted"
+      refute Enum.at(rows, 39) =~ "MCP"
+    end
+
+    test "without windows or a branch the block is left out" do
+      state = fixture({160, 44}, workspace: [git_branch: nil, git_dirty: nil])
+      state = put_in(state.read_model.snapshots[:shell], %DTO.ShellSnapshot{})
+      refute Enum.any?(rows(state), &(&1 =~ "before you start"))
+    end
+  end
+
+  describe "60x16 (minimal)" do
+    setup do
+      %{state: fixture({60, 16})}
+    end
+
+    test "the screen is the golden", %{state: state} do
+      assert_golden("minimal_60x16.txt", H.screen_text(state))
+    end
+
+    test "the inline glyph and the words stand in for the orbits", %{state: state} do
+      rows = rows(state)
+      assert String.starts_with?(Enum.at(rows, 2), "  ⢎⡁▂▃▅▆█ ●")
+      assert Enum.at(rows, 2) =~ "$38.40 of $60 · 3 live · 1 needs you"
+      assert Enum.at(rows, 4) =~ "resume"
+      assert Enum.at(rows, 5) =~ "▌ 1 ! rate-limit chip wiring"
+      assert Enum.at(rows, 14) =~ "Enter new   Esc latest"
+      refute Enum.at(rows, 14) =~ "map"
+    end
+  end
+
+  describe "resizing" do
+    test "the selection and the draft survive a change of class" do
+      state = fixture({120, 36}, home: [selected: 4])
+      state = state |> type_draft("fix the flaky test")
+      assert home_draft(state) == "fix the flaky test"
+
+      for size <- [{80, 24}, {60, 16}, {160, 44}, {120, 36}] do
+        {columns, rows} = size
+        {state, _} = step(state, {:resize, %SwarmCodeCLI.UI.Size{columns: columns, rows: rows}})
+        assert state.home.selected == 4
+        assert home_draft(state) == "fix the flaky test"
+        assert Enum.any?(rows(state), &(&1 =~ "fix the flaky test"))
+      end
+    end
+  end
+
+  defp type_draft(state, text) do
+    {state, _} = step(state, {:editor, {"fixture-epoch", :home}, {:insert, text}})
+    state
   end
 end
