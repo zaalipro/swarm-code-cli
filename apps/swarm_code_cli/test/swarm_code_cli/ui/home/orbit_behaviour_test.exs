@@ -702,5 +702,41 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
       {state, _} = workspace_delivered(state)
       assert state.notice == nil
     end
+
+    test "a smaller terminal leaves no orbit selected that is not drawn (UI-U-9)" do
+      many = fn wire ->
+        update_in(wire["projects"], fn [here, there] ->
+          extra =
+            for n <- 1..4 do
+              %{
+                there
+                | "id" => "7c1e9a2b-0000-4000-8000-0000000001#{n}0",
+                  "name" => "orbit-#{n}",
+                  "conversations" => []
+              }
+            end
+
+          [here, there | extra]
+        end)
+      end
+
+      state = ready(size: {160, 44}, overview: many)
+      assert length(Home.View.map_projects(state)) == 6
+
+      state = state |> focus(:focus_next) |> focus(:focus_next)
+      state = Enum.reduce(1..5, state, fn _, acc -> focus(acc, :right) end)
+      assert state.home.orbit == 5
+
+      {state, _} = step(state, {:resize, %SwarmCodeCLI.UI.Size{columns: 120, rows: 36}})
+      assert length(Home.View.map_projects(state)) == 4
+      assert state.home.orbit == 3
+      assert state.home.focus == :map
+      assert %{project: %{name: "orbit-2"}} = Home.View.map_target(state)
+
+      {state, effects} = step(state, {:resize, %SwarmCodeCLI.UI.Size{columns: 60, rows: 16}})
+      assert Home.View.map_projects(state) == []
+      assert state.home.focus == :composer
+      assert commands(effects, :conversation_open) == []
+    end
   end
 end

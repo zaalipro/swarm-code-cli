@@ -772,9 +772,26 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
 
   defp search_response(state, _request, _body), do: {state, []}
 
-  # The list never selects a row it does not have, nor the map a bead.
-  defp clamp(%{home: %Home{} = home} = state) do
-    last = max(length(Home.rows(state)) - 1, 0)
+  # The list never selects a row it does not have, nor the map a bead. Each half
+  # waits for the answer it clamps against: before the conversation list (or a
+  # search) answered there are no rows to hold the selection to, and before the
+  # overview there is no orbit, so a position kept across an earlier opening
+  # (`home_resume`) is not thrown away.
+  defp clamp(%{home: %Home{}} = state), do: state |> clamp_list() |> clamp_map()
+  defp clamp(state), do: state
+
+  defp clamp_list(%{home: %Home{} = home} = state) do
+    if home.search != nil or match?(%DTO.ConversationList{}, state.conversations) do
+      last = max(length(Home.rows(state)) - 1, 0)
+      %{state | home: %{home | selected: min(home.selected, last)}}
+    else
+      state
+    end
+  end
+
+  defp clamp_map(%{home: %Home{overview: nil}} = state), do: state
+
+  defp clamp_map(%{home: %Home{} = home} = state) do
     projects = View.map_projects(state)
     orbit = min(home.orbit, max(length(projects) - 1, 0))
 
@@ -788,17 +805,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
 
     %{
       state
-      | home: %{
-          home
-          | selected: min(home.selected, last),
-            orbit: orbit,
-            bead: min(home.bead, max(beads - 1, 0)),
-            focus: focus
-        }
+      | home: %{home | orbit: orbit, bead: min(home.bead, max(beads - 1, 0)), focus: focus}
     }
   end
-
-  defp clamp(state), do: state
 
   # --------------------------------------------------------------- after step
 
@@ -811,7 +820,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   def after_update(_prev, %{home: nil} = next), do: {next, []}
 
   def after_update(prev, %{home: %Home{}} = next) do
-    next = reconcile(next)
+    # orbit int (UI-U-9): a resize, or a list answer, may leave the selection,
+    # the orbit or the bead on something that is no longer there or drawn.
+    next = next |> reconcile() |> clamp()
 
     cond do
       prev.home != nil and prev.destination != next.destination ->

@@ -473,7 +473,9 @@ defmodule SwarmCodeCLI.UI.Home.View do
   @spec map_target(map()) ::
           %{project: DTO.HomeProject.t(), conversation: term(), index: integer()} | nil
   def map_target(%{home: %Home{focus: :map} = home} = state) do
-    case Enum.at(projects(state), home.orbit) do
+    # orbit int (UI-U-9): the orbits drawn, not every project the overview
+    # carries (a smaller terminal draws fewer).
+    case Enum.at(map_projects(state), home.orbit) do
       nil ->
         nil
 
