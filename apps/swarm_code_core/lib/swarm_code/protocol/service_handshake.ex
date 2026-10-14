@@ -38,7 +38,9 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
     "rewind" => :rewind,
     "history" => :history,
     # cli020 C6.
-    "run.retry" => :run_retry
+    "run.retry" => :run_retry,
+    # orbit S1: home.overview and conversation.search.
+    "home" => :home
   }
   @max_frame_bytes 1_048_576
 
@@ -70,6 +72,7 @@ defmodule SwarmCode.Protocol.ServiceHandshake do
             | :shell
             | :attachment
             | :run_retry
+            | :home
 
     @type t :: %__MODULE__{
             source_epoch: binary(),
