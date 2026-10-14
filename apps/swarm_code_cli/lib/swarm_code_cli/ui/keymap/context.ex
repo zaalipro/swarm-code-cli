@@ -18,6 +18,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   | `:hint` | hint mode (Ctrl-F), no layer |
   | `:overlay` | the agent overlay is open, no layer |
   | `:settings…` | the settings layer is open, no shell layer over it: one of seven by its mode and popover (`UI.Settings.context/1`, cli74) |
+  | `:home_composer`, `:home_list`, `:home_map` | Home is open (orbit), no layer and no settings over it: by its focus |
 
   A picker is a picker before it is a field: its query *is* the layer, and its
   keys (Ctrl-N, Home, the opening chord) have to beat the field editor's.
@@ -62,6 +63,11 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   # cli74 U1-2: the settings layer covers the shell (and the agent overlay)
   # until it closes; its mode and popover pick one of its seven contexts.
   def of(%{settings: %Settings.Layer{} = layer}), do: Settings.context(layer)
+
+  # orbit D8: Home covers the shell (and the agent overlay) until it closes;
+  # layers and Settings, which open over it, are read before it.
+  def of(%{home: %SwarmCodeCLI.UI.Home{focus: focus}}),
+    do: Map.fetch!(%{composer: :home_composer, list: :home_list, map: :home_map}, focus)
 
   # pass72: hint mode reads its badge keys before anything under it, and the
   # agent overlay covers the chat until Esc.

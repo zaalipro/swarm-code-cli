@@ -36,7 +36,10 @@ defmodule SwarmCodeCLI.UI.Init do
     settings_open: nil,
     # cli74 (§2.17, A10): cli.json's `startup_conversation: ask` — the resume
     # picker opens once the shell is ready, as /resume opens it.
-    resume_picker?: false
+    resume_picker?: false,
+    # orbit: the launch opens Home (the startup default) over the conversation
+    # it opened; a resume picker wins when both are set.
+    home?: false
   ]
 
   @type t :: %__MODULE__{}

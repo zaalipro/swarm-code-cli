@@ -42,12 +42,20 @@ defmodule SwarmCodeCLI.UI.Projector do
     else
       # pass72 P8: the agent overlay covers the whole screen, so the shell
       # under it is not projected at all.
+      # orbit D7: too_small, Settings, Home, Overlay, Shell (Settings covers
+      # Home, so F2 from Home and a first run without a provider work).
       {regions, cursor} =
         case SwarmCodeCLI.UI.Projector.Settings.project(state, layout) do
           nil ->
-            case SwarmCodeCLI.UI.Projector.Overlay.project(state, layout) do
-              nil -> Shell.project(state, layout)
-              covered -> covered
+            case SwarmCodeCLI.UI.Projector.Home.project(state, layout) do
+              nil ->
+                case SwarmCodeCLI.UI.Projector.Overlay.project(state, layout) do
+                  nil -> Shell.project(state, layout)
+                  covered -> covered
+                end
+
+              home ->
+                home
             end
 
           settings ->
