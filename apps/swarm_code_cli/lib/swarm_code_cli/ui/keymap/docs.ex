@@ -26,7 +26,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     settings_paste: "Settings: pasting a key",
     settings_capture: "Settings: capturing a key (Key bindings)",
     settings_picker: "Settings: a picker",
-    settings_popover: "Settings: a confirmation, the key help or the leave question"
+    settings_popover: "Settings: a confirmation, the key help or the leave question",
+    home_composer: "Home: the composer",
+    home_list: "Home: the resume list and its search",
+    home_map: "Home: the project map"
   ]
 
   @groups [
@@ -38,7 +41,8 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     edit: "Edit",
     vim: "Vim",
     session: "Session",
-    settings: "Settings"
+    settings: "Settings",
+    home: "Home"
   ]
 
   # cli020 D5 (Q5): wheel reports are off by default; alternate scroll makes
@@ -69,6 +73,22 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
   terminal.keys` in a shell.
   """
 
+  # orbit U8: Home's chapter.
+  @home_intro """
+
+  # Home
+
+  `ncode` opens Home over your latest conversation: recent work in this
+  project, the live runs of every project, this month's spend and what waits
+  for you. Type to start a new conversation, or press `Enter` on an empty
+  draft to open the selected one. `Esc` leaves Home for the conversation
+  underneath; `Alt-O` or `/home` brings it back, with your draft. `Tab` walks
+  the composer, the resume list (type to search every conversation) and the
+  project map. Opening another project's conversation copies the command that
+  opens it in a new terminal tab; there is no switching of projects inside a
+  session. Alt-1…9 open the numbered rows; `Ctrl-N` goes to what waits for you.
+  """
+
   @doc """
   pass73 T9: the sentence about the mouse, for this reference and the help
   sheet (`?`) while wheel reports are on.
@@ -95,11 +115,13 @@ defmodule SwarmCodeCLI.UI.Keymap.Docs do
     #{@mouse_note}
     """
 
-    shell = Bindings.contexts() -- Bindings.settings_contexts()
+    shell = Bindings.contexts() -- (Bindings.settings_contexts() ++ Bindings.home_contexts())
 
     header <>
       Enum.map_join(shell, "", &context/1) <>
-      @settings_intro <> Enum.map_join(Bindings.settings_contexts(), "", &context/1)
+      @settings_intro <>
+      Enum.map_join(Bindings.settings_contexts(), "", &context/1) <>
+      @home_intro <> Enum.map_join(Bindings.home_contexts(), "", &context/1)
   end
 
   @doc "The human title of `context`."

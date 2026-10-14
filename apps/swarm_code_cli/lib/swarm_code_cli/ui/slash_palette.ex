@@ -21,6 +21,8 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       desc: "How much agents may do without asking"
     },
     %{name: "trust", args: "", desc: "Trust this project: read its AGENTS.md and allow edits"},
+    # orbit: Home, the startup dashboard (Alt-O).
+    %{name: "home", args: "", desc: "Open Home: recent work, live runs, resume"},
     %{
       name: "panel",
       args: "[full|compact|hidden|summaries on|off]",

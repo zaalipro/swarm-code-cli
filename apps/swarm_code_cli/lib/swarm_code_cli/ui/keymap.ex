@@ -362,8 +362,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
     end
   end
 
-  defp fallthrough(context, code, mods, state) when context in [:composer, :field, :overlay],
-    do: editor_fallthrough(code, mods, state)
+  defp fallthrough(context, code, mods, state)
+       when context in [:composer, :field, :overlay, :home_composer, :home_list],
+       do: editor_fallthrough(code, mods, state)
 
   defp fallthrough(context, code, mods, _state) when context in @settings_contexts,
     do: settings_fallthrough(context, code, mods)
