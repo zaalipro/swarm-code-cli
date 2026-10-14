@@ -254,7 +254,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # that debounces the next one (500 ms, owned by this process).
         home_month: nil,
         home_revision: 0,
-        home_timer: nil
+        home_timer: nil,
+        # orbit int (DAEMON-F3): `%{monitor ref => {run id, pid}}` of the live
+        # runs the last overview listed (at most 64).
+        home_monitors: %{}
       }
 
       # cli020 C1 (bugs-7): a prompt queued before a restart drains now (after
@@ -541,6 +544,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # orbit int (DAEMON-F3): a live run Home listed is gone; Home hears about it.
+  def handle_info({:DOWN, ref, :process, _, _}, %{home_monitors: monitors} = state)
+      when is_map_key(monitors, ref),
+      do:
+        {:noreply,
+         state |> Map.put(:home_monitors, Map.delete(monitors, ref)) |> arm_home_stale()}
+
   # pass71 S2: a job crashed or was killed without answering.
   def handle_info({:DOWN, ref, :process, _, _}, %{jobs: jobs} = state)
       when is_map_key(jobs, ref),
@@ -806,6 +816,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
     with timer when is_reference(timer) <- Map.get(state, :home_timer),
          do: Process.cancel_timer(timer)
+
+    Enum.each(Map.get(state, :home_monitors, %{}), fn {ref, _} ->
+      Process.demonitor(ref, [:flush])
+    end)
 
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
@@ -1199,20 +1213,25 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     build = state.work.home_overview
 
     work = fn ->
-      project
-      |> build.(options, cached, revision)
+      {body, entries} = build.(project, options, cached, revision)
+
+      body
       |> Map.merge(%{"request_id" => id, "state" => "ready", "error" => nil})
       |> fit_home(params["byte_limit"])
+      |> case do
+        {:ok, body} -> {:ok, body, entries}
+        {:error, code} -> {:error, code}
+      end
     end
 
     finish = fn
-      {:ok, body}, next ->
+      {:ok, body, entries}, next ->
         next =
           if cached == nil,
             do: %{next | home_month: {System.monotonic_time(:millisecond), body["month"]}},
             else: next
 
-        {result("home_overview", body), next}
+        {result("home_overview", body), watch_live_runs(next, entries)}
 
       {:error, code}, next ->
         {wire_error(code), next}
@@ -4690,6 +4709,34 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # timer dies with the process (and `terminate/2` cancels it).
   @home_stale_ms 500
 
+  # orbit int (DAEMON-F3): a chat or goal run (or a stopped swarm) ending in
+  # another conversation sends this backend nothing, yet Home shows it as a live
+  # bar and bead. The run processes the overview was read from are monitored (a
+  # DOWN arms `home_stale`; one already dead answers at once, so no end is lost
+  # between the read and now), monitors of runs a later overview no longer
+  # lists are dropped, and the monitors die with this process.
+  defp watch_live_runs(state, entries) do
+    listed = MapSet.new(entries, fn {_id, pid} -> pid end)
+
+    {kept, monitors} =
+      Enum.reduce(state.home_monitors, {MapSet.new(), %{}}, fn {ref, {_id, pid} = entry},
+                                                               {kept, monitors} ->
+        if MapSet.member?(listed, pid) do
+          {MapSet.put(kept, pid), Map.put(monitors, ref, entry)}
+        else
+          Process.demonitor(ref, [:flush])
+          {kept, monitors}
+        end
+      end)
+
+    monitors =
+      for {id, pid} <- entries, not MapSet.member?(kept, pid), into: monitors do
+        {Process.monitor(pid), {id, pid}}
+      end
+
+    %{state | home_monitors: monitors}
+  end
+
   defp arm_home_stale(%{home_timer: nil} = state),
     do: %{state | home_timer: Process.send_after(self(), :home_stale_due, @home_stale_ms)}
 
@@ -5768,8 +5815,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       change_diff: &SwarmCode.Domain.FeatureCatalog.change_diff/2,
       feature_query: &SwarmCode.Daemon.Service.FeatureRequest.execute/4,
       summarize: &AgentStatus.summarize/2,
-      # orbit S4: `project |> build.(options, month, revision)`.
-      home_overview: &HomeOverview.build/4
+      # orbit S4: `project |> build.(options, month, revision)` answers
+      # `{body, [{run_id, pid}]}` (DAEMON-F3: the registry rows it read).
+      home_overview: &HomeOverview.build_watched/4
     }
 
     if is_map(overrides),

@@ -365,7 +365,7 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
           end
         end
 
-        %{
+        body = %{
           "revision" => revision,
           "project_id" => nil,
           "projects" => [],
@@ -375,6 +375,8 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
           "month" => nil,
           "next_scheduled" => nil
         }
+
+        {body, []}
       end
 
       backend =
@@ -857,6 +859,112 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
       send(c.backend, {:workflows_changed})
       refute_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 800
       assert :sys.get_state(c.backend).home_timer == nil
+    end
+
+    # A run process in the engine registry, the way a RunServer registers: it
+    # ends on `:stop` and leaves the registry (staying alive) on `:unregister`.
+    defp fake_run!(conversation) do
+      id = Ecto.UUID.generate()
+      test = self()
+
+      pid =
+        start_supervised!(
+          {Task,
+           fn ->
+             {:ok, _} =
+               Registry.register(SwarmCode.Domain.Registry, {:run, id}, {conversation.id, "chat"})
+
+             send(test, {:registered, id, self()})
+             fake_run_loop(id)
+           end},
+          id: {:fake_run, id}
+        )
+
+      assert_receive {:registered, ^id, ^pid}, 5_000
+      {id, pid}
+    end
+
+    defp fake_run_loop(id) do
+      receive do
+        :stop ->
+          :ok
+
+        {:unregister, from} ->
+          Registry.unregister(SwarmCode.Domain.Registry, {:run, id})
+          send(from, {:unregistered, id})
+          fake_run_loop(id)
+      end
+    end
+
+    test "a live run the overview listed ending later arms it (DAEMON-F3)", c do
+      {id, pid} = fake_run!(c.current)
+
+      assert {:ok, %{"response_kind" => "home_overview"}} =
+               request(c.backend, "home", global(), overview_request())
+
+      assert [{_ref, {^id, ^pid}}] = Map.to_list(:sys.get_state(c.backend).home_monitors)
+      # Listing a run is not a trigger; only its end is.
+      refute_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 700
+
+      send(pid, :stop)
+      assert_receive {:service_delta, _, "shell", %{"kind" => "home_stale"} = delta}, 3_000
+      assert delta["body"] == %{"revision" => 1}
+      assert :sys.get_state(c.backend).home_monitors == %{}
+    end
+
+    test "a later overview that no longer lists a run drops its monitor (DAEMON-F3)", c do
+      {id, pid} = fake_run!(c.current)
+      assert {:ok, _} = request(c.backend, "home", global(), overview_request())
+      assert [_] = Map.to_list(:sys.get_state(c.backend).home_monitors)
+
+      send(pid, {:unregister, self()})
+      assert_receive {:unregistered, ^id}, 5_000
+      assert {:ok, _} = request(c.backend, "home", global(), overview_request())
+      assert :sys.get_state(c.backend).home_monitors == %{}
+
+      # The process ending now is no longer Home's business.
+      send(pid, :stop)
+      refute_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 700
+    end
+
+    test "a run that ended between the registry read and the reply is not lost (DAEMON-F3)", c do
+      {_id, pid} = fake_run!(c.current)
+      monitor = Process.monitor(pid)
+      send(pid, :stop)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 5_000
+
+      # The overview read the registry while the run was alive; by the time
+      # the backend settles the answer the process is gone.
+      build = fn _project, _options, _month, revision ->
+        {%{
+           "revision" => revision,
+           "project_id" => nil,
+           "projects" => [],
+           "live_runs" => [],
+           "live_overflow" => 0,
+           "waiting_total" => 0,
+           "month" => nil,
+           "next_scheduled" => nil
+         }, [{"gone-run", pid}]}
+      end
+
+      backend =
+        start_supervised!(
+          {Backend,
+           mode: :persisted,
+           repo: Repo,
+           project_root: c.root,
+           project_id: c.project.id,
+           conversation_id: c.current.id,
+           source_epoch: Ecto.UUID.generate(),
+           work: %{home_overview: build}},
+          id: :injected_backend
+        )
+
+      watch!(backend, "shell", global(), "shell")
+      assert {:ok, _} = request(backend, "home", global(), overview_request())
+      assert_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 3_000
+      assert :sys.get_state(backend).home_monitors == %{}
     end
 
     test "stopping the backend cancels a pending timer", c do

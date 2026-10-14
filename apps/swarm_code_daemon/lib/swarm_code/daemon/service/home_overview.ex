@@ -38,14 +38,27 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
   `revision` the backend's home revision the answer reflects.
   """
   @spec build(binary(), options(), map() | nil, non_neg_integer()) :: map()
-  def build(project_id, %{projects: projects, per_project: per_project}, month, revision) do
+  def build(project_id, options, month, revision),
+    do: project_id |> build_watched(options, month, revision) |> elem(0)
+
+  @doc """
+  `build/4` and the engine registry rows `{run_id, pid}` the live runs were
+  read from (orbit int, DAEMON-F3): the backend monitors those processes, so a
+  run that ends while Home stays open is a Home trigger. They come from the one
+  registry read the body's bars and live marks were built from, so no live run
+  of the body is missing from them (at most 64).
+  """
+  @spec build_watched(binary(), options(), map() | nil, non_neg_integer()) ::
+          {map(), [{binary(), pid()}]}
+  def build_watched(project_id, %{projects: projects, per_project: per_project}, month, revision) do
     list = project_rows(project_id, projects)
     ids = Enum.map(list, & &1.id)
 
     page = conversation_rows(ids, per_project)
     counts = conversation_counts(ids)
     finished = finished_at(Enum.map(page, & &1.id))
-    live = live_rows()
+    entries = live_entries()
+    live = live_rows(entries)
     waits = Questions.list() |> Enum.frequencies_by(& &1.conversation_id)
     waiting_by_project = waiting_by_project(waits)
 
@@ -54,7 +67,7 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
 
     {bars, overflow} = Enum.split(live, @bars)
 
-    %{
+    body = %{
       "revision" => revision,
       "project_id" => project_id,
       "projects" =>
@@ -82,6 +95,8 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
       "month" => month || Usage.month(),
       "next_scheduled" => next_scheduled()
     }
+
+    {body, entries}
   end
 
   # The current project first (even a scratch one), then the non-scratch
@@ -195,13 +210,19 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
     }
   end
 
-  # The engine registry's runs (this VM's), joined to their conversation and
-  # root node, oldest first. A registry entry whose run row is gone (a race, or
-  # a run another process owns) is ignored.
-  defp live_rows do
-    ids =
-      Registry.select(SwarmCode.Domain.Registry, [{{{:run, :"$1"}, :_, :_}, [], [:"$1"]}])
-      |> Enum.take(@live_cap)
+  # The engine registry's runs (this VM's) as `{run_id, pid}`, read once.
+  defp live_entries do
+    Registry.select(SwarmCode.Domain.Registry, [
+      {{{:run, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
+    ])
+    |> Enum.take(@live_cap)
+  end
+
+  # The registry's runs, joined to their conversation and root node, oldest
+  # first. A registry entry whose run row is gone (a race, or a run another
+  # process owns) is ignored.
+  defp live_rows(entries) do
+    ids = Enum.map(entries, &elem(&1, 0))
 
     if ids == [] do
       []

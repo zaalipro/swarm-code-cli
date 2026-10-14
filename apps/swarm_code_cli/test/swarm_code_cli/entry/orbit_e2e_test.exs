@@ -151,7 +151,7 @@ defmodule SwarmCodeCLI.Release.OrbitE2ETest do
 
     built = fn project, options, month, revision ->
       send(test, {:home_built, revision})
-      HomeOverview.build(project, options, month, revision)
+      HomeOverview.build_watched(project, options, month, revision)
     end
 
     backend =
