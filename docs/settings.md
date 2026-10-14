@@ -170,7 +170,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
-| `terminal.startup_conversation` | On launch | cli | enum | latest | next launch | `NCODE_CONVERSATION` or `SWARM_CONVERSATION`, `--new/--continue/--resume` |
+| `terminal.startup_conversation` | On launch | cli | enum | dashboard | next launch | `NCODE_CONVERSATION` or `SWARM_CONVERSATION`, `--new/--continue/--resume` |
 | `terminal.companion` | Visual companion | cli | toggle | on | next launch | `NCODE_COMPANION` or `SWARM_COMPANION` |
 
 ## Storage

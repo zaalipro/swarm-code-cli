@@ -16,7 +16,7 @@ defmodule SwarmCodeCLI.Release.TerminalPreferences do
   - keymap: `SWARM_KEYMAP=vim` > cli `keymap` > standard;
   - companion: `SWARM_COMPANION=0` > cli `companion` > on;
   - startup: a conversation flag or `SWARM_CONVERSATION` > cli
-    `startup_conversation` > latest.
+    `startup_conversation` > dashboard (Home over the latest conversation).
 
   An environment value outside the entry's value space (`SWARM_KEYMAP=emacs`,
   `SWARM_THEME=blue`, `SWARM_CONVERSATION=<id>`) never wins: it is reported in
@@ -48,7 +48,7 @@ defmodule SwarmCodeCLI.Release.TerminalPreferences do
           reduced_motion?: boolean(),
           accent: nil | rgb(),
           companion?: boolean(),
-          startup_conversation: :latest | :new | :ask,
+          startup_conversation: :latest | :new | :ask | :dashboard,
           prefs: %{String.t() => term()},
           env_overrides: %{String.t() => override()},
           flag_overrides: %{String.t() => %{flag: String.t(), value: String.t()}},
@@ -275,7 +275,8 @@ defmodule SwarmCodeCLI.Release.TerminalPreferences do
       case Map.get(prefs, "startup_conversation") do
         "new" -> :new
         "ask" -> :ask
-        _ -> :latest
+        "latest" -> :latest
+        _ -> :dashboard
       end
 
     case Enum.find(@conversation_flags, &Map.has_key?(flags, &1)) do

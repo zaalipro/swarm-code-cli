@@ -168,7 +168,14 @@ defmodule SwarmCodeCLI.Release.C74TerminalPreferencesTest do
 
   describe "startup conversation" do
     test "the file, then SWARM_CONVERSATION, then flags" do
-      assert %{startup_conversation: :latest} = TP.launch(%{}, cli(%{}), nil)
+      # orbit: the default opens Home; an explicit `latest` still continues.
+      assert %{startup_conversation: :dashboard} = TP.launch(%{}, cli(%{}), nil)
+
+      assert %{startup_conversation: :dashboard} =
+               TP.launch(%{}, cli(%{"startup_conversation" => "dashboard"}), nil)
+
+      assert %{startup_conversation: :latest} =
+               TP.launch(%{}, cli(%{"startup_conversation" => "latest"}), nil)
 
       assert %{startup_conversation: :ask} =
                TP.launch(%{}, cli(%{"startup_conversation" => "ask"}), nil)
@@ -187,7 +194,7 @@ defmodule SwarmCodeCLI.Release.C74TerminalPreferencesTest do
     test "a conversation id is an ignored layer" do
       id = "8d0f1c2e-1234-4abc-9def-0123456789ab"
       result = TP.launch(%{"SWARM_CONVERSATION" => id}, cli(%{}), nil)
-      assert result.startup_conversation == :latest
+      assert result.startup_conversation == :dashboard
 
       assert %{ignored: true, note: "this launch opened one named conversation"} =
                result.env_overrides["terminal.startup_conversation"]
