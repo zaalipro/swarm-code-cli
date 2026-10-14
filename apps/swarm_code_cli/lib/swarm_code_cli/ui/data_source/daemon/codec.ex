@@ -473,11 +473,6 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     end
   end
 
-  @doc false
-  # The wire body of a request kind before the envelope's slot and timeout are
-  # added: lets a test pin a kind's exact keys without the core's op table.
-  def wire_body(kind), do: request_body(kind)
-
   def response(message, request, wire_id, nonce) do
     with {:ok, request} <- Request.validate(request),
          {:ok, _} <- Frame.encode(message),

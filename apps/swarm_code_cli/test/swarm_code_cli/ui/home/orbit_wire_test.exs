@@ -187,43 +187,48 @@ defmodule SwarmCodeCLI.UI.Home.OrbitWireTest do
   end
 
   describe "the codec" do
-    test "each kind's body has exactly the contract's keys" do
-      assert {:ok, overview} = Codec.wire_body({:home_overview, 6, 12, 131_072})
+    # orbit int (lane U issue 3): with lane S merged the core knows both ops, so
+    # the bodies are pinned on the real encode path (`Codec.request/4`, which
+    # runs `ServiceRequest.decode/2` before it frames), not on a test seam.
+    test "each kind goes on the wire with exactly the contract's keys and the core admits it" do
+      cases = [
+        {{:home_overview, 6, 12, 131_072}, {:home, :overview}, "home.overview", :home_overview,
+         %{"projects" => 6, "per_project" => 12, "byte_limit" => 131_072}},
+        {{:conversation_search, "rate limit", 50, 262_144}, {:home, :search},
+         "conversation.search", :conversation_search,
+         %{"query" => "rate limit", "limit" => 50, "byte_limit" => 262_144}}
+      ]
 
-      assert overview == %{
-               "op" => "home.overview",
-               "projects" => 6,
-               "per_project" => 12,
-               "byte_limit" => 131_072
-             }
+      for {kind, origin, op, operation, params} <- cases do
+        # The deadline is 100 s out and the clock 5 s on: 95 s are left.
+        assert {:ok, %Message{type: :request, request_id: @wire, scope: @global, body: body}} =
+                 Codec.request(request(kind, origin), @wire, @nonce, @now + 5_000)
 
-      assert {:ok, search} = Codec.wire_body({:conversation_search, "rate limit", 50, 262_144})
+        assert body ==
+                 params
+                 |> Map.put("op", op)
+                 |> Map.put("timeout_ms", 95_000)
 
-      assert search == %{
-               "op" => "conversation.search",
-               "query" => "rate limit",
-               "limit" => 50,
-               "byte_limit" => 262_144
-             }
+        assert {:ok, %ServiceRequest{operation: ^operation, params: ^params}} =
+                 ServiceRequest.decode(body, @global)
+      end
     end
 
-    test "the whole request is built once the core knows the ops" do
-      # Lane S adds the two ops to `ServiceRequest`; before that merge the core
-      # refuses them and the codec keeps its `invalid_request` answer.
-      {:ok, wire} = Codec.wire_body({:home_overview, 6, 12, 131_072})
+    test "the core refuses what the contract bounds, whatever the client sent" do
+      base = %{
+        "op" => "home.overview",
+        "timeout_ms" => 5000,
+        "projects" => 6,
+        "per_project" => 12,
+        "byte_limit" => 131_072
+      }
 
-      core_knows? =
-        match?({:ok, _}, ServiceRequest.decode(Map.put(wire, "timeout_ms", 5000), @global))
+      assert {:ok, _} = ServiceRequest.decode(base, @global)
+      assert {:error, _} = ServiceRequest.decode(%{base | "projects" => 9}, @global)
+      assert {:error, _} = ServiceRequest.decode(Map.put(base, "project_id", "x"), @global)
 
-      kind = request({:home_overview, 6, 12, 131_072}, {:home, :overview})
-
-      if core_knows? do
-        assert {:ok, %Message{body: %{"op" => "home.overview", "timeout_ms" => 5000}}} =
-                 Codec.request(kind, @wire, @nonce, @now + 5_000)
-      else
-        assert {:error, %{code: :invalid_request}} =
-                 Codec.request(kind, @wire, @nonce, @now + 5_000)
-      end
+      run = %Scope{kind: :run, id: "9d000000-0000-4000-8000-000000000005", generation: 3}
+      assert {:error, _} = ServiceRequest.decode(base, run)
     end
 
     defp result(kind, value),
