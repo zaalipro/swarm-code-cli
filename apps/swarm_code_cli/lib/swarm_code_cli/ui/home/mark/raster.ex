@@ -70,6 +70,10 @@ defmodule SwarmCodeCLI.UI.Home.Mark.Raster do
     %{cx: cx, cy: cy, a1: a1, span: mod360(angle(cx, cy, p2x, p2y) - a1)}
   end
 
+  @doc "The braille bit of the dot at (`dx`, `dy`) inside a cell: dx in 0..1, dy in 0..3."
+  @spec bit(0..1, 0..3) :: pos_integer()
+  def bit(dx, dy), do: Map.fetch!(@bit, {dx, dy})
+
   @doc "The ring's radius in logo units."
   def ring_radius, do: @rr
 

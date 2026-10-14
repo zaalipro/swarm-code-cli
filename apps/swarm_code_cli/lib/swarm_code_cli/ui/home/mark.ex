@@ -42,6 +42,9 @@ defmodule SwarmCodeCLI.UI.Home.Mark do
   @spec sizes() :: [size()]
   def sizes, do: @sizes
 
+  @doc "The braille bit of the dot at (`dx`, `dy`) inside a cell (the arcs of the orbits use it)."
+  defdelegate bit(dx, dy), to: Raster
+
   @doc "The mark size of a Home layout class, or nil for the classes with the inline glyph."
   @spec size(atom()) :: size() | nil
   def size(:orbit_l), do: {40, 20}
