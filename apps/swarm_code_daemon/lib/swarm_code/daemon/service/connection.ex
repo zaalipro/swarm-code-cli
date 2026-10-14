@@ -491,6 +491,10 @@ defmodule SwarmCode.Daemon.Service.Connection do
         :history_search ->
           :history
 
+        # orbit S4: Home's overview and the conversation search.
+        op when op in [:home_overview, :conversation_search] ->
+          :home
+
         :rewind_apply ->
           :rewind
 
@@ -688,6 +692,8 @@ defmodule SwarmCode.Daemon.Service.Connection do
         :conversation_list,
         :agent_detail,
         :settings_query,
+        :home_overview,
+        :conversation_search,
         nil
       ] ->
         {:noreply, error_reply(state, message, code)}

@@ -164,7 +164,9 @@ defmodule SwarmCode.Daemon.Service do
       :rewind,
       :shell,
       :attachment,
-      :run_retry
+      :run_retry,
+      # orbit: home.overview and conversation.search.
+      :home
     ]
 
   @impl true

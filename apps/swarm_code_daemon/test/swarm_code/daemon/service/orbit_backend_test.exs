@@ -8,9 +8,14 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
   use ExUnit.Case, async: false
   import Ecto.Query
 
+  alias SwarmCode.Daemon.Service
+  alias SwarmCode.Daemon.Service.LiveBackend
+  alias SwarmCode.Daemon.Service.PersistedBackend, as: Backend
   alias SwarmCode.Daemon.Service.PersistedProjection
   alias SwarmCode.Domain.{Cache, Conversations, Projects, Repo}
   alias SwarmCode.Domain.Conversations.{Conversation, Message}
+  alias SwarmCode.Protocol.{Envelope, Frame, Scope, ServiceRequest}
+  alias SwarmCode.Protocol.Message, as: Wire
 
   setup_all do
     path = Path.join(System.tmp_dir!(), "orbit-backend-#{System.unique_integer([:positive])}")
@@ -48,9 +53,14 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
     %{path: path}
   end
 
-  # Every test owns its project (the fixture file is shared).
+  @tables ~w(nodes runs messages conversations scheduled_tasks projects settings)
+
+  # Every test starts from an empty database (the fixture file is shared) and
+  # owns its project.
   setup c do
     Cache.clear()
+    for table <- @tables, do: Repo.query!("DELETE FROM #{table}")
+    on_exit(fn -> for table <- @tables, do: Repo.query!("DELETE FROM #{table}") end)
     root = Path.join(c.path, "project-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     {:ok, project} = Projects.create(%{name: "Orbit", root_path: root})
@@ -193,6 +203,499 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
       assert titles(c.project, "temporary phrase") == ["Quiet"]
       Repo.delete_all(from(m in Message, where: m.id == ^message.id))
       assert titles(c.project, "temporary phrase") == []
+    end
+  end
+
+  ## S4: the two operations through a persisted backend
+
+  defp global, do: %Scope{kind: :global, id: nil, generation: 0}
+  defp conversation_scope(id), do: %Scope{kind: :conversation, id: id, generation: 1}
+
+  defp overview_request(overrides \\ %{}),
+    do: %ServiceRequest{
+      operation: :home_overview,
+      timeout_ms: 5000,
+      params:
+        Map.merge(%{"projects" => 6, "per_project" => 12, "byte_limit" => 131_072}, overrides)
+    }
+
+  defp search_request(query, overrides \\ %{}),
+    do: %ServiceRequest{
+      operation: :conversation_search,
+      timeout_ms: 5000,
+      params: Map.merge(%{"query" => query, "limit" => 50, "byte_limit" => 262_144}, overrides)
+    }
+
+  # The command ledger is durable per project: every request names its own.
+  defp request(backend, name, scope, request, id \\ nil),
+    do:
+      GenServer.call(
+        backend,
+        {:service_request, id || "#{name}-#{System.unique_integer([:positive])}", scope, request},
+        10_000
+      )
+
+  defp start_backend!(c, conversation) do
+    start_supervised!(
+      {Backend,
+       mode: :persisted,
+       repo: Repo,
+       project_root: c.root,
+       project_id: c.project.id,
+       conversation_id: conversation.id,
+       source_epoch: Ecto.UUID.generate()}
+    )
+  end
+
+  describe "S4 home.overview and conversation.search" do
+    setup c do
+      older = conversation!(c.project, "Older work", ~U[2026-10-01 00:00:01.000000Z])
+      current = conversation!(c.project, "Current work", ~U[2026-10-01 00:00:02.000000Z])
+      %{older: older, current: current, backend: start_backend!(c, current)}
+    end
+
+    test "home.overview answers the body of Appendix C, current project first", c do
+      assert {:ok, %{"op" => "result", "response_kind" => "home_overview", "value" => body}} =
+               request(c.backend, "home", global(), overview_request(), "req-home-1")
+
+      assert body["request_id"] == "req-home-1"
+      assert body["state"] == "ready"
+      assert body["error"] == nil
+      assert body["revision"] == 0
+      assert body["project_id"] == c.project.id
+      assert [%{"current" => true, "id" => id, "name" => "Orbit"} = row | _] = body["projects"]
+      assert id == c.project.id
+      assert row["conversation_count"] == 2
+      assert Enum.map(row["conversations"], & &1["title"]) == ["Current work", "Older work"]
+      assert body["live_runs"] == [] and body["live_overflow"] == 0
+
+      assert body |> Map.keys() |> Enum.sort() ==
+               Enum.sort(~w(request_id state error revision project_id projects live_runs
+                            live_overflow waiting_total month next_scheduled))
+
+      assert %{"spend_usd" => spend, "budget_usd" => nil} = body["month"]
+      assert is_float(spend)
+
+      # The same answer from the open conversation's scope.
+      assert {:ok, %{"response_kind" => "home_overview"}} =
+               request(c.backend, "home", conversation_scope(c.current.id), overview_request())
+
+      # The JSON the wire carries round-trips unchanged.
+      assert body |> Jason.encode!() |> Jason.decode!() == body
+    end
+
+    test "the month is read once and served from the backend's cache for 10 seconds", c do
+      assert {:ok, %{"value" => first}} = request(c.backend, "home", global(), overview_request())
+      assert {at, month} = :sys.get_state(c.backend).home_month
+      assert is_integer(at) and month == first["month"]
+
+      # Served from the cache: the stamp does not move.
+      assert {:ok, %{"value" => _}} = request(c.backend, "home", global(), overview_request())
+      assert {^at, ^month} = :sys.get_state(c.backend).home_month
+
+      # Past 10 seconds the next answer reads it again and stamps anew.
+      :sys.replace_state(c.backend, fn state ->
+        %{state | home_month: {at - 11_000, %{"spend_usd" => 99.0, "budget_usd" => nil}}}
+      end)
+
+      assert {:ok, %{"value" => body}} = request(c.backend, "home", global(), overview_request())
+      assert body["month"] == month
+      assert {fresh, ^month} = :sys.get_state(c.backend).home_month
+      assert fresh > at - 11_000
+    end
+
+    test "a small byte_limit drops conversations from the back; none left is capacity_exceeded",
+         c do
+      for i <- 1..20 do
+        conversation!(
+          c.project,
+          String.duplicate("t", 150) <> "#{i}",
+          DateTime.add(~U[2026-10-02 00:00:00.000000Z], i)
+        )
+      end
+
+      assert {:ok, %{"value" => full}} = request(c.backend, "home", global(), overview_request())
+      assert length(hd(full["projects"])["conversations"]) == 12
+
+      # A limit that holds the skeleton and about three conversations.
+      [first | _] = hd(full["projects"])["conversations"]
+      bare = put_in(full, ["projects", Access.at(0), "conversations"], [])
+      limit = byte_size(Jason.encode!(bare)) + 3 * byte_size(Jason.encode!(first))
+
+      assert {:ok, %{"value" => small}} =
+               request(c.backend, "home", global(), overview_request(%{"byte_limit" => limit}))
+
+      row = hd(small["projects"])
+      assert byte_size(Jason.encode!(small)) <= limit
+      assert length(row["conversations"]) in 1..3
+      assert row["conversation_count"] == 22
+      # What is kept is the newest.
+      assert Enum.map(row["conversations"], & &1["title"]) ==
+               full["projects"]
+               |> hd()
+               |> Map.get("conversations")
+               |> Enum.take(length(row["conversations"]))
+               |> Enum.map(& &1["title"])
+
+      assert {:error, %{"op" => "error", "code" => "capacity_exceeded"}} =
+               request(c.backend, "home", global(), overview_request(%{"byte_limit" => 1}))
+    end
+
+    test "a newer overview replaces an older one in flight", c do
+      owner = self()
+      calls = :counters.new(1, [])
+
+      # The first reading blocks until it is killed; later ones answer at once.
+      build = fn _project, _options, _month, revision ->
+        :counters.add(calls, 1, 1)
+        number = :counters.get(calls, 1)
+        send(owner, {:building, number, self()})
+
+        if number == 1 do
+          receive do
+            :never -> :ok
+          end
+        end
+
+        %{
+          "revision" => revision,
+          "project_id" => nil,
+          "projects" => [],
+          "live_runs" => [],
+          "live_overflow" => 0,
+          "waiting_total" => 0,
+          "month" => nil,
+          "next_scheduled" => nil
+        }
+      end
+
+      backend =
+        start_supervised!(
+          {Backend,
+           mode: :persisted,
+           repo: Repo,
+           project_root: c.root,
+           project_id: c.project.id,
+           conversation_id: c.current.id,
+           source_epoch: Ecto.UUID.generate(),
+           work: %{home_overview: build}},
+          id: :injected_backend
+        )
+
+      first = make_ref()
+      second = make_ref()
+
+      send(
+        backend,
+        {:"$gen_call", {self(), first},
+         {:service_request, "overview-1", global(), overview_request()}}
+      )
+
+      assert_receive {:building, 1, running}, 5_000
+      monitor = Process.monitor(running)
+
+      send(
+        backend,
+        {:"$gen_call", {self(), second},
+         {:service_request, "overview-2", global(), overview_request()}}
+      )
+
+      assert_receive {^first, {:error, %{"op" => "error", "code" => "stale_revision"}}}, 5_000
+      assert_receive {:DOWN, ^monitor, :process, ^running, _reason}, 5_000
+
+      assert_receive {^second, {:ok, %{"response_kind" => "home_overview", "value" => body}}},
+                     5_000
+
+      assert body["request_id"] == "overview-2"
+      assert :sys.get_state(backend).jobs == %{}
+    end
+
+    test "conversation.search answers a conversation_list body, project-filtered", c do
+      other_root = Path.join(c.root, "other")
+      File.mkdir_p!(other_root)
+      {:ok, other} = Projects.create(%{name: "Other", root_path: other_root})
+      conversation!(other, "Rate limit elsewhere")
+      hit = conversation!(c.project, "Rate limit chip", ~U[2026-10-03 00:00:00.000000Z])
+      by_prompt = conversation!(c.project, "Untitled", ~U[2026-10-04 00:00:00.000000Z])
+      say!(by_prompt, "what is the rate limit?")
+
+      assert {:ok, %{"op" => "result", "response_kind" => "conversation_list", "value" => body}} =
+               request(
+                 c.backend,
+                 "search",
+                 global(),
+                 search_request("RATE LIMIT"),
+                 "req-search-1"
+               )
+
+      assert body["request_id"] == "req-search-1"
+      assert Enum.map(body["items"], & &1["id"]) == [by_prompt.id, hit.id]
+      assert body["before_cursor"] == nil and body["after_cursor"] == nil
+      assert body["current_id"] == c.current.id
+      assert body["project"] == "Orbit"
+      assert body["covered_ids"] == [by_prompt.id, hit.id]
+      assert hd(body["items"])["last_prompt"] == "what is the rate limit?"
+
+      assert {:ok, %{"value" => none}} =
+               request(c.backend, "search", global(), search_request("zzz-nothing"))
+
+      assert none["items"] == []
+
+      assert {:ok, %{"value" => one}} =
+               request(c.backend, "search", global(), search_request("rate", %{"limit" => 1}))
+
+      assert Enum.map(one["items"], & &1["id"]) == [by_prompt.id]
+
+      assert {:error, %{"code" => "capacity_exceeded"}} =
+               request(
+                 c.backend,
+                 "search",
+                 global(),
+                 search_request("rate", %{"byte_limit" => 1})
+               )
+    end
+
+    test "a request the encoder refuses is not run", c do
+      bad = %{
+        overview_request()
+        | params: %{"projects" => 99, "per_project" => 12, "byte_limit" => 1}
+      }
+
+      assert {:error, %{"code" => "not_allowed"}} = request(c.backend, "home", global(), bad)
+
+      run_scope = %Scope{kind: :run, id: Ecto.UUID.generate(), generation: 0}
+
+      assert {:error, %{"code" => "not_allowed"}} =
+               request(c.backend, "home", run_scope, overview_request())
+    end
+  end
+
+  describe "S4 the unsaved session and the capability" do
+    test "the live backend refuses both as reads", c do
+      root = Path.join(c.root, "live")
+      File.mkdir_p!(root)
+
+      {:ok, provider} =
+        SwarmCode.Providers.Provider.new(
+          name: "live",
+          base_url: "http://127.0.0.1:9/v1",
+          api_key: "secret",
+          default_model: "fixture"
+        )
+
+      conversation_id = "22222222-2222-4222-8222-222222222222"
+
+      backend =
+        start_supervised!(
+          {LiveBackend,
+           mode: :transient,
+           provider: provider,
+           project_root: root,
+           project_id: "33333333-3333-4333-8333-333333333333",
+           conversation_id: conversation_id,
+           source_epoch: "44444444-4444-4444-8444-444444444444"}
+        )
+
+      for request <- [overview_request(), search_request("anything")] do
+        assert {:error, %{"op" => "error", "code" => "not_allowed"}} =
+                 request(backend, "live", global(), request)
+      end
+
+      assert Process.alive?(backend)
+    end
+
+    test "home is a default capability and the handshake lists it" do
+      assert :home in Service.default_capabilities()
+      assert length(Service.default_capabilities()) == 24
+
+      assert length(Service.default_capabilities()) ==
+               length(Enum.uniq(Service.default_capabilities()))
+    end
+  end
+
+  describe "S4 the connection" do
+    @nonce String.duplicate("A", 43)
+    @epoch "33333333-3333-4333-8333-333333333333"
+    @hello_id "11111111-1111-4111-8111-111111111111"
+
+    setup do
+      dir = Path.join(System.tmp_dir!(), "orbit-conn-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      File.chmod!(dir, 0o700)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      %{dir: dir}
+    end
+
+    test "both operations ride the home capability and a deadline is a typed read error", c do
+      {socket, backend, hello_ok} = connected(c.dir, Service.default_capabilities())
+      assert "home" in hello_ok.body["capabilities"]
+
+      send_frame(socket, home_frame(uuid(1), "home.overview", overview_body(5_000)))
+
+      assert %Wire{type: :response, request_id: id, body: %{"response_kind" => "home_overview"}} =
+               receive_frame(socket)
+
+      assert id == uuid(1)
+
+      send_frame(socket, home_frame(uuid(2), "conversation.search", search_body(5_000)))
+
+      assert %Wire{
+               type: :response,
+               request_id: id,
+               body: %{"response_kind" => "conversation_list"}
+             } = receive_frame(socket)
+
+      assert id == uuid(2)
+
+      # A slow read past its deadline is an error frame, never `outcome_unknown`.
+      send(backend, :hold)
+      send_frame(socket, home_frame(uuid(3), "home.overview", overview_body(300)))
+
+      assert %Wire{type: :error, request_id: id, body: %{"code" => "deadline_expired"}} =
+               receive_frame(socket, 3_000)
+
+      assert id == uuid(3)
+
+      send_frame(socket, home_frame(uuid(4), "conversation.search", search_body(300)))
+
+      assert %Wire{type: :error, request_id: id, body: %{"code" => "deadline_expired"}} =
+               receive_frame(socket, 3_000)
+
+      assert id == uuid(4)
+      send(backend, :release)
+    end
+
+    test "a session without the home capability is closed on either operation", c do
+      for {op, body} <- [
+            {"home.overview", overview_body(5_000)},
+            {"conversation.search", search_body(5_000)}
+          ] do
+        {socket, _backend, hello_ok} =
+          connected(c.dir, Service.default_capabilities() -- [:home])
+
+        refute "home" in hello_ok.body["capabilities"]
+        send_frame(socket, home_frame(uuid(5), op, body))
+        assert {:error, :closed} = :gen_tcp.recv(socket, 4, 2_000)
+        :gen_tcp.close(socket)
+      end
+    end
+
+    defp overview_body(timeout),
+      do: %{
+        "op" => "home.overview",
+        "timeout_ms" => timeout,
+        "projects" => 6,
+        "per_project" => 12,
+        "byte_limit" => 131_072
+      }
+
+    defp search_body(timeout),
+      do: %{
+        "op" => "conversation.search",
+        "timeout_ms" => timeout,
+        "query" => "rate",
+        "limit" => 50,
+        "byte_limit" => 262_144
+      }
+
+    defp home_frame(id, _op, body),
+      do: %Wire{
+        version: 1,
+        type: :request,
+        request_id: id,
+        nonce: @nonce,
+        scope: global(),
+        sequence: nil,
+        occurred_at: nil,
+        body: body
+      }
+
+    # A real Service and Connection over a unix socket, with a fake backend
+    # that answers every read (or holds it until released).
+    defp connected(dir, capabilities) do
+      path = Path.join(dir, "d-#{System.unique_integer([:positive])}.sock")
+      owner = self()
+      backend = spawn_link(fn -> fake_backend(%{owner: owner, hold: false, held: []}) end)
+
+      start_supervised!(
+        %{
+          id: {:orbit_service, System.unique_integer([:positive])},
+          start:
+            {Supervisor, :start_link,
+             [
+               [
+                 {Service,
+                  socket_path: path,
+                  nonce: @nonce,
+                  source_epoch: @epoch,
+                  backend: backend,
+                  capabilities: capabilities}
+               ],
+               [strategy: :one_for_one]
+             ]}
+        },
+        restart: :temporary
+      )
+
+      {:ok, socket} =
+        :gen_tcp.connect({:local, path}, 0, [:binary, active: false, packet: :raw], 1000)
+
+      send_frame(socket, %Wire{
+        version: 1,
+        type: :hello,
+        request_id: @hello_id,
+        nonce: @nonce,
+        scope: nil,
+        sequence: nil,
+        occurred_at: nil,
+        body: %{"op" => "hello", "client" => "swarm-code-cli", "body_version" => 1}
+      })
+
+      assert %Wire{type: :hello_ok} = hello_ok = receive_frame(socket)
+      {socket, backend, hello_ok}
+    end
+
+    defp fake_backend(state) do
+      receive do
+        :hold ->
+          fake_backend(%{state | hold: true})
+
+        :release ->
+          fake_backend(%{state | hold: false, held: []})
+
+        {:"$gen_call", from, {:service_request, id, _scope, request}} ->
+          unless state.hold do
+            kind =
+              if request.operation == :home_overview,
+                do: "home_overview",
+                else: "conversation_list"
+
+            GenServer.reply(
+              from,
+              {:ok,
+               %{"op" => "result", "response_kind" => kind, "value" => %{"request_id" => id}}}
+            )
+          end
+
+          fake_backend(state)
+
+        _ ->
+          fake_backend(state)
+      end
+    end
+
+    defp uuid(n) do
+      hex = n |> Integer.to_string(16) |> String.downcase() |> String.pad_leading(12, "0")
+      "bbbbbbbb-bbbb-4bbb-8bbb-" <> hex
+    end
+
+    defp send_frame(socket, message), do: :gen_tcp.send(socket, Frame.encode!(message))
+
+    defp receive_frame(socket, timeout \\ 2000) do
+      {:ok, <<size::32>>} = :gen_tcp.recv(socket, 4, timeout)
+      {:ok, bytes} = :gen_tcp.recv(socket, size, timeout)
+      {:ok, message} = Envelope.decode(bytes)
+      message
     end
   end
 end

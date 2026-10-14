@@ -38,7 +38,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     :conversation_list,
     :agent_detail,
     :rewind_turns,
-    :history_search
+    :history_search,
+    # orbit S4: Home's overview and the conversation search are reads (jobs).
+    :home_overview,
+    :conversation_search
   ]
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
@@ -59,6 +62,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     CommandDispatcher,
     ShellEscape,
     CommandLedger,
+    HomeOverview,
     PersistedProjection,
     QueueState,
     Rewind,
@@ -244,7 +248,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         settings_pending: [],
         settings_timer: nil,
         settings_own_at: nil,
-        settings_session: SettingsDeltas.session_values(conversation)
+        settings_session: SettingsDeltas.session_values(conversation),
+        # orbit S4/S5: Home's month spend cached for 10 s (`{monotonic ms,
+        # month}`), the revision of the last `home_stale` push and the timer
+        # that debounces the next one (500 ms, owned by this process).
+        home_month: nil,
+        home_revision: 0,
+        home_timer: nil
       }
 
       # cli020 C1 (bugs-7): a prompt queued before a restart drains now (after
@@ -1134,6 +1144,63 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:error, code} ->
         {wire_error(code), state}
     end
+  end
+
+  # orbit S4 (`home.overview`): the bounded cross-project overview, built by a
+  # job (a newer request replaces an older one). The project is the admitted
+  # one, never a client field. Fitting the byte limit happens in the job too,
+  # so this process only wraps and replies; the 10 s month cache is refreshed
+  # only by a reading that was not itself served from it.
+  defp execute(%{operation: :home_overview, params: params}, _scope, id, state) do
+    project = state.opts[:project_id]
+    cached = cached_month(state)
+    revision = state.home_revision
+    options = %{projects: params["projects"], per_project: params["per_project"]}
+
+    build = state.work.home_overview
+
+    work = fn ->
+      project
+      |> build.(options, cached, revision)
+      |> Map.merge(%{"request_id" => id, "state" => "ready", "error" => nil})
+      |> fit_home(params["byte_limit"])
+    end
+
+    finish = fn
+      {:ok, body}, next ->
+        next =
+          if cached == nil,
+            do: %{next | home_month: {System.monotonic_time(:millisecond), body["month"]}},
+            else: next
+
+        {result("home_overview", body), next}
+
+      {:error, code}, next ->
+        {wire_error(code), next}
+    end
+
+    {{:job, %{key: :home_overview, replace: true, work: work, finish: finish}}, state}
+  end
+
+  # orbit S4 (`conversation.search`): this project's conversations matching a
+  # title or prompt text, in the shape of `conversation.list`.
+  defp execute(%{operation: :conversation_search, params: params}, _scope, id, state) do
+    project = state.opts[:project_id]
+
+    work = fn ->
+      PersistedProjection.conversation_search(project, params["query"], params["limit"])
+    end
+
+    finish = fn {:ok, rows, more?}, next ->
+      body = conversation_list(rows, more?, nil, id, next)
+
+      case fit("conversation_list", body, params["byte_limit"]) do
+        {:ok, kind, body} -> {result(kind, body), next}
+        {:error, code} -> {wire_error(code), next}
+      end
+    end
+
+    {{:job, %{key: :conversation_search, replace: true, work: work, finish: finish}}, state}
   end
 
   # pass70 C2 (arch F12): the project's approval mode and trust, the
@@ -4914,6 +4981,49 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       else: {:error, :capacity_exceeded}
   end
 
+  # orbit S4: the month spend read within the last 10 s, else nil (the job reads
+  # it again).
+  @home_month_ms 10_000
+
+  defp cached_month(%{home_month: {at, month}}) do
+    if System.monotonic_time(:millisecond) - at < @home_month_ms, do: month
+  end
+
+  defp cached_month(_state), do: nil
+
+  # orbit S4: a `home.overview` body within `limit` bytes. Conversations leave
+  # from the last project backwards (its oldest first, then the previous
+  # project's) until the encoding fits; with none left and still too large the
+  # reply is the closed `capacity_exceeded` error (`conversation.list`'s code).
+  defp fit_home(body, limit) do
+    cond do
+      byte_size(Jason.encode!(body)) <= limit ->
+        {:ok, body}
+
+      home_conversations?(body) ->
+        fit_home(drop_last_home_conversation(body), limit)
+
+      true ->
+        {:error, :capacity_exceeded}
+    end
+  end
+
+  defp home_conversations?(body),
+    do: Enum.any?(body["projects"], &(&1["conversations"] != []))
+
+  defp drop_last_home_conversation(body) do
+    index = Enum.find_index(Enum.reverse(body["projects"]), &(&1["conversations"] != []))
+    last = length(body["projects"]) - 1 - index
+
+    %{
+      body
+      | "projects" =>
+          List.update_at(body["projects"], last, fn project ->
+            %{project | "conversations" => Enum.drop(project["conversations"], -1)}
+          end)
+    }
+  end
+
   # `Next.local_zone/0` reads `/etc/localtime`; once per daemon is enough.
   defp local_zone do
     key = {__MODULE__, :local_zone}
@@ -5600,7 +5710,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       diff: &change_or_op_diff/2,
       change_diff: &SwarmCode.Domain.FeatureCatalog.change_diff/2,
       feature_query: &SwarmCode.Daemon.Service.FeatureRequest.execute/4,
-      summarize: &AgentStatus.summarize/2
+      summarize: &AgentStatus.summarize/2,
+      # orbit S4: `project |> build.(options, month, revision)`.
+      home_overview: &HomeOverview.build/4
     }
 
     if is_map(overrides),

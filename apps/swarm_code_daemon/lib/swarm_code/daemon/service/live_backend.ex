@@ -91,7 +91,9 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
           :resync,
           :feature_query,
           :conversation_list,
-          :agent_detail
+          :agent_detail,
+          :home_overview,
+          :conversation_search
         ]
 
     fingerprint = {scope, Map.get(request, :operation), Map.get(request, :params)}
@@ -425,6 +427,11 @@ defmodule SwarmCode.Daemon.Service.LiveBackend do
 
   defp execute(%{operation: :conversation_list}, _scope, _id, state),
     do: {wire_error(:not_allowed), state}
+
+  # orbit S4: Home reads the saved database; the unsaved session has none.
+  defp execute(%{operation: operation}, _scope, _id, state)
+       when operation in [:home_overview, :conversation_search],
+       do: {wire_error(:not_allowed), state}
 
   # pass72 S: the unsaved runtime keeps no operation rows to detail.
   defp execute(%{operation: :agent_detail}, _scope, _id, state),
