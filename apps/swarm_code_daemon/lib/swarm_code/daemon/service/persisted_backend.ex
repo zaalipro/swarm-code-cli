@@ -619,7 +619,28 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: {:noreply, toast(state, "info", "ncode", text, nil)}
 
   def handle_info({:waiting_changed}, state),
-    do: {:noreply, schedule_refresh(waiting_elsewhere(state))}
+    do: {:noreply, state |> waiting_elsewhere() |> arm_home_stale() |> schedule_refresh()}
+
+  # orbit S5: the debounce ended; Home's shell watch hears one `home_stale`
+  # with the new revision (an invalidation: the client reads `home.overview`).
+  def handle_info(:home_stale_due, state) do
+    revision = state.home_revision + 1
+    state = %{state | home_timer: nil, home_revision: revision}
+
+    {:noreply,
+     broadcast(state, %{
+       "kind" => "home_stale",
+       "entity_id" => nil,
+       "run_id" => nil,
+       "conversation_id" => nil,
+       "channel" => nil,
+       "attempt_id" => nil,
+       "text" => nil,
+       "body" => %{"revision" => revision},
+       "sequence" => 0,
+       "revision" => state.revision
+     })}
+  end
 
   # Runs of this conversation may be research or workflow runs; the library
   # itself is read on demand, so a changed workflow file needs no delta.
@@ -769,6 +790,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def terminate(_, state) do
     Enum.each(state.queues.entries, fn {_id, entry} -> cancel_queue_effects(entry) end)
     cancel_jobs(state, wire_error(:source_unavailable))
+
+    with timer when is_reference(timer) <- Map.get(state, :home_timer),
+         do: Process.cancel_timer(timer)
+
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
     with %{task: %Task{} = task} <- Map.get(state, :git), do: Task.shutdown(task, :brutal_kill)
@@ -1109,7 +1134,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
     case Conversations.get(target) do
       %{project_id: ^project} ->
-        {accepted(id, [target]), switch_conversation(state, target)}
+        {accepted(id, [target]), state |> switch_conversation(target) |> arm_home_stale()}
 
       _ ->
         {reject(id, :not_allowed), state}
@@ -1120,7 +1145,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp execute(%{operation: :conversation_new}, _scope, id, state) do
     case Conversations.create(state.opts[:project_id]) do
       {:ok, conversation} ->
-        {accepted(id, [conversation.id]), switch_conversation(state, conversation.id)}
+        {accepted(id, [conversation.id]),
+         state |> switch_conversation(conversation.id) |> arm_home_stale()}
 
       {:error, _} ->
         {reject(id, :not_allowed), state}
@@ -1213,6 +1239,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       text = picked || project_notice(project, params)
       state = refresh(state)
       state = toast(state, "success", "Project", text, nil)
+      state = arm_home_stale(state)
 
       {accepted(id, [project.id], %{
          "kind" => "notice",
@@ -4645,7 +4672,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp attachment_ids(_), do: []
 
+  # orbit S5: at most one `home_stale` per 500 ms window. The first trigger
+  # arms this process's own timer; the rest do nothing until it fires. The
+  # timer dies with the process (and `terminate/2` cancels it).
+  @home_stale_ms 500
+
+  defp arm_home_stale(%{home_timer: nil} = state),
+    do: %{state | home_timer: Process.send_after(self(), :home_stale_due, @home_stale_ms)}
+
+  defp arm_home_stale(state), do: state
+
   defp broadcast(state, delta) do
+    # A run changing is a Home trigger; `home_stale` itself never is.
+    state = if delta["kind"] == "run_update", do: arm_home_stale(state), else: state
+
     # pass74 S1-10: settings deltas belong to no conversation (§3.4.4).
     delta =
       if delta["kind"] in ["settings_update", "settings_task"],
@@ -4669,7 +4709,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "settings_update",
                 "settings_task",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "home_stale"
               ]
 
             _other when settings_delta? ->
@@ -4684,7 +4725,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "home_stale"
               ]
 
             # pass70 C6: background commands belong to the workspace and the
@@ -4696,7 +4738,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "home_stale"
               ]
 
             _ ->
@@ -4709,6 +4752,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "background_remove",
                 "desktop_running",
                 "vitals",
+                "home_stale",
                 "shell_upsert",
                 "shell_remove"
               ]

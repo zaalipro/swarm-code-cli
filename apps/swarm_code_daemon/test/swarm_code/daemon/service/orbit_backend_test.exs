@@ -698,4 +698,145 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
       message
     end
   end
+
+  ## S5: the debounced home_stale push
+
+  defp watch!(backend, slot, scope, ref) do
+    request = %ServiceRequest{
+      operation: :watch,
+      timeout_ms: 1000,
+      params: %{"watch_ref" => ref, "slot" => slot, "page_size" => 20, "byte_limit" => 262_144}
+    }
+
+    assert {:watch, 0, _, _, _} =
+             GenServer.call(backend, {:service_watch, self(), "watch-#{ref}", scope, request})
+
+    send(backend, {:service_ready, self(), ref})
+  end
+
+  describe "S5 home_stale" do
+    setup c do
+      current = conversation!(c.project, "Current work", ~U[2026-10-01 00:00:02.000000Z])
+      backend = start_backend!(c, current)
+      watch!(backend, "shell", global(), "shell")
+      %{current: current, backend: backend}
+    end
+
+    test "ten triggers inside a window are one push, then a quiet shell", c do
+      for _ <- 1..10, do: send(c.backend, {:waiting_changed})
+
+      assert_receive {:service_delta, _, "shell", %{"kind" => "home_stale"} = delta}, 3_000
+
+      assert delta["body"] == %{"revision" => 1}
+      assert delta["entity_id"] == nil and delta["run_id"] == nil
+      assert delta["conversation_id"] == c.current.id
+      assert delta["channel"] == nil and delta["attempt_id"] == nil and delta["text"] == nil
+
+      assert delta |> Map.keys() |> Enum.sort() ==
+               Enum.sort(~w(kind entity_id run_id conversation_id channel attempt_id text body
+                            sequence revision))
+
+      assert is_integer(delta["revision"])
+      # One event, not ten; the timer is spent and the revision is the push's.
+      refute_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 800
+      assert %{home_timer: nil, home_revision: 1} = :sys.get_state(c.backend)
+    end
+
+    test "a second burst later is the next revision", c do
+      send(c.backend, {:waiting_changed})
+      assert_receive {:service_delta, _, "shell", %{"body" => %{"revision" => 1}}}, 3_000
+
+      for _ <- 1..3, do: send(c.backend, {:waiting_changed})
+
+      assert_receive {:service_delta, _, "shell",
+                      %{"kind" => "home_stale", "body" => %{"revision" => 2}}},
+                     3_000
+
+      refute_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 800
+    end
+
+    test "without a trigger the shell hears nothing", c do
+      refute_receive {:service_delta, _, _, %{"kind" => "home_stale"}}, 1_000
+      assert %{home_timer: nil, home_revision: 0} = :sys.get_state(c.backend)
+    end
+
+    test "a workspace watch never hears it", c do
+      watch!(c.backend, "workspace", conversation_scope(c.current.id), "workspace")
+      send(c.backend, {:waiting_changed})
+
+      assert_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 3_000
+      refute_receive {:service_delta, _, "workspace", %{"kind" => "home_stale"}}, 300
+    end
+
+    test "a run changing in the open conversation arms it", c do
+      assert {:ok, _run} =
+               Conversations.create_run(%{
+                 conversation_id: c.current.id,
+                 kind: "chat",
+                 status: "running",
+                 started_at: DateTime.utc_now()
+               })
+
+      assert_receive {:service_delta, _, "shell", %{"kind" => "run_update"}}, 3_000
+      assert_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 3_000
+    end
+
+    test "conversation.new, conversation.open and project.update each arm it", c do
+      other = conversation!(c.project, "Other work", ~U[2026-10-01 00:00:01.000000Z])
+
+      assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+               request(c.backend, "open", global(), %ServiceRequest{
+                 operation: :conversation_open,
+                 timeout_ms: 5000,
+                 params: %{"conversation_id" => other.id}
+               })
+
+      assert %{home_timer: timer} = :sys.get_state(c.backend)
+      assert is_reference(timer)
+
+      # The open dropped the global watches (the client re-watches); watch again.
+      assert_receive {:service_resync, _, "shell"}, 2_000
+      watch!(c.backend, "shell", global(), "shell")
+
+      assert_receive {:service_delta, _, "shell",
+                      %{"kind" => "home_stale", "body" => %{"revision" => 1}}},
+                     3_000
+
+      assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+               request(c.backend, "new", global(), %ServiceRequest{
+                 operation: :conversation_new,
+                 timeout_ms: 5000,
+                 params: %{}
+               })
+
+      assert is_reference(:sys.get_state(c.backend).home_timer)
+      assert_receive {:service_resync, _, "shell"}, 2_000
+      watch!(c.backend, "shell", global(), "shell")
+
+      assert_receive {:service_delta, _, "shell",
+                      %{"kind" => "home_stale", "body" => %{"revision" => 2}}},
+                     3_000
+
+      assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+               request(c.backend, "project", global(), %ServiceRequest{
+                 operation: :project_update,
+                 timeout_ms: 5000,
+                 params: %{"approval_mode" => "read_only", "trusted" => nil}
+               })
+
+      assert_receive {:service_delta, _, "shell",
+                      %{"kind" => "home_stale", "body" => %{"revision" => 3}}},
+                     3_000
+    end
+
+    test "stopping the backend cancels a pending timer", c do
+      send(c.backend, {:waiting_changed})
+      timer = :sys.get_state(c.backend).home_timer
+      assert is_reference(timer)
+      assert is_integer(Process.read_timer(timer))
+
+      :ok = stop_supervised(Backend)
+      assert Process.read_timer(timer) == false
+    end
+  end
 end
