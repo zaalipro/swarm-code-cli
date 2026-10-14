@@ -168,6 +168,10 @@ defmodule SwarmCodeCLI.UI.EffectRunner do
       :conversation_list ->
         struct!(DTO.ConversationList, attrs)
 
+      # orbit §3.4: Home's overview that could not be asked.
+      :home_overview ->
+        struct!(DTO.HomeOverview, attrs)
+
       # pass72: the overlay's agent detail (owner S's request).
       :agent_detail ->
         struct!(DTO.AgentDetail, attrs)

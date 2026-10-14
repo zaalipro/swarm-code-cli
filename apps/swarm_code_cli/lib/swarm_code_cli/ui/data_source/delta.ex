@@ -26,6 +26,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
     desktop_running: DTO.DesktopPresence,
     # cli021 C2: the side panel's vitals (model speed, memory), shell watch.
     vitals: DTO.Vitals,
+    # orbit §3.2: Home's invalidation (shell watch): re-ask `home.overview`.
+    home_stale: DTO.HomeStale,
     # cli020 C15: a `!` shell command of the conversation (workspace watch).
     shell_upsert: DTO.ShellItem
   }
@@ -81,6 +83,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
           | :settings_task
           | :desktop_running
           | :vitals
+          | :home_stale
           | :shell_upsert
           | :shell_remove
   @type t :: %__MODULE__{
@@ -109,6 +112,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
             | DTO.SettingsTask.t()
             | DTO.DesktopPresence.t()
             | DTO.Vitals.t()
+            | DTO.HomeStale.t()
             | nil,
           sequence: non_neg_integer(),
           revision: non_neg_integer()
@@ -222,6 +226,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
       is_nil(delta.entity_id) and is_nil(delta.run_id) and is_nil(delta.attempt_id) and
         delta.conversation_id in [nil, body.conversation_id]
 
+  # orbit §3.2: about the database; the envelope may name the conversation the
+  # daemon shows (it stamps every delta).
+  defp correlated_body?(%{kind: :home_stale, body: %DTO.HomeStale{}} = delta),
+    do: is_nil(delta.entity_id) and is_nil(delta.run_id) and is_nil(delta.attempt_id)
+
   defp correlated_body?(%{kind: kind} = delta)
        when kind in [:counts_update, :connection, :snapshot_required],
        do:
@@ -293,6 +302,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
         :settings_task -> DTO.SettingsTask
         :desktop_running -> DTO.DesktopPresence
         :vitals -> DTO.Vitals
+        :home_stale -> DTO.HomeStale
         :shell_upsert -> DTO.ShellItem
         _ -> nil
       end

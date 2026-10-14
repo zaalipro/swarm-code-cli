@@ -3699,7 +3699,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
     watch = Map.get(state.watches, :shell)
 
     expected =
-      if match?({:conversation_list, _, _, _}, kind), do: :conversation_list, else: :outcome
+      case kind do
+        {:conversation_list, _, _, _} -> :conversation_list
+        # orbit §3.3: Home's list search answers a conversation list.
+        {:conversation_search, _, _, _} -> :conversation_list
+        {:home_overview, _, _, _} -> :home_overview
+        _ -> :outcome
+      end
 
     with %{status: :ready, scope: scope, generation: generation} <- watch,
          {id, state} = State.next_id(state, :request),

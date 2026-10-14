@@ -24,6 +24,9 @@ defmodule SwarmCodeCLI.UI.ReadModel do
             # cli021 C2: the side panel's vitals (`DTO.Vitals`) of the shown
             # conversation: model speeds and memory, nil before the first.
             vitals: nil,
+            # orbit §3.2: the newest home revision a `home_stale` delta named
+            # (the max; Home re-asks its overview while it is open).
+            home_revision: 0,
             order: %{},
             coverage: %{},
             chunks: %ChunkDeque{}
@@ -328,6 +331,10 @@ defmodule SwarmCodeCLI.UI.ReadModel do
         {:ok, %{model | vitals: body}, [], []}
     end
   end
+
+  # orbit §3.2: an invalidation, not a payload; only the newest revision is kept.
+  def delta(model, _slot, %Delta{kind: :home_stale, body: %DTO.HomeStale{revision: revision}}),
+    do: {:ok, %{model | home_revision: max(model.home_revision, revision)}, [], []}
 
   # Metadata only ever describes the workspace's conversation; anywhere else
   # there is nothing it could update.
