@@ -537,6 +537,16 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
       assert home_draft(state) == ""
     end
 
+    test "Alt-n with the map on another project copies its command instead of asking to open it (UI-U-4)" do
+      state = ready() |> focus(:focus_next) |> focus(:focus_next) |> focus(:right)
+      assert state.home.focus == :map and state.home.orbit == 1
+
+      {state, effects} = step(state, {:home, {:open_row, 1}})
+      assert {:copy, "ncode ~/dev/llmotions -r 7c1e9a2b"} in effects
+      assert commands(effects, :conversation_open) == []
+      assert state.home != nil
+    end
+
     test "picking the conversation Home sits on from the switcher closes Home (UI-U-7)" do
       state = ready()
       {state, _} = step(state, {:open_conversation, conversation_id()})

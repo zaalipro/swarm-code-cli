@@ -421,8 +421,16 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
       end
     else
       case Enum.at(View.visible_list(state).rows, n - 1) do
-        %{summary: %{id: id}} -> open_conversation(state, id)
-        _ -> {state, []}
+        # orbit int (UI-U-4): with the map on another project the rows are
+        # that project's, which opens in its own tab: the command is copied.
+        %{summary: summary} = entry ->
+          case View.map_target(state) do
+            %{project: %{current: false} = project} -> copy_command(state, project, summary)
+            _ -> open_conversation(state, entry.summary.id)
+          end
+
+        _ ->
+          {state, []}
       end
     end
   end
