@@ -116,6 +116,47 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       refute File.exists?(context.log)
     end
 
+    # orbit S7: no flag opens Home, so `--continue` is no longer "the default".
+    # The launcher's words and the release's agree on the lines they share.
+    test "--help says no flag opens Home and --continue skips it", context do
+      assert {0, help} = launch(context, ["--help"])
+      lines = String.split(help, "\n")
+
+      home =
+        "With no flag it opens Home: recent work, live runs, resume (Esc continues the latest)."
+
+      continue = "  --continue, -c    continue the latest conversation, skipping Home"
+
+      env =
+        "  NCODE_CONVERSATION   latest, new, or a conversation id (the flags win; unset opens Home)"
+
+      for line <- [home, continue, env], do: assert(line in lines)
+      assert help =~ "opens Home"
+      refute Enum.find(lines, &(&1 =~ "--continue")) =~ "(the default)"
+      refute Enum.find(lines, &(&1 =~ "NCODE_CONVERSATION")) =~ "(default)"
+
+      release = String.split(SwarmCodeCLI.Release.usage(), "\n")
+      for line <- [home, continue], do: assert(line in release)
+      refute Enum.find(release, &(&1 =~ "--continue")) =~ "(the default)"
+
+      # The first usage line and the exit-code line stay byte-identical.
+      assert hd(lines) == "Usage: ncode [DIR] [--new | --continue | --resume ID] [--model M]"
+
+      assert help =~
+               "Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused,\n4 changed"
+    end
+
+    test "no flag leaves the conversation unset (Home); -c and --new set it", context do
+      assert {0, _} = launch(context, [])
+      assert File.read!(context.log) =~ "CONVERSATION=<unset>"
+
+      assert {0, _} = launch(context, ["-c"])
+      assert File.read!(context.log) =~ "CONVERSATION=latest"
+
+      assert {0, _} = launch(context, ["--new"])
+      assert File.read!(context.log) =~ "CONVERSATION=new"
+    end
+
     test "every usage error exits 2 with one line and starts nothing", context do
       for args <- [
             ["--bogus"],
