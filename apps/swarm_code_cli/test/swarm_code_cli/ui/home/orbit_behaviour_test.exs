@@ -516,6 +516,27 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
       end
     end
 
+    test "a command bound to the conversation keeps that draft's collapsed pastes whole (UI-U-3)" do
+      key = {conversation_id(), :main}
+      pasted = Enum.map_join(1..60, "\n", &"line #{&1}")
+
+      state = ready() |> workspace_ready()
+      {state, _} = step(state, {:editor, key, {:insert, "explain "}})
+      {state, _} = step(state, {:editor, key, {:paste, pasted}})
+      before = Drafts.fetch(state.drafts, key)
+      assert before.pastes == %{1 => pasted}
+      assert draft(state, key) =~ "[Pasted text #1 · 60 lines]"
+
+      state = typed(state, "/diff")
+      {state, _} = step(state, {:home, :enter})
+      assert state.home == nil
+
+      after_draft = Drafts.fetch(state.drafts, key)
+      assert after_draft.pastes == %{1 => pasted}
+      assert Editor.text(after_draft.editor) == Editor.text(before.editor)
+      assert home_draft(state) == ""
+    end
+
     test "picking the conversation Home sits on from the switcher closes Home (UI-U-7)" do
       state = ready()
       {state, _} = step(state, {:open_conversation, conversation_id()})

@@ -315,11 +315,11 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
         {state, closed}
 
       to ->
-        saved = Editor.text(Drafts.fetch(state.drafts, to).editor)
+        saved = Drafts.fetch(state.drafts, to)
 
         with {:ok, state} <- move_draft(state, from, to) do
           {state, sent} = Reducer.home_send(state, deferrable?(text))
-          {state, kept} = restore_draft_text(state, to, saved, text)
+          {state, kept} = put_back_draft(state, saved, text)
           {state, closed ++ sent ++ kept}
         else
           :error -> {note(state, "Too many drafts are open to run that here."), closed}
@@ -327,11 +327,17 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
     end
   end
 
-  defp restore_draft_text(state, _key, "", _text), do: {state, []}
-
-  defp restore_draft_text(state, key, saved, text) do
+  # orbit int (UI-U-3): the conversation's own draft comes back whole, with its
+  # collapsed pastes, attachments, chips, target and undo history (`move_draft`
+  # replaced the struct with Home's; the text alone would leave a placeholder
+  # whose paste is gone). A draft with nothing in it is not put back: a send
+  # that waits for the workspace still needs the command in it.
+  defp put_back_draft(state, %Draft{key: key} = saved, text) do
     current = Editor.text(Drafts.fetch(state.drafts, key).editor)
-    if current in ["", text], do: Reducer.home_replace_draft(state, key, saved), else: {state, []}
+
+    if Draft.dirty?(saved) and current in ["", text],
+      do: {%{state | drafts: Drafts.put(state.drafts, saved)}, []},
+      else: {state, []}
   end
 
   # D10: text over an empty conversation (no run, no prompt, no draft) goes there;
