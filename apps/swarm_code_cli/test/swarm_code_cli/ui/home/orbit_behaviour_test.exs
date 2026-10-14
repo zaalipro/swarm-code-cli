@@ -547,6 +547,28 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
       assert state.home != nil
     end
 
+    test "on this project's map the lit row and the bead Enter opens are the same conversation (UI-U-5)" do
+      # the list also holds a conversation the overview does not (a scheduled task's),
+      # newest first, so the overview's bead n is not the list's row n
+      listed = [summary(5) | Enum.map(1..4, &summary/1)]
+      state = ready(conversations: listed) |> focus(:focus_next) |> focus(:focus_next)
+      assert state.home.focus == :map and state.home.bead == 0
+
+      lit = fn state ->
+        state |> Home.View.visible_list() |> Map.fetch!(:rows) |> Enum.find(& &1.selected?)
+      end
+
+      assert lit.(state).summary.id == summary(1).id
+
+      state = focus(state, :down)
+      assert state.home.bead == 1
+      assert lit.(state).summary.id == summary(2).id
+
+      {_, effects} = step(state, {:home, :enter})
+      assert [%{kind: {:conversation_open, id}}] = commands(effects, :conversation_open)
+      assert id == summary(2).id
+    end
+
     test "picking the conversation Home sits on from the switcher closes Home (UI-U-7)" do
       state = ready()
       {state, _} = step(state, {:open_conversation, conversation_id()})

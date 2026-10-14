@@ -300,11 +300,25 @@ defmodule SwarmCodeCLI.UI.Home.View do
         window(state, project.conversations, state.home.bead, list_rows)
 
       _ ->
-        # With the map focused the bead is the cursor, here as well as elsewhere.
-        selected = if state.home.focus == :map, do: state.home.bead, else: state.home.selected
-        window(state, Home.rows(state), selected, list_rows)
+        rows = Home.rows(state)
+        window(state, rows, list_selected(state, rows), list_rows)
     end
   end
+
+  # With the map focused on this project the bead is the cursor, and the row
+  # lit is the bead's own conversation, found by id: the overview's beads and
+  # the conversation list are two lists (the list keeps scheduled-task
+  # conversations, the overview drops them), so the same index could light
+  # another row than the one Enter opens (orbit int, UI-U-5). A bead the list
+  # does not hold lights no row.
+  defp list_selected(%{home: %Home{focus: :map}} = state, rows) do
+    case map_target(state) do
+      %{conversation: %{id: id}} -> Enum.find_index(rows, &(&1.id == id)) || -1
+      _ -> state.home.bead
+    end
+  end
+
+  defp list_selected(state, _rows), do: state.home.selected
 
   defp window(state, all, selected, list_rows) do
     total = length(all)
