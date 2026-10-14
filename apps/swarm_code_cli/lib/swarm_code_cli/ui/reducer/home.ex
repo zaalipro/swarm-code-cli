@@ -20,13 +20,16 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
   alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.Home.{CopyCommand, View}
-  alias SwarmCodeCLI.UI.ModelPicker
+  alias SwarmCodeCLI.UI.{ModelPicker, SlashPalette}
   alias SwarmCodeCLI.UI.Reducer
   alias SwarmCodeCLI.UI.Reducer.Editing
 
   # The slash commands that act on the conversation in view: Home closes first,
   # so you see what they act on (D10).
   @conversation_bound [:rewind, :undo, :delete, :queue, :diff]
+  # The same commands with arguments (`/rewind 3`, `/effort high`) are not client
+  # commands, they go to the daemon for the conversation in view: Home goes first.
+  @bound_words ~w(rewind undo delete queue diff effort worker_effort)
 
   # The constants of spec 3.3.
   @overview {:home_overview, 6, 12, 131_072}
@@ -112,6 +115,15 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   def handle(%{home: %Home{focus: :composer}} = state, :escape), do: close(state, :continue)
   def handle(%{home: %Home{}} = state, :escape), do: {set_focus(state, :composer), []}
 
+  # Tab on a slash list completes the highlighted row, as in the shell.
+  def handle(%{home: %Home{focus: :composer}} = state, :focus_next) do
+    case SlashPalette.selected(state) do
+      %{arg?: true, text: text} -> SlashPalette.complete_argument(state, text)
+      %{name: name} -> SlashPalette.complete(state, name)
+      nil -> {set_focus(state, next_focus(state, :composer)), []}
+    end
+  end
+
   def handle(%{home: %Home{focus: focus}} = state, :focus_next),
     do: {set_focus(state, next_focus(state, focus)), []}
 
@@ -135,9 +147,17 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   # A draft of several lines keeps ↑/↓ for the caret while the caret is not on
   # its first/last line; only there they move the list.
   def handle(%{home: %Home{focus: :composer}} = state, verb) when verb in [:up, :down] do
-    if caret_on_edge?(state, verb),
-      do: select_row(state, verb),
-      else: Editing.apply(state, :editor, draft_key(state), {:move, verb})
+    cond do
+      # An open slash list owns ↑/↓, as in the shell.
+      SlashPalette.open?(state) ->
+        {SlashPalette.move(state, if(verb == :up, do: :previous, else: :next)), []}
+
+      caret_on_edge?(state, verb) ->
+        select_row(state, verb)
+
+      true ->
+        Editing.apply(state, :editor, draft_key(state), {:move, verb})
+    end
   end
 
   def handle(%{home: %Home{}} = state, verb) when verb in [:up, :down],
@@ -220,6 +240,30 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   # slash command runs as it does in the shell, closing Home first when it acts
   # on the conversation; any other text starts work in this project.
   defp enter_composer(state) do
+    # A slash list is open on the draft: Enter completes the highlighted row, or
+    # writes it and goes on as if it had been typed whole (the shell's T4).
+    case SlashPalette.enter_completion(state) do
+      {:complete, name} ->
+        SlashPalette.complete(state, name)
+
+      {:run, name} ->
+        enter_replaced(state, "/" <> name)
+
+      {:run_argument, text} ->
+        enter_replaced(state, "/" <> text)
+
+      nil ->
+        enter_text(state)
+    end
+  end
+
+  defp enter_replaced(state, text) do
+    {state, replaced} = Reducer.home_replace_draft(state, draft_key(state), text)
+    {state, sent} = enter_text(state)
+    {state, replaced ++ sent}
+  end
+
+  defp enter_text(state) do
     text = draft_text(state)
 
     cond do
@@ -234,10 +278,22 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
     case Keymap.local_command(text) do
       command when command in @conversation_bound -> true
       {:effort, _} -> true
-      nil -> ModelPicker.opener(text) != nil
+      nil -> ModelPicker.opener(text) != nil or bound_word?(text)
       _ -> false
     end
   end
+
+  defp bound_word?(text) do
+    case String.split(String.trim_leading(text), ~r/\s/, parts: 2) do
+      ["/" <> word | _] -> word in @bound_words
+      _ -> false
+    end
+  end
+
+  # A client command or a picker runs at once; any other text waits for the
+  # workspace of the conversation it is sent to.
+  defp deferrable?(text),
+    do: Keymap.local_command(text) == nil and ModelPicker.opener(text) == nil
 
   # A command about this session (/trust, /settings, /theme …) runs from Home's
   # own draft, which it clears; Home stays.
@@ -257,7 +313,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
         saved = Editor.text(Drafts.fetch(state.drafts, to).editor)
 
         with {:ok, state} <- move_draft(state, from, to) do
-          {state, sent} = Reducer.home_send(state, false)
+          {state, sent} = Reducer.home_send(state, deferrable?(text))
           {state, kept} = restore_draft_text(state, to, saved, text)
           {state, closed ++ sent ++ kept}
         else

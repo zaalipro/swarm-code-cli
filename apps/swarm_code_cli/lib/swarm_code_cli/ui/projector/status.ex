@@ -923,8 +923,18 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   # First run copies commands instead of opening rows, so the digits are not
   # advertised; on another project's bead Enter copies its command (D5).
   defp home_hint_words(state, :home_composer, hints) do
-    if SwarmCodeCLI.UI.Home.View.first_run?(state),
-      do: Enum.reject(hints, &match?({:digits, _}, &1)),
+    hints =
+      if SwarmCodeCLI.UI.Home.View.first_run?(state),
+        do: Enum.reject(hints, &match?({:digits, _}, &1)),
+        else: hints
+
+    # An open slash list takes Tab (it completes the highlighted row).
+    if SlashPalette.open?(state),
+      do:
+        Enum.map(hints, fn
+          {[:home_focus_next], _} -> {[:home_focus_next], "complete"}
+          other -> other
+        end),
       else: hints
   end
 

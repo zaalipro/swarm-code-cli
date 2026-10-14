@@ -21,7 +21,7 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
   the ellipses (one line per project), `:minimal` the orbits altogether.
   """
 
-  alias SwarmCodeCLI.UI.{Drafts, Editor, Keymap, SafeText, Width}
+  alias SwarmCodeCLI.UI.{Drafts, Editor, Keymap, SafeText, SlashPalette, Width}
   alias SwarmCodeCLI.UI.Home
   alias SwarmCodeCLI.UI.Home.{Canvas, Grid, Mark, Orbits, View}
   alias SwarmCodeCLI.UI.Keymap.Bindings
@@ -1180,6 +1180,7 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
     hint_row = grid.hint_row
     canvas = Canvas.paint(canvas, hint_row, 0, width, :card)
     canvas = Canvas.puts(canvas, hint_row, 3, hint_parts(state)) |> elem(0)
+    canvas = slash_popup(canvas, state, grid, first)
     _ = tier
 
     cursor =
@@ -1190,6 +1191,100 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
 
     cursor = cursor || list_cursor(state, grid)
     {canvas, cursor}
+  end
+
+  # The slash list over the bottom of the resume list, just above the composer,
+  # as the shell draws it over the transcript: up to eight rows, the selected one
+  # on the hover surface. Where fewer than three of its rows fit, the hint line
+  # says what Enter and Tab do instead.
+  defp slash_popup(canvas, state, grid, first_row) do
+    total = length(SlashPalette.entries(state))
+    room = first_row - grid.list_first - 1
+    count = min(min(total, SlashPalette.rows()), room)
+
+    if state.home.focus == :composer and total > 0 and count >= min(total, 3) do
+      items = SlashPalette.visible(state, count)
+      width = canvas.width
+      policy = state.capabilities.ambiguous_width
+      signature = &slash_signature/1
+
+      column =
+        SlashPalette.entries(state)
+        |> Enum.map(&Width.cells(Canvas.prepare(canvas, signature.(&1)), policy))
+        |> Enum.max(fn -> 0 end)
+        |> min(max(8, div(width * 2, 5)))
+
+      marker = Glyphs.for_caps(:focus_bar, state.capabilities)
+      enter = slash_enter_words(state)
+
+      items
+      |> Enum.with_index(first_row - count)
+      |> Enum.reduce(canvas, fn {item, row}, acc ->
+        bg = if item.selected?, do: :hover, else: :popover
+        name = "/" <> item.name
+        args = String.replace_prefix(signature.(item), name, "")
+        room = max(width - 5 - column - 2, 0)
+
+        right =
+          cond do
+            item.selected? and enter != nil ->
+              [{"Enter", {:text_muted, [:bold]}}, {enter, :text_faint}]
+
+            item.selected? ->
+              [{"Tab", {:text_muted, [:bold]}}, {" complete", :text_faint}]
+
+            true ->
+              []
+          end
+
+        right_cells = Canvas.parts_cells(acc, right)
+        desc_room = max(room - if(right == [], do: 0, else: right_cells + 2), 0)
+
+        acc
+        |> Canvas.put(row, 0, String.duplicate(" ", width), :text_primary)
+        |> elem(0)
+        |> Canvas.paint(row, 0, width, bg)
+        |> Canvas.put(row, 1, if(item.selected?, do: marker, else: " "), {:accent, []})
+        |> elem(0)
+        |> Canvas.put(
+          row,
+          3,
+          Canvas.clip(acc, name, column),
+          if(item.selected?, do: {:accent, [:bold]}, else: {:text_primary, [:bold]})
+        )
+        |> elem(0)
+        |> Canvas.put(
+          row,
+          3 + min(Canvas.cells(acc, name), column),
+          Canvas.clip(acc, args, max(column - Canvas.cells(acc, name), 0)),
+          :text_faint
+        )
+        |> elem(0)
+        |> Canvas.put(row, 5 + column, Canvas.clip(acc, item.desc || "", desc_room), :text_muted)
+        |> elem(0)
+        |> Canvas.rputs(row, width - 2, right)
+        |> elem(0)
+      end)
+    else
+      canvas
+    end
+  end
+
+  defp slash_signature(item) do
+    case Map.get(item, :args) do
+      args when is_binary(args) and args != "" -> "/" <> item.name <> " " <> args
+      _ -> "/" <> item.name
+    end
+  end
+
+  # What Enter does with the highlighted row now (the shell's T4/T6 words).
+  defp slash_enter_words(state) do
+    case SlashPalette.enter_completion(state) do
+      {:complete, _name} -> " complete"
+      {:run, _name} -> " run"
+      {:run_argument, _text} -> " run"
+      nil -> nil
+    end
   end
 
   # The caret of the list's search field, on the header row.
@@ -1225,7 +1320,21 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
         ])
 
       (command = Keymap.local_command(text)) != nil ->
-        key_pairs([{enter, "run /" <> Atom.to_string(command)}])
+        key_pairs([{enter, "run " <> command_label(command)}])
+
+      SlashPalette.open?(state) ->
+        words =
+          case SlashPalette.enter_completion(state) do
+            {:run, name} -> "run /" <> name
+            {:complete, _name} -> "complete"
+            {:run_argument, _text} -> "run"
+            nil -> nil
+          end
+
+        key_pairs(
+          if(words, do: [{enter, words}], else: []) ++
+            [{key_label(state, :home_focus_next, "Tab"), "complete"}, {"↑↓", "choose"}]
+        )
 
       View.first_run?(state) ->
         trust? =
@@ -1275,6 +1384,9 @@ defmodule SwarmCodeCLI.UI.Projector.Home do
         end
     end
   end
+
+  defp command_label({name, _scope}) when is_atom(name), do: "/" <> Atom.to_string(name)
+  defp command_label(name) when is_atom(name), do: "/" <> Atom.to_string(name)
 
   defp home_draft_text(state) do
     state.drafts

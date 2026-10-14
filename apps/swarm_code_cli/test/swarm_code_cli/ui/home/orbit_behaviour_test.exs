@@ -8,7 +8,8 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
 
   import SwarmCodeCLI.OrbitHelpers
 
-  alias SwarmCodeCLI.UI.{Drafts, Editor, Home, Input, Keymap, Reducer}
+  alias SwarmCodeCLI.Cli020EHelpers, as: H
+  alias SwarmCodeCLI.UI.{Drafts, Editor, Home, Input, Keymap, Reducer, SlashPalette}
   alias SwarmCodeCLI.UI.DataSource.DTO
 
   @new_id "9f9f9f9f-0000-4000-8000-000000000001"
@@ -145,6 +146,61 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
       {state, _} = step(state, {:home, :enter})
       assert %Home{} = state.home
       assert home_draft(state) == ""
+    end
+  end
+
+  describe "the slash list" do
+    test "opens on a `/` draft, ↑/↓ move it, Tab completes the highlighted row" do
+      state = ready() |> typed("/t")
+      assert SlashPalette.open?(state)
+      [first, second | _] = SlashPalette.entries(state)
+      assert SlashPalette.selected(state).name == first.name
+
+      {state, _} = step(state, {:home, :down})
+      assert SlashPalette.selected(state).name == second.name
+      assert state.home.selected == 0
+
+      {state, _} = step(state, {:home, :focus_next})
+      assert state.home.focus == :composer
+      assert home_draft(state) == "/" <> second.name <> " "
+    end
+
+    test "is drawn over the bottom of the list, above the composer" do
+      state = ready() |> typed("/t")
+      rows = H.screen(state)
+      [first | _] = SlashPalette.entries(state)
+      assert Enum.any?(Enum.slice(rows, 24, 9), &(&1 =~ "/" <> first.name))
+      assert Enum.at(rows, 33) =~ "› /t"
+      assert Enum.at(rows, 35) =~ "Tab complete"
+    end
+
+    test "Enter on a half-typed command completes or runs it, and never sends the half" do
+      state = ready() |> workspace_ready() |> typed("/tru")
+      {state, effects} = step(state, {:home, :enter})
+      assert commands(effects, :conversation_new) == []
+      assert commands(effects, :dispatch) == []
+      refute home_draft(state) == "/tru"
+      assert String.starts_with?(home_draft(state), "/trust") or effects != []
+    end
+
+    test "a command with arguments for the conversation in view closes Home first" do
+      state = ready() |> workspace_ready() |> typed("/rewind 3")
+      {state, effects} = step(state, {:home, :enter})
+      assert state.home == nil
+      assert commands(effects, :conversation_new) == []
+    end
+
+    test "a bare /effort is drawn and runs for the conversation in view" do
+      state = ready() |> workspace_ready() |> typed("/effort")
+      assert H.screen(state) |> Enum.at(34) =~ "run /effort"
+      {state, _} = step(state, {:home, :enter})
+      assert state.home == nil
+    end
+
+    test "where the list does not fit, the hint line says what the keys do" do
+      state = ready(size: {60, 16}) |> typed("/t")
+      assert SlashPalette.open?(state)
+      assert H.screen(state) |> Enum.at(14) =~ "Tab complete"
     end
   end
 

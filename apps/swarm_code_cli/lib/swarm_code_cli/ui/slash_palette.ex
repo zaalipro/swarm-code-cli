@@ -444,6 +444,9 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   # completes and runs `/compact` as it does without the card.
   defp gate?(%{focus: "composer", layers: []}), do: true
 
+  # orbit U9: Home's composer is a composer too, whatever the shell has focused.
+  defp gate?(%{home: %{focus: :composer}, layers: []}), do: true
+
   defp gate?(%{layers: [{:approval, _} | _]} = state),
     do: SwarmCodeCLI.UI.Keymap.typing_under_card?(state)
 
