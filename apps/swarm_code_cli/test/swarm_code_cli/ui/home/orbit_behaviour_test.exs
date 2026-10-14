@@ -20,8 +20,48 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
     {state, _} = start(Keyword.take(options, [:size, :capabilities]))
     {state, effects} = step(state, :boot)
     [request] = queries(effects, :home_overview)
-    {state, _} = answer_overview(state, request)
+    {state, _} = answer_overview(state, request, Keyword.get(options, :overview, & &1))
     put_conversations(state, Keyword.get(options, :conversations, Enum.map(1..4, &summary/1)))
+  end
+
+  # Appendix C with nothing waiting anywhere: the fixture has an approval
+  # waiting in the conversation in view.
+  defp quiet(wire) do
+    wire
+    |> Map.put("waiting_total", 0)
+    |> Map.update!("projects", fn projects ->
+      for project <- projects do
+        project
+        |> Map.put("waiting", 0)
+        |> Map.update!("conversations", fn conversations ->
+          for conversation <- conversations, do: Map.put(conversation, "waiting", 0)
+        end)
+      end
+    end)
+  end
+
+  # `quiet/1` with one conversation of the current project waiting.
+  defp waiting_at(n) do
+    id = summary(n).id
+
+    fn wire ->
+      wire = quiet(wire)
+
+      update_in(wire["projects"], fn [here | rest] ->
+        here =
+          here
+          |> Map.put("waiting", 1)
+          |> Map.update!("conversations", fn conversations ->
+            for conversation <- conversations do
+              if conversation["id"] == id,
+                do: Map.put(conversation, "waiting", 1),
+                else: conversation
+            end
+          end)
+
+        [here | rest]
+      end)
+    end
   end
 
   defp key_press(state, input) do
@@ -345,9 +385,57 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
   describe "Ctrl-N" do
     test "goes to the first conversation here that waits" do
       waiting = [summary(1), summary(2), summary(3, waiting: 1), summary(4)]
-      {_, effects} = step(ready(conversations: waiting), {:home, :next_need})
+      state = ready(conversations: waiting, overview: &quiet/1)
+      {_, effects} = step(state, {:home, :next_need})
       assert [%{kind: {:conversation_open, id}}] = commands(effects, :conversation_open)
       assert id == summary(3).id
+    end
+
+    test "finds what the overview says waits in this project, though the list was taken before (UI-U-1)" do
+      # the list (taken when Home opened) says nothing waits; a push refreshed the
+      # overview, and the dot and the header read "1 needs you · Ctrl-N go"
+      state = ready(overview: waiting_at(2))
+      assert Enum.all?(state.conversations.items, &(&1.waiting == 0))
+
+      {_, effects} = step(state, {:home, :next_need})
+      assert [%{kind: {:conversation_open, id}}] = commands(effects, :conversation_open)
+      assert id == summary(2).id
+    end
+
+    test "the conversation in view that waits closes Home and opens its card, even one put aside (UI-U-1)" do
+      state =
+        ready(overview: &quiet/1)
+        |> workspace_ready(
+          runs: [run("r", :waiting_approval)],
+          interactions: [approval("a1")]
+        )
+
+      assert state.home != nil and state.layers == []
+      {opened, _} = step(state, {:home, :next_need})
+      assert opened.home == nil
+      assert [{:approval, "a1"} | _] = opened.layers
+
+      # an Esc'd card does not come back by itself; Ctrl-N brings it back
+      aside = %{state | dismissed_interactions: [{"a1", 5}]}
+      {closed, _} = step(aside, {:home, :escape})
+      assert closed.home == nil and closed.layers == []
+
+      {again, _} = step(aside, {:home, :next_need})
+      assert again.home == nil
+      assert [{:approval, "a1"} | _] = again.layers
+    end
+
+    test "every overview that refreshes Home asks the conversation list again (UI-U-1)" do
+      state = ready()
+      {state, effects} = stale(state, 9)
+      assert [_] = queries(effects, :home_overview)
+
+      assert [%{kind: {:conversation_list, nil, 50, 262_144}}] =
+               queries(effects, :conversation_list)
+
+      # a second push while both are out asks neither again
+      {_, effects} = stale(state, 10)
+      assert queries(effects, :conversation_list) == []
     end
 
     test "opens the conversation in view when that is the one that waits" do
@@ -357,7 +445,7 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
     end
 
     test "copies the command of one elsewhere when none here waits" do
-      state = ready()
+      state = ready(overview: &quiet/1)
 
       overview =
         update_in(state.home.overview.projects, fn [here, there] ->
@@ -375,7 +463,7 @@ defmodule SwarmCodeCLI.UI.Home.OrbitBehaviourTest do
     end
 
     test "says so when nothing waits" do
-      {state, effects} = step(ready(), {:home, :next_need})
+      {state, effects} = step(ready(overview: &quiet/1), {:home, :next_need})
       assert effects == []
       assert state.notice == {:command_feedback, "Nothing waits for you."}
       assert state.home != nil

@@ -20,7 +20,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   alias SwarmCodeCLI.UI.DataSource.{DTO, Request}
   alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.Home.{CopyCommand, View}
-  alias SwarmCodeCLI.UI.{ModelPicker, SlashPalette}
+  alias SwarmCodeCLI.UI.{ModelPicker, Question, SlashPalette}
   alias SwarmCodeCLI.UI.Reducer
   alias SwarmCodeCLI.UI.Reducer.Editing
 
@@ -467,13 +467,13 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
   end
 
   # Ctrl-N (D19): the first approval or question that waits, here or elsewhere.
+  #
+  # orbit int (UI-U-1): "here" is looked for where the dot and "Ctrl-N go" read
+  # it from: the pending interactions of the conversation in view (the read
+  # model), then this project's row of the overview (kept fresh by the pushes),
+  # then the conversation list (asked again with every overview, for the
+  # conversations past the overview's window).
   defp next_need(state) do
-    here =
-      case state.conversations do
-        %DTO.ConversationList{items: items} -> Enum.find(items, &(&1.waiting > 0))
-        _ -> nil
-      end
-
     elsewhere =
       for project <- View.projects(state),
           not project.current,
@@ -482,9 +482,57 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
           do: {project, conversation}
 
     cond do
-      here != nil -> open_conversation(state, here.id)
+      (id = waiting_here(state)) != nil -> open_need(state, id)
       elsewhere != [] -> elsewhere |> hd() |> then(fn {p, c} -> copy_command(state, p, c) end)
       true -> {note(state, "Nothing waits for you."), []}
+    end
+  end
+
+  defp waiting_here(state) do
+    current = Home.current_conversation_id(state)
+
+    in_view =
+      current != nil and Enum.any?(Question.needs(state), &(&1.conversation_id == current))
+
+    overview =
+      Enum.find_value(View.projects(state), fn
+        %{current: true, conversations: conversations} ->
+          Enum.find_value(conversations, &(&1.waiting > 0 and &1.id))
+
+        _ ->
+          nil
+      end)
+
+    listed =
+      case state.conversations do
+        %DTO.ConversationList{items: items} -> Enum.find_value(items, &(&1.waiting > 0 and &1.id))
+        _ -> nil
+      end
+
+    cond do
+      in_view -> current
+      overview -> overview
+      true -> listed
+    end
+  end
+
+  # The conversation in view: Home goes and its card opens, even one put aside
+  # with Esc (Ctrl-N brings it back on purpose). Another conversation of this
+  # project: the service switches to it, and the destination change closes Home.
+  defp open_need(state, id) do
+    if id == Home.current_conversation_id(state) do
+      {state, closed} = close(state, :opened)
+
+      case Enum.find(Question.needs(state), &(&1.conversation_id == id)) do
+        nil ->
+          {state, closed}
+
+        row ->
+          {state, opened} = Reducer.update(state, {:open_interaction, Question.ask_id(row)})
+          {state, closed ++ opened}
+      end
+    else
+      open_conversation(state, id)
     end
   end
 
@@ -773,9 +821,18 @@ defmodule SwarmCodeCLI.UI.Reducer.Home do
         {next, restored} = settle_pending(next)
         {next, listed} = relist(prev, next)
         {next, asked} = requery(next)
-        {next, restored ++ listed ++ asked}
+        {next, refreshed} = relist_with(next, asked)
+        {next, restored ++ listed ++ asked ++ refreshed}
     end
   end
+
+  # orbit int (UI-U-1): the conversation list is asked again with every overview
+  # that refreshes one already on screen (one list request at a time), so Ctrl-N
+  # and the rows' words are not frozen at what the list said when Home opened.
+  defp relist_with(%{home: %Home{overview: %DTO.HomeOverview{}}} = next, [_ | _]),
+    do: Reducer.request_conversations(next)
+
+  defp relist_with(next, _asked), do: {next, []}
 
   # The destination changed (D20): Home goes. A text that waited for
   # `conversation.new` is put in the new conversation's draft and sent as soon as
