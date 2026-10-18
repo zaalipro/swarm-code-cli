@@ -14,7 +14,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Attention do
       words a notification shows ("ncode: <project> needs you (approval)",
       "… needs you (approval in <conversation>)", "… finished"); the session
       runtime picks one of the two by `terminal.notify` (bell, OSC 9, the OS
-      notification centre).
+      notification centre). A burst of requests in several conversations is
+      one bell whose words name the first two conversations and count the rest
+      ("approval in A and B", "approval in A, B +2 more").
     * `{:terminal_title, text}` whenever the title changes: `ncode · <project>`
       idle, `… · working` while a run of the conversation is live, `… · needs
       you` while an interaction waits, `… · done` after an unfocused finish
@@ -46,7 +48,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Attention do
 
   defp bells(previous, next) do
     needs = new_needs(previous, next)
-    elsewhere = new_elsewhere(previous, next)
+    {next, elsewhere} = new_elsewhere(previous, next)
     done = finished_runs(previous, next)
 
     cond do
@@ -68,8 +70,9 @@ defmodule SwarmCodeCLI.UI.Reducer.Attention do
   end
 
   # "approval" for the conversation in view; "approval in <title>" when the
-  # only new request waits in one other conversation; "approval in N
-  # conversations" when they span several (the one in view counts as one).
+  # only new request waits in one other conversation; "approval in A and B"
+  # for two, "approval in A, B +N more" for more (the one in view reads "this
+  # conversation"). The text stays short however many conversations wait.
   defp needs_words(needs, elsewhere) do
     kinds = needs ++ Enum.map(elsewhere, & &1.kind)
     kind = if Enum.any?(kinds, &(&1 == :approval)), do: "approval", else: "question"
@@ -79,12 +82,16 @@ defmodule SwarmCodeCLI.UI.Reducer.Attention do
       |> Enum.uniq_by(& &1.conversation_id)
       |> Enum.map(&conversation_name(&1.title))
 
-    case {needs, conversations} do
-      {_, []} -> kind
-      {[], [name]} -> kind <> " in " <> name
-      {_, names} -> "#{kind} in #{length(names) + if(needs == [], do: 0, else: 1)} conversations"
+    cond do
+      conversations == [] -> kind
+      needs == [] -> kind <> " in " <> name_list(conversations)
+      true -> kind <> " in " <> name_list(["this conversation" | conversations])
     end
   end
+
+  defp name_list([name]), do: name
+  defp name_list([first, second]), do: first <> " and " <> second
+  defp name_list([first, second | rest]), do: "#{first}, #{second} +#{length(rest)} more"
 
   defp conversation_name(title) do
     with {:ok, safe} <- SafeText.external(title, SafeText.Limits.content()),
@@ -127,25 +134,55 @@ defmodule SwarmCodeCLI.UI.Reducer.Attention do
   end
 
   # The approvals and questions of the session's other conversations (the
-  # daemon's `elsewhere` fact) that were not waiting before this transition.
-  # Without a fact held before there is no baseline: what already waited when
-  # the first one arrived rings nothing. A conversation in view before or now
-  # belongs to the in-view rule: switching away from one that waits is not
-  # news, because that wait moves into this list as the shell watch re-snapshots.
+  # daemon's `elsewhere` fact) that were not known before this transition.
+  # The fact lists the newest 32 waits only, so being absent from the fact
+  # before proves nothing: a wait that left the 32 and came back is not news.
+  # A wait is news when it is newer than `state.elsewhere_mark`, the newest
+  # `{since, run_id, id}` told or taken as known so far, which moves ahead with
+  # every fact. Without a fact held before there is no baseline: what already
+  # waited when the first one arrived rings nothing. A conversation in view
+  # before or now belongs to the in-view rule: switching away from one that
+  # waits is not news, because that wait moves into this list as the shell
+  # watch re-snapshots.
   defp new_elsewhere(previous, next) do
-    with %{waiting: before} <- previous.read_model.elsewhere,
-         %{waiting: now} <- next.read_model.elsewhere do
-      known = MapSet.new(before, &{&1.run_id, &1.id})
-      seen = [viewed(previous), viewed(next)]
+    case {previous.read_model.elsewhere, next.read_model.elsewhere} do
+      {same, same} ->
+        {next, []}
 
-      for wait <- now,
-          not MapSet.member?(known, {wait.run_id, wait.id}),
-          wait.conversation_id not in seen,
-          do: wait
-    else
-      _ -> []
+      {%{}, %{waiting: now}} ->
+        seen = [viewed(previous), viewed(next)]
+
+        news =
+          for wait <- now,
+              newer?(wait_key(wait), next.elsewhere_mark),
+              wait.conversation_id not in seen,
+              do: wait
+
+        {mark(next, now), news}
+
+      {_none, %{waiting: now}} ->
+        {mark(next, now), []}
+
+      _no_fact ->
+        {next, []}
     end
   end
+
+  # No wait left outside: the next one is news whatever its clock says.
+  defp mark(state, []), do: %{state | elsewhere_mark: nil}
+
+  defp mark(state, waits),
+    do: %{state | elsewhere_mark: Enum.reduce(waits, state.elsewhere_mark, &max_key/2)}
+
+  defp max_key(wait, mark) do
+    key = wait_key(wait)
+    if newer?(key, mark), do: key, else: mark
+  end
+
+  defp wait_key(wait), do: {wait.since, wait.run_id, wait.id}
+
+  defp newer?(_key, nil), do: true
+  defp newer?(key, mark), do: key > mark
 
   defp viewed(%{destination: {:conversation, id}}), do: id
   defp viewed(_state), do: nil

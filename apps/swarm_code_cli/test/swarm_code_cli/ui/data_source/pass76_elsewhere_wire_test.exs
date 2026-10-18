@@ -1,9 +1,10 @@
 defmodule SwarmCodeCLI.UI.DataSource.Pass76ElsewhereWireTest do
   @moduledoc """
-  pass76 cli-quit-attention: the `elsewhere` fact (the live runs and waits of
-  the session's other conversations) crosses real JSON through the daemon codec
-  as a shell-watch delta and as the shell snapshot's optional field (an older
-  daemon that omits it still decodes), and the read model keeps the newest.
+  pass76 cli-quit-attention: the `elsewhere` fact (the session's live runs
+  and the live runs and waits of its other conversations) crosses real JSON
+  through the daemon codec as a shell-watch delta and as the shell snapshot's
+  optional field (an older daemon that omits it still decodes), and the read
+  model keeps the newest.
   """
   use ExUnit.Case, async: true
   alias SwarmCode.Protocol.{Envelope, Message, Scope}
@@ -24,14 +25,15 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass76ElsewhereWireTest do
         "run_id" => "55555555-5555-4555-8555-555555555555",
         "conversation_id" => @other,
         "kind" => "approval",
-        "title" => "Refactor parser"
+        "title" => "Refactor parser",
+        "since" => 1_791_000_000_000_000
       },
       overrides
     )
   end
 
   defp elsewhere_wire(overrides \\ %{}),
-    do: Map.merge(%{"live" => 2, "waiting" => [wait_wire()]}, overrides)
+    do: Map.merge(%{"total" => 3, "live" => 2, "waiting" => [wait_wire()]}, overrides)
 
   defp delta_wire(body, extra \\ %{}) do
     Map.merge(
@@ -80,13 +82,18 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass76ElsewhereWireTest do
     }
 
   test "the DTO decodes the daemon's map and refuses what the quit and the bell cannot use" do
-    assert {:ok, %DTO.Elsewhere{live: 2, waiting: [%DTO.ElsewhereWait{} = wait]}} =
+    assert {:ok, %DTO.Elsewhere{total: 3, live: 2, waiting: [%DTO.ElsewhereWait{} = wait]}} =
              DTO.Elsewhere.decode(elsewhere_wire())
 
     assert {wait.kind, wait.title, wait.conversation_id} == {:approval, "Refactor parser", @other}
+    assert wait.since == 1_791_000_000_000_000
 
-    assert {:ok, %DTO.Elsewhere{live: 0, waiting: []}} =
-             DTO.Elsewhere.decode(elsewhere_wire(%{"live" => 0, "waiting" => []}))
+    assert {:ok, %DTO.Elsewhere{total: 0, live: 0, waiting: []}} =
+             DTO.Elsewhere.decode(elsewhere_wire(%{"total" => 0, "live" => 0, "waiting" => []}))
+
+    # Runs in the shown conversation make the total larger than `live`.
+    assert {:ok, %DTO.Elsewhere{total: 5, live: 0}} =
+             DTO.Elsewhere.decode(elsewhere_wire(%{"total" => 5, "live" => 0}))
 
     assert {:ok, %DTO.ElsewhereWait{kind: :question}} =
              DTO.ElsewhereWait.decode(wait_wire(%{"kind" => "question"}))
@@ -94,6 +101,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass76ElsewhereWireTest do
     for bad <- [
           elsewhere_wire(%{"live" => -1}),
           elsewhere_wire(%{"live" => nil}),
+          elsewhere_wire(%{"total" => -1}),
+          elsewhere_wire(%{"total" => nil}),
+          Map.delete(elsewhere_wire(), "total"),
+          # The runs outside the shown conversation are some of the session's.
+          elsewhere_wire(%{"total" => 1, "live" => 2}),
+          elsewhere_wire(%{"waiting" => [wait_wire(%{"since" => -1})]}),
+          elsewhere_wire(%{"waiting" => [Map.delete(wait_wire(), "since")]}),
           elsewhere_wire(%{"waiting" => List.duplicate(wait_wire(), 33)}),
           elsewhere_wire(%{"waiting" => [wait_wire(%{"kind" => "gate"})]}),
           elsewhere_wire(%{"waiting" => [Map.delete(wait_wire(), "title")]}),
@@ -119,13 +133,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass76ElsewhereWireTest do
             %Delivery{kind: :delta, body: %Delta{kind: :elsewhere, body: %DTO.Elsewhere{} = body}}} =
              Codec.event(through_json(message), shell_watch(), @nonce)
 
-    assert body.live == 2
+    assert {body.total, body.live} == {3, 2}
 
     for bad <- [
           delta_wire(elsewhere_wire(), %{"entity_id" => @conversation}),
           delta_wire(elsewhere_wire(), %{"run_id" => @conversation}),
           delta_wire(elsewhere_wire(), %{"attempt_id" => @conversation}),
-          delta_wire(%{"live" => "2", "waiting" => []})
+          delta_wire(%{"total" => 2, "live" => "2", "waiting" => []})
         ] do
       assert {:error, _} = Delta.decode(bad)
     end
@@ -162,7 +176,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass76ElsewhereWireTest do
 
     assert {:ok,
             %Delivery{
-              body: %DTO.ShellSnapshot{elsewhere: %DTO.Elsewhere{live: 2, waiting: [_]}}
+              body: %DTO.ShellSnapshot{
+                elsewhere: %DTO.Elsewhere{total: 3, live: 2, waiting: [_]}
+              }
             }} =
              Codec.event(
                through_json(ready.(Map.put(shell, "elsewhere", elsewhere_wire()))),
@@ -173,7 +189,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Pass76ElsewhereWireTest do
 
   test "the read model installs the snapshot's fact and replaces it with each delta" do
     {:ok, first} = DTO.Elsewhere.decode(elsewhere_wire())
-    {:ok, second} = DTO.Elsewhere.decode(elsewhere_wire(%{"live" => 0, "waiting" => []}))
+
+    {:ok, second} =
+      DTO.Elsewhere.decode(elsewhere_wire(%{"total" => 0, "live" => 0, "waiting" => []}))
 
     snapshot = %DTO.ShellSnapshot{
       counts: %DTO.Counts{},

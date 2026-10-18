@@ -14,10 +14,6 @@ defmodule SwarmCodeCLI.Release.Reasons do
   a made-up word.
   """
 
-  @compile {:no_warn_undefined, [SwarmCode.Daemon.Schema.Refusal]}
-
-  alias SwarmCode.Daemon.Schema.Refusal
-
   @table %{
     # Startup refusals: the `StartupError` codes of the data gate.
     data_lease_held: "data_lease_held",
@@ -81,14 +77,14 @@ defmodule SwarmCodeCLI.Release.Reasons do
   The word for a startup failure map: `Release.PersistedSession`'s
   `%{status:, message:, action:}` plus the optional `:code` of a
   `StartupError` and `:reason` of a session failure (`:reason` is the more
-  specific). The schema refusals share one code, so
-  `Refusal.database_mode?/1` tells the mode refusal apart. Anything unlisted
-  is `usage` for exit 2 and `startup_failed` otherwise.
+  specific). The schema refusals share one code, so the `StartupError`'s typed
+  `:cause` (`:database_mode`) tells the mode refusal apart; its sentence is
+  never read. Anything unlisted is `usage` for exit 2 and `startup_failed`
+  otherwise.
   """
   @spec for_failure(term()) :: String.t()
-  def for_failure(%{code: :schema_incompatible} = failure) do
-    if Refusal.database_mode?(failure), do: get(:database_mode), else: get(:schema_incompatible)
-  end
+  def for_failure(%{code: :schema_incompatible, cause: :database_mode}),
+    do: get(:database_mode)
 
   def for_failure(failure) when is_map(failure) do
     listed(Map.get(failure, :reason)) || listed(Map.get(failure, :code)) ||

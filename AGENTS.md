@@ -409,10 +409,13 @@ Headless and release (lane B):
   for a run). Adding a word means a table row in `Reasons`, one in the README table and a test;
   renaming or repurposing one breaks scripts. The launcher's own usage errors print
   `"reason":"usage"` (`json_failure` in `rel/overlays/bin/ncode`). The five schema refusals
-  share the code `:schema_incompatible`, so `Schema.Refusal.database_mode?/1` is what tells
-  the mode refusal apart. `--max-turns`/`--max-budget-usd` stop the owned run and every run
-  it launched (exit 1; the turn limit applies to each run's lead, the budget to their total
-  cost); `--fail-on-denied` fails a done run that had denials. A limit that fired stays fired:
+  share the code `:schema_incompatible`, so the mode refusal carries a typed
+  `StartupError.cause` (`:database_mode`, a closed set that `Daemon.Platform.DirectoryProtocol`
+  also validates: a new cause needs the protocol's allowed atoms, its exact field set and
+  `StartupError.causes/0`), which `PersistedSession.startup_failure` puts on the failure as
+  `:cause` and `Reasons.for_failure/1` reads; the sentence is never compared.
+  `--max-turns`/`--max-budget-usd` stop the owned run and every run it launched (exit 1; the
+  turn limit applies to each run's lead, the budget to their total cost); `--fail-on-denied` fails a done run that had denials. A limit that fired stays fired:
   a run first heard of after it (its update can arrive after the one that crossed the limit)
   is asked to stop too, once. Denials are said in one stderr
   line. `-p` follows the runs its runs launch (`parent_run_id`, transitively: a swarm or
@@ -599,18 +602,27 @@ of `docs/research/2026-10-07-cli020-outcome.md`. No desktop change, no sync, no 
   workspace's `local_zone` (`Next.local_zone/0`, read once per daemon) and, left blank, is
   filled by the daemon's changeset with the same function. `Library.schedule_form/2` applies
   this to new and daemon-supplied forms.
-- Other conversations (pass 76): the read model holds the shown conversation only, but a quit
-  stops every conversation's runs and a request can wait in any of them. The shell watch
-  therefore carries `DTO.Elsewhere` (`ShellSnapshot.elsewhere` and the `elsewhere` delta,
-  `ReadModel.elsewhere`): `live` runs outside the shown conversation (exact) and the newest 32
-  `waiting` approvals/questions there, each with its conversation's title. `Daemon.Service.Elsewhere`
-  reads the run registry and the waits table; `PersistedBackend` recomputes it 250 ms after a
-  run status event of any conversation or a waits change, once more 2 s later and then every 2 s
-  while a run lives elsewhere (one owned timer, only while a client watches the shell). The
-  reducer reads it purely: `Reducer.live_run_count/1` (quit confirmation: `quit_live_runs`, and
-  `quit_live_elsewhere` for the dialog's "N are in other conversations") and
-  `Reducer.Attention` (a wait id not in the previous fact rings once per the 2 s throttle; the
-  first fact held is a baseline). `Shutdown.run/1`'s `stopped_runs` carry `conversation_id` and
+- Other conversations (pass 76): the read model is a normalized cache of what the watches
+  loaded, not the shown conversation alone: a closed inspector keeps its coverage, so its run
+  rows (another conversation's too) stay after a switch, and the workspace's runs are the
+  newest 200 only. A quit stops every run of the session and a request can wait in any
+  conversation, so run rows are never a count of what is live. The shell watch carries
+  `DTO.Elsewhere` (`ShellSnapshot.elsewhere` and the `elsewhere` delta, `ReadModel.elsewhere`):
+  `total` live runs of the whole session (the run registry, what `Shutdown` stops), `live`
+  outside the shown conversation, and the newest 32 `waiting` approvals/questions there, each
+  with its conversation's title and `since` (unix µs). `Daemon.Service.Elsewhere` reads the run
+  registry and the waits table; `PersistedBackend` recomputes it 250 ms after a run status
+  event of any conversation or a waits change, once more 2 s later and then every 2 s while
+  any run lives (one owned timer, only while a client watches the shell). The reducer reads it
+  purely: `Reducer.live_run_count/1` is `total` once a fact is held (the quit confirmation:
+  `quit_live_runs`, and `quit_live_elsewhere` = `live` for the dialog's "N are in other
+  conversations"); before any fact it counts the runs in view, as before. Exact session
+  liveness comes from this fact, never from `read_model.runs`. `Reducer.Attention` rings (same
+  2 s throttle, `terminal.notify`, focus rules) for a wait newer than `state.elsewhere_mark`,
+  the newest `{since, run_id, id}` seen (one value, so a wait that leaves the newest 32 and
+  comes back is not news; it resets when no wait is left; the first fact held is a baseline),
+  naming at most two conversations and counting the rest ("approval in A and B", "approval in
+  A, B +2 more"). `Shutdown.run/1`'s `stopped_runs` carry `conversation_id` and
   `conversation`, so the exit summary names where the runs of other conversations ran.
 - Quit summary (F5): `Files changed` is the net change of the session (`net_changed/3` in
   `release/persisted_session.ex`): a path whose file equals the session's first checkpoint of it,

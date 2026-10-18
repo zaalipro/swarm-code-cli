@@ -4,13 +4,21 @@ defmodule SwarmCode.Daemon.Service.Elsewhere do
   shell watch (`elsewhere` delta and `ShellSnapshot.elsewhere`).
 
   A quit stops every live run of the VM and a person can be waited for in any
-  conversation, but a client's read model holds the shown conversation only.
-  `facts/1` reads the engine's own books (the run registry, the waits table)
-  for every other conversation; `body/1` is the wire form.
+  conversation, but a client's read model is a normalized cache of what its
+  watches loaded: it keeps the rows of an inspector that was closed, and its
+  runs page holds the newest 200 only. Neither is a count of what is live, so
+  exact session liveness comes from this shell fact: `facts/1` reads the
+  engine's own books (the run registry, the waits table); `body/1` is the wire
+  form.
 
-    * `live`: every live run outside the shown conversation, exact.
-    * `waiting`: the approvals and questions waiting there, newest 32, each
-      named by its node and carrying the conversation's title.
+    * `total`: every live run of the session, in every conversation. The quit
+      confirmation counts exactly this (it is what `Shutdown` stops).
+    * `live`: those outside the shown conversation, exact.
+    * `waiting`: the approvals and questions waiting outside it, newest 32,
+      each named by its node, carrying the conversation's title and `since`
+      (when it began to wait, unix microseconds), which orders waits for
+      whoever must tell a new one from one that left and came back into the
+      32.
   """
   import Ecto.Query, only: [from: 2]
 
@@ -24,17 +32,17 @@ defmodule SwarmCode.Daemon.Service.Elsewhere do
           id: binary(),
           run_id: binary(),
           conversation_id: binary(),
-          kind: :approval | :question
+          kind: :approval | :question,
+          since: non_neg_integer()
         }
-  @type facts :: %{live: non_neg_integer(), waiting: [wait()]}
+  @type facts :: %{total: non_neg_integer(), live: non_neg_integer(), waiting: [wait()]}
 
-  @doc "The facts of every conversation but `current`."
+  @doc "The facts of the session; `live` and `waiting` leave out `current`'s conversation."
   @spec facts(binary() | nil) :: facts()
   def facts(current) do
-    live =
-      SwarmCode.Domain.Registry
-      |> Registry.select([{{{:run, :_}, :_, {:"$1", :_}}, [], [:"$1"]}])
-      |> Enum.count(&(is_binary(&1) and &1 != current))
+    runs = Registry.select(SwarmCode.Domain.Registry, [{{{:run, :_}, :_, :"$1"}, [], [:"$1"]}])
+
+    live = Enum.count(runs, &match?({id, _kind} when is_binary(id) and id != current, &1))
 
     waiting =
       for wait <- Questions.list(),
@@ -44,21 +52,26 @@ defmodule SwarmCode.Daemon.Service.Elsewhere do
           id: wait.node_id,
           run_id: wait.run_id,
           conversation_id: wait.conversation_id,
-          kind: if(wait.kind == :approval, do: :approval, else: :question)
+          kind: if(wait.kind == :approval, do: :approval, else: :question),
+          since: since(wait.since)
         }
       end
 
-    %{live: live, waiting: Enum.take(waiting, -@waits)}
+    %{total: length(runs), live: live, waiting: Enum.take(waiting, -@waits)}
   rescue
-    ArgumentError -> %{live: 0, waiting: []}
+    ArgumentError -> %{total: 0, live: 0, waiting: []}
   end
+
+  defp since(%DateTime{} = at), do: max(DateTime.to_unix(at, :microsecond), 0)
+  defp since(_other), do: 0
 
   @doc "The wire body of `facts`; a conversation without a title reads `Untitled`."
   @spec body(facts()) :: map()
-  def body(%{live: live, waiting: waiting}) do
+  def body(%{total: total, live: live, waiting: waiting}) do
     titles = titles(waiting |> Enum.map(& &1.conversation_id) |> Enum.uniq())
 
     %{
+      "total" => total,
       "live" => live,
       "waiting" =>
         for wait <- waiting do
@@ -67,7 +80,8 @@ defmodule SwarmCode.Daemon.Service.Elsewhere do
             "run_id" => wait.run_id,
             "conversation_id" => wait.conversation_id,
             "kind" => Atom.to_string(wait.kind),
-            "title" => Map.get(titles, wait.conversation_id, "Untitled")
+            "title" => Map.get(titles, wait.conversation_id, "Untitled"),
+            "since" => wait.since
           }
         end
     }

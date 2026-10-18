@@ -3,7 +3,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ElsewhereWait do
   pass76: one approval or question that waits on the user in a conversation
   other than the one shown (a row of `DTO.Elsewhere`). `id` is the waiting
   node, which the shown conversation's interaction of the same request also
-  carries; `title` is the conversation's.
+  carries; `title` is the conversation's; `since` is when the wait began
+  (unix microseconds), so `{since, id}` orders waits and a client can tell a
+  request it has not seen from one that left the newest 32 and came back.
   """
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
     fields: [
@@ -11,13 +13,15 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ElsewhereWait do
       run_id: :id,
       conversation_id: :id,
       kind: {:enum, [:approval, :question]},
-      title: {:text, 256}
+      title: {:text, 256},
+      since: :count
     ],
     defaults: [
       id: nil,
       run_id: nil,
       conversation_id: nil,
       kind: :approval,
-      title: ""
+      title: "",
+      since: 0
     ]
 end

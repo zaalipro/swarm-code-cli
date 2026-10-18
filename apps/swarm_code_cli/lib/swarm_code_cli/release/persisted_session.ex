@@ -71,15 +71,17 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
   @typedoc """
   A failure the user reads: exit status, one sentence, one action. `:code` is
-  the `StartupError` code of a startup refusal and `:reason` the atom of a
-  session failure; `Release.Reasons.for_failure/1` turns them into the
-  `reason` word of `-p --json`.
+  the `StartupError` code of a startup refusal (`:cause` its typed cause, when
+  it has one) and `:reason` the atom of a session failure;
+  `Release.Reasons.for_failure/1` turns them into the `reason` word of
+  `-p --json`.
   """
   @type failure :: %{
           required(:status) => 1..3,
           required(:message) => String.t(),
           required(:action) => String.t(),
           optional(:code) => atom(),
+          optional(:cause) => atom(),
           optional(:reason) => atom()
         }
 
@@ -1364,7 +1366,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     Logger.error("startup refused: #{error.code}: #{error.message} #{error.action}")
     {message, action} = startup_words(error.code, error, boot)
     # pass74 S1-14: `ncode config` answers a held lease with its own words.
-    @exit_refused |> failure(message, action) |> Map.put(:code, error.code)
+    failure = @exit_refused |> failure(message, action) |> Map.put(:code, error.code)
+    if error.cause, do: Map.put(failure, :cause, error.cause), else: failure
   end
 
   defp startup_failure(reason, _boot) do

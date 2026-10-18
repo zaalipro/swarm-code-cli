@@ -492,6 +492,10 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
         )
 
       session = child_update(session, continuation)
+      # The recheck timer reads the flag on its own schedule: the one-shot must
+      # have heard the continuation before the process is reported gone, or it
+      # (rightly) concludes on the two ended rows and asks for the completion.
+      _ = :sys.get_state(session.owner)
       Agent.update(context.alive, fn _ -> false end)
       refute_completion_query()
 

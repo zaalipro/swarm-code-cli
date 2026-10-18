@@ -2436,11 +2436,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end)
   end
 
-  # pass76: the live runs and waits of the other conversations. A trigger (a
-  # run of any conversation changed status, a wait appeared or went) arms one
-  # settle timer; a status event can reach us before the run is registered or
-  # before its process is gone, so the settled reading is checked once more,
-  # and then every 2 s while a run lives elsewhere. Nothing is read or armed
+  # pass76: the session's live runs (`total`, which the quit confirmation
+  # counts) and the live runs and waits of the other conversations. A trigger
+  # (a run of any conversation changed status, a wait appeared or went) arms
+  # one settle timer; a status event can reach us before the run is registered
+  # or before its process is gone, so the settled reading is checked once
+  # more, and then every 2 s while a run lives. Nothing is read or armed
   # unless a client is on the shell watch. The timer is this process's own and
   # `terminate/2` cancels it.
   @elsewhere_settle_ms 250
@@ -2469,7 +2470,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       facts = Elsewhere.facts(state.opts[:conversation_id])
       state = if facts == state.elsewhere, do: state, else: send_elsewhere(state, facts)
 
-      if kind == :settle or facts.live > 0,
+      if kind == :settle or facts.total > 0,
         do: %{state | elsewhere_timer: elsewhere_timer(@elsewhere_recheck_ms, :recheck)},
         else: state
     else

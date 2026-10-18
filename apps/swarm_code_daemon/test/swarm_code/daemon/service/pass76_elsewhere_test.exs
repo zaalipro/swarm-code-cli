@@ -1,9 +1,11 @@
 defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
   @moduledoc """
   pass76 cli-quit-attention: the persisted service tells the shell watch what
-  the session's other conversations hold (live runs, approvals and questions
-  waiting), in the shell snapshot and as an `elsewhere` delta whenever it
-  changes; the quit's list of stopped runs names each run's conversation.
+  the session holds (every live run, and the live runs, approvals and
+  questions waiting in the other conversations), in the shell snapshot and as
+  an `elsewhere` delta whenever it changes; the quit's list of stopped runs
+  names each run's conversation. The count comes from the run registry, never
+  from the rows a client cached.
   """
   use ExUnit.Case, async: false
   alias SwarmCode.Daemon.Service.Elsewhere
@@ -146,7 +148,7 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
 
   describe "the facts" do
     test "count the live runs and list the waits of every conversation but the shown one", c do
-      assert Elsewhere.facts(c.shown.id) == %{live: 0, waiting: []}
+      assert Elsewhere.facts(c.shown.id) == %{total: 0, live: 0, waiting: []}
 
       {_mine, _} = live_run(c.shown.id)
       {run_a, _} = live_run(c.other.id)
@@ -160,11 +162,14 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
       Questions.put(c.shown.id, mine, Ecto.UUID.generate(), :approval)
       on_exit(fn -> Questions.delete_run(mine) end)
 
-      assert %{live: 3, waiting: [wait]} = Elsewhere.facts(c.shown.id)
-      assert wait == %{id: node, run_id: run_a, conversation_id: c.other.id, kind: :approval}
+      assert %{total: 4, live: 3, waiting: [wait]} = Elsewhere.facts(c.shown.id)
+
+      assert %{id: ^node, run_id: ^run_a, kind: :approval, since: since} = wait
+      assert wait.conversation_id == c.other.id
+      assert is_integer(since) and since > 0
 
       # Seen from the other conversation, the shown one's run and wait count.
-      assert %{live: 2, waiting: [%{kind: :approval, conversation_id: shown}]} =
+      assert %{total: 4, live: 2, waiting: [%{kind: :approval, conversation_id: shown}]} =
                Elsewhere.facts(c.other.id)
 
       assert shown == c.shown.id
@@ -180,9 +185,37 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
 
       on_exit(fn -> Enum.each(runs, &Questions.delete_run/1) end)
 
-      assert %{live: 40, waiting: waiting} = Elsewhere.facts(c.shown.id)
+      assert %{total: 40, live: 40, waiting: waiting} = Elsewhere.facts(c.shown.id)
       assert length(waiting) == 32
       assert Enum.all?(waiting, &(&1.kind == :question))
+
+      # Newest first from the tail: `since` never goes backwards along the list.
+      assert Enum.map(waiting, & &1.since) == waiting |> Enum.map(& &1.since) |> Enum.sort()
+    end
+
+    test "count every registered run of the session, whatever the rows say", c do
+      # The shown conversation's runs count in the total and not in `live`.
+      {_a, _} = live_run(c.shown.id)
+      {_b, _} = live_run(c.shown.id, "swarm")
+      assert %{total: 2, live: 0} = Elsewhere.facts(c.shown.id)
+
+      # Runs that finished left rows, not registry entries: any number of them
+      # (the client's runs page is the newest 200) changes nothing.
+      for n <- 1..201 do
+        {:ok, _run} =
+          Conversations.insert_run_row(%{
+            conversation_id: c.shown.id,
+            kind: "chat",
+            prompt: "done #{n}",
+            status: "done",
+            started_at: DateTime.utc_now()
+          })
+      end
+
+      assert %{total: 2, live: 0} = Elsewhere.facts(c.shown.id)
+
+      # Without a shown conversation every run is elsewhere.
+      assert %{total: 2, live: 2} = Elsewhere.facts(nil)
     end
 
     test "go on the wire with the conversation's title", c do
@@ -191,12 +224,16 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
       Questions.put(c.other.id, run, node, :question)
       on_exit(fn -> Questions.delete_run(run) end)
 
+      {_mine, _} = live_run(c.shown.id)
       body = c.shown.id |> Elsewhere.facts() |> Elsewhere.body()
 
-      assert {:ok, %DTO.Elsewhere{live: 0, waiting: [wait]}} = DTO.Elsewhere.decode(body)
+      assert {:ok, %DTO.Elsewhere{total: 1, live: 0, waiting: [wait]}} =
+               DTO.Elsewhere.decode(body)
 
       assert {wait.id, wait.run_id, wait.conversation_id, wait.kind, wait.title} ==
                {node, run, c.other.id, :question, "Other work"}
+
+      assert wait.since > 0
     end
   end
 
@@ -209,8 +246,29 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
 
       {"shell_snapshot", body} = watch!(c.backend, "shell", global(), "shell")
 
-      assert %DTO.Elsewhere{live: 1, waiting: [%DTO.ElsewhereWait{title: "Third work"}]} =
+      assert %DTO.Elsewhere{total: 1, live: 1, waiting: [%DTO.ElsewhereWait{title: "Third work"}]} =
                snapshot_fact(body)
+    end
+
+    test "its total counts a live run that the runs page leaves out", c do
+      {_run, _} = live_run(c.shown.id)
+
+      # The run is the oldest of the conversation: 210 newer finished rows
+      # push it out of the newest-200 page a client loads.
+      for n <- 1..210 do
+        {:ok, _} =
+          Conversations.insert_run_row(%{
+            conversation_id: c.shown.id,
+            kind: "chat",
+            prompt: "done #{n}",
+            status: "done",
+            started_at: DateTime.utc_now()
+          })
+      end
+
+      {"shell_snapshot", body} = watch!(c.backend, "shell", global(), "shell")
+
+      assert %DTO.Elsewhere{total: 1, live: 0} = snapshot_fact(body)
     end
 
     test "a run starting and ending in another conversation moves it", c do
@@ -218,15 +276,27 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
 
       {_run, pid} = live_run(c.other.id)
       status_changed(c.other.id)
-      assert %DTO.Elsewhere{live: 1, waiting: []} = elsewhere!()
+      assert %DTO.Elsewhere{total: 1, live: 1, waiting: []} = elsewhere!()
 
       finish(pid)
       status_changed(c.other.id, "done")
-      assert %DTO.Elsewhere{live: 0, waiting: []} = elsewhere!()
+      assert %DTO.Elsewhere{total: 0, live: 0, waiting: []} = elsewhere!()
 
       # Nothing changed, so nothing more is said.
       status_changed(c.other.id, "done")
       refute_receive {:service_delta, _, "shell", %{"kind" => "elsewhere"}}, 600
+    end
+
+    test "a run starting and ending in the shown conversation moves the total alone", c do
+      watch!(c.backend, "shell", global(), "shell")
+
+      {_run, pid} = live_run(c.shown.id)
+      status_changed(c.shown.id)
+      assert %DTO.Elsewhere{total: 1, live: 0, waiting: []} = elsewhere!()
+
+      finish(pid)
+      status_changed(c.shown.id, "done")
+      assert %DTO.Elsewhere{total: 0, live: 0, waiting: []} = elsewhere!()
     end
 
     test "a wait appearing and clearing elsewhere is told, naming where", c do
@@ -237,12 +307,12 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
 
       Questions.put(c.other.id, run, node, :approval)
 
-      assert %DTO.Elsewhere{live: 1, waiting: [wait]} = elsewhere!()
+      assert %DTO.Elsewhere{total: 1, live: 1, waiting: [wait]} = elsewhere!()
       assert {wait.id, wait.run_id, wait.kind, wait.title} == {node, run, :approval, "Other work"}
 
       Questions.delete(run, node)
       finish(pid)
-      assert %DTO.Elsewhere{live: 0, waiting: []} = elsewhere!()
+      assert %DTO.Elsewhere{total: 0, live: 0, waiting: []} = elsewhere!()
     end
 
     test "a wait in the shown conversation is not elsewhere", c do
@@ -263,7 +333,17 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
       # The process leaves after the last status event: nothing triggers the
       # next reading but the owned recheck timer.
       finish(pid)
-      assert %DTO.Elsewhere{live: 0} = elsewhere!(5000)
+      assert %DTO.Elsewhere{total: 0, live: 0} = elsewhere!(5000)
+    end
+
+    test "a run of the shown conversation that ended without an event is corrected too", c do
+      watch!(c.backend, "shell", global(), "shell")
+      {_run, pid} = live_run(c.shown.id)
+      status_changed(c.shown.id)
+      assert %DTO.Elsewhere{total: 1, live: 0} = elsewhere!()
+
+      finish(pid)
+      assert %DTO.Elsewhere{total: 0, live: 0} = elsewhere!(5000)
     end
 
     test "only the shell watch hears it", c do
@@ -272,7 +352,7 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
       {_run, _} = live_run(c.other.id)
       status_changed(c.other.id)
 
-      assert %DTO.Elsewhere{live: 1} = elsewhere!()
+      assert %DTO.Elsewhere{total: 1, live: 1} = elsewhere!()
       refute_receive {:service_delta, _, "workspace", %{"kind" => "elsewhere"}}, 300
     end
 
@@ -282,7 +362,7 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
       {_run, _} = live_run(c.shown.id)
 
       {"shell_snapshot", body} = watch!(c.backend, "shell", global(), "shell")
-      assert %DTO.Elsewhere{live: 2} = snapshot_fact(body)
+      assert %DTO.Elsewhere{total: 3, live: 2} = snapshot_fact(body)
 
       assert {:ok, %{"value" => %{"status" => "accepted"}}} =
                request(c.backend, "open", global(), %ServiceRequest{
@@ -293,7 +373,7 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
 
       assert_receive {:service_resync, _, "shell"}, 2000
       {"shell_snapshot", body} = watch!(c.backend, "shell", global(), "shell")
-      assert %DTO.Elsewhere{live: 1} = snapshot_fact(body)
+      assert %DTO.Elsewhere{total: 3, live: 1} = snapshot_fact(body)
     end
 
     test "no timer runs, and nothing is read, without a shell watch", c do
@@ -303,7 +383,7 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
 
       watch!(c.backend, "shell", global(), "shell")
       state = :sys.get_state(c.backend)
-      assert state.elsewhere == %{live: 1, waiting: []}
+      assert state.elsewhere == %{total: 1, live: 1, waiting: []}
 
       send(c.backend, {:service_unwatch, self(), "shell"})
       state = :sys.get_state(c.backend)

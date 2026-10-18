@@ -4,6 +4,7 @@ defmodule SwarmCode.Daemon.Schema.RefusalTest do
   use ExUnit.Case, async: true
 
   alias SwarmCode.Daemon.Schema.Refusal
+  alias SwarmCode.Daemon.StartupError
 
   test "the database-ahead refusal names this CLI's version and keeps its code" do
     error = Refusal.database_ahead()
@@ -41,15 +42,13 @@ defmodule SwarmCode.Daemon.Schema.RefusalTest do
 
     quoted = Refusal.database_mode("/tmp/it's.db")
     assert quoted.action =~ "chmod 600 '/tmp/it'\\''s.db' "
-    # The sentence is the same for every path: the launcher recognises it by
-    # its message, the path travels in the action.
+    # The sentence is the same for every path, the path travels in the action.
     assert Refusal.database_mode("/other/swarm_code.db").message == error.message
   end
 
-  test "database_mode?/1 recognises the mode refusal for any path and no other" do
-    assert Refusal.database_mode?(Refusal.database_mode("/data/swarm_code.db"))
-    assert Refusal.database_mode?(Refusal.database_mode("/other/swarm_code.db"))
-    assert Refusal.database_mode?(%{message: Refusal.database_mode("").message})
+  test "only the mode refusal carries the typed cause, for any path" do
+    assert Refusal.database_mode("/data/swarm_code.db").cause == :database_mode
+    assert Refusal.database_mode("/other/swarm_code.db").cause == :database_mode
 
     for other <- [
           Refusal.database_ahead(),
@@ -57,11 +56,18 @@ defmodule SwarmCode.Daemon.Schema.RefusalTest do
           Refusal.damaged(),
           Refusal.desktop_upgrade_required()
         ] do
-      refute Refusal.database_mode?(other)
+      assert other.cause == nil
+    end
+  end
+
+  test "a cause outside the closed set is refused, and there is no sentence test" do
+    assert StartupError.causes() == [:database_mode]
+
+    assert_raise FunctionClauseError, fn ->
+      StartupError.new(:schema_incompatible, false, "m", "a", :invented)
     end
 
-    refute Refusal.database_mode?(%{message: nil})
-    refute Refusal.database_mode?(%{})
-    refute Refusal.database_mode?(nil)
+    assert StartupError.new(:schema_incompatible, false, "m", "a").cause == nil
+    refute function_exported?(Refusal, :database_mode?, 1)
   end
 end

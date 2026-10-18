@@ -2,8 +2,8 @@ defmodule SwarmCodeCLI.Release.ReasonsTest do
   @moduledoc """
   pass76 cli-reason-codes: `-p --json` and the stream-json summary name why a
   refusal or failure happened with a stable snake_case `reason`. The word comes
-  from the `StartupError` code (or a session failure's atom), never from the
-  sentence; exit codes and sentences are unchanged.
+  from the `StartupError` code and typed cause (or a session failure's atom),
+  never from the sentence; exit codes and sentences are unchanged.
   """
   use ExUnit.Case, async: true
   import ExUnit.CaptureIO
@@ -137,6 +137,33 @@ defmodule SwarmCodeCLI.Release.ReasonsTest do
       end
     end
 
+    test "the mode refusal's reason comes from its typed cause, not its sentence", %{boot: boot} do
+      canonical = Refusal.database_mode("/data/swarm_code.db")
+      assert canonical.cause == :database_mode
+
+      failure = startup(canonical, boot)
+      assert {failure.status, failure.cause} == {3, :database_mode}
+      assert Reasons.for_failure(failure) == "database_mode"
+
+      # Reworded, it is still the mode refusal ...
+      for message <- ["The database file has the wrong mode.", "x", String.duplicate("é", 300)] do
+        reworded = startup(%{canonical | message: message}, boot)
+        assert reworded.status == 3
+        assert Reasons.for_failure(reworded) == "database_mode"
+      end
+
+      # ... and the mode sentence on an error that has no such cause is not.
+      sentence = %{Refusal.damaged() | message: canonical.message}
+      assert Reasons.for_failure(startup(sentence, boot)) == "schema_incompatible"
+
+      sentence =
+        StartupError.new(:schema_incompatible, false, canonical.message, canonical.action)
+
+      failure = startup(sentence, boot)
+      assert failure.message == canonical.message
+      assert Reasons.for_failure(failure) == "schema_incompatible"
+    end
+
     test "the unsafe data folder codes share data_folder_unsafe", %{boot: boot} do
       for code <- [:private_directory_failed, :path_resolution_failed, :lease_failed] do
         failure = startup(StartupError.new(code, false, "m", "a"), boot)
@@ -257,6 +284,29 @@ defmodule SwarmCodeCLI.Release.ReasonsTest do
         assert %{"type" => "summary", "reason" => ^word, "exit_code" => 3} =
                  Jason.decode!(stdout)
       end
+    end
+
+    test "stay the same when the human message changes, in both formats", %{boot: boot} do
+      canonical = Refusal.database_mode("/data/swarm_code.db")
+
+      reworded = [
+        {"database_mode", %{canonical | message: "Wrong permissions on the database."}},
+        {"database_mode", %{canonical | message: "", action: "x"}},
+        {"schema_incompatible", %{Refusal.damaged() | message: canonical.message}}
+      ]
+
+      for {word, error} <- reworded, mode <- [:json, :stream_json] do
+        failure = startup(error, boot)
+        {stdout, _stderr} = refuse({:prompt, "hi", mode}, failure)
+
+        assert %{"reason" => ^word, "exit_code" => 3} = Jason.decode!(stdout), inspect(mode)
+      end
+
+      # The production sentence and exit status are the same as before.
+      failure = startup(canonical, boot)
+      assert failure.status == 3
+      assert failure.message == "Your conversations database file has the wrong permissions."
+      assert failure.action =~ "chmod 600 /data/swarm_code.db"
     end
 
     test "text mode still prints no object", %{boot: boot} do

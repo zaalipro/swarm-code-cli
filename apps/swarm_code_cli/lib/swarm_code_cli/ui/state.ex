@@ -20,8 +20,9 @@ defmodule SwarmCodeCLI.UI.State do
     # pass70-E fields: the composer-first keyboard, approvals and history.
     # The id of the running "press Ctrl-C again to quit" timer, nil when unarmed.
     quit_armed: nil,
-    # Live runs the quit confirmation is about; the dialog says "Stop N live
-    # runs and quit?" when this is above zero.
+    # Live runs the quit confirmation is about (the whole session's, from
+    # `ReadModel.elsewhere` once the daemon has said); the dialog says "Stop N
+    # live runs and quit?" when this is above zero.
     quit_live_runs: 0,
     # How many of those are in conversations other than the one shown
     # (`ReadModel.elsewhere`); the dialog says so.
@@ -184,6 +185,11 @@ defmodule SwarmCodeCLI.UI.State do
     notice_ms: 6_000,
     hint_letters: ~w(s f g h j k l w e r t u i o p),
     last_bell_at: nil,
+    # pass76: the newest `{since, run_id, id}` of the waits in other
+    # conversations that were told or taken as known (the high-water mark of
+    # `Reducer.Attention`): a wait at or below it is not news, however often
+    # it leaves and re-enters the daemon's newest-32 window. nil: none yet.
+    elsewhere_mark: nil,
     terminal_title: nil,
     title_done?: false,
     library: nil,
