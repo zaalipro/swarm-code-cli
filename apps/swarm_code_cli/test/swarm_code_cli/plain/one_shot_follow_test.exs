@@ -74,6 +74,7 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
     assert %{
              "exit_code" => 0,
              "state" => "done",
+             "reason" => nil,
              "runs" => [
                %{"id" => run_id, "launched" => false},
                %{"id" => @swarm, "kind" => "swarm", "state" => "done", "launched" => true}
@@ -101,8 +102,13 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
 
     assert code(session) == 1
 
-    assert %{"exit_code" => 1, "state" => "failed", "error" => error, "runs" => runs} =
-             json(context)
+    assert %{
+             "exit_code" => 1,
+             "state" => "failed",
+             "reason" => "run_failed",
+             "error" => error,
+             "runs" => runs
+           } = json(context)
 
     assert error == ~s(the swarm "use 4 agents to review" failed: worker crashed)
     assert Enum.map(runs, & &1["state"]) == ["done", "failed"]
@@ -165,8 +171,13 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
     complete(session, [run(:done), paused], [])
     assert code(session) == 1
 
-    assert %{"exit_code" => 1, "state" => "paused", "error" => error, "runs" => runs} =
-             json(context)
+    assert %{
+             "exit_code" => 1,
+             "state" => "paused",
+             "reason" => "paused_workflow",
+             "error" => error,
+             "runs" => runs
+           } = json(context)
 
     assert error =~ ~s(the workflow "review flow" paused: The model provider has been unreachable)
     assert Enum.map(runs, & &1["state"]) == ["done", "paused"]

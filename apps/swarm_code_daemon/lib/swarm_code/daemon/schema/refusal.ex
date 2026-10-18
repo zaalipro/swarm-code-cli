@@ -70,6 +70,17 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
     )
   end
 
+  @doc """
+  Whether `failure` (a `StartupError` or anything carrying its `message`) is
+  the mode refusal. The five refusals share one code, so the sentence, which
+  is the same for every path, is the only thing that tells this one apart.
+  """
+  @spec database_mode?(term()) :: boolean()
+  def database_mode?(%{message: message}) when is_binary(message),
+    do: message == database_mode("").message
+
+  def database_mode?(_failure), do: false
+
   # A path with a space (`Application Support`) or a quote must paste as one word.
   defp shell_word(path) do
     if path =~ ~r{\A[A-Za-z0-9_/.,:@%+=-]+\z},

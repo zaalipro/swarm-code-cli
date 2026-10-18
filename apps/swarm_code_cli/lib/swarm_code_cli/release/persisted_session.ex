@@ -69,8 +69,19 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   @log_bytes 2_097_152
   @log_files 3
 
-  @typedoc "A failure the user reads: exit status, one sentence, one action."
-  @type failure :: %{status: 1..3, message: String.t(), action: String.t()}
+  @typedoc """
+  A failure the user reads: exit status, one sentence, one action. `:code` is
+  the `StartupError` code of a startup refusal and `:reason` the atom of a
+  session failure; `Release.Reasons.for_failure/1` turns them into the
+  `reason` word of `-p --json`.
+  """
+  @type failure :: %{
+          required(:status) => 1..3,
+          required(:message) => String.t(),
+          required(:action) => String.t(),
+          optional(:code) => atom(),
+          optional(:reason) => atom()
+        }
 
   @doc "Runs the packaged TUI session. Returns the process exit status; never raises."
   @spec run() :: non_neg_integer()
@@ -225,6 +236,12 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   # cli020 B15: the failure a session reason becomes (tests).
   @spec session_failure_for(atom()) :: failure()
   def session_failure_for(reason), do: session_failure(reason, nil)
+
+  @doc false
+  # The failure a storage start refusal becomes (tests). `boot` names where
+  # the lease owner record is read; never pass nil outside a sandbox.
+  @spec startup_failure_for(term(), term()) :: failure()
+  def startup_failure_for(error, boot), do: startup_failure(error, boot)
 
   @doc """
   pass72 G17 (QA Q17): writes the closing words, but never waits more than
@@ -387,7 +404,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
          failure(
            @exit_usage,
            "No conversation of this project matches #{value}.",
-           "Give a title, or 6 or more characters of an id; ncode --resume alone opens the picker."
+           "Give a title, or 6 or more characters of an id; ncode --resume alone opens the picker.",
+           :conversation_not_found
          )}
 
       {:error, {:ambiguous, n, rows}} ->
@@ -397,7 +415,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
          failure(
            @exit_usage,
            "--resume #{value} matches #{n} conversations.",
-           Enum.join(lines ++ ["Name more of the id, or run ncode --resume to pick."], "\n")
+           Enum.join(lines ++ ["Name more of the id, or run ncode --resume to pick."], "\n"),
+           :conversation_ambiguous
          )}
     end
   end
@@ -1266,13 +1285,18 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
        failure(
          @exit_failure,
          "ncode stopped unexpectedly.",
-         "Run it again; your conversation is saved."
+         "Run it again; your conversation is saved.",
+         :unexpected_error
        )}
   end
 
   defp fail!(status, message, action), do: throw({__MODULE__, failure(status, message, action)})
 
-  defp failure(status, message, action), do: %{status: status, message: message, action: action}
+  # `reason` is an atom written at the call site (see `Release.Reasons`).
+  defp failure(status, message, action, reason \\ nil) do
+    failure = %{status: status, message: message, action: action}
+    if reason, do: Map.put(failure, :reason, reason), else: failure
+  end
 
   defp preflight! do
     unless System.argv() == [],
@@ -1343,7 +1367,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp startup_failure(reason, _boot) do
     Logger.error("guarded storage did not start: #{inspect(reason)}")
     {message, action} = storage_words(reason)
-    failure(@exit_refused, message, action)
+    failure(@exit_refused, message, action, storage_reason(reason))
   end
 
   @doc false
@@ -1413,6 +1437,11 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       {"ncode could not open your conversations database.",
        "Close other ncode windows and run ncode again."}
 
+  defp storage_reason(reason) when reason in [:migration_failed, :migration_timeout],
+    do: :migration_failed
+
+  defp storage_reason(_reason), do: :database_unavailable
+
   # pass74 S1-13 (D11): the exit-3 words name the settings command.
   defp session_failure(:provider_required, _),
     do:
@@ -1449,7 +1478,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       failure(
         @exit_usage,
         unknown_model_words(System.get_env("SWARM_MODEL_OVERRIDE")),
-        "Use a model from /model, or provider/model."
+        "Use a model from /model, or provider/model.",
+        :unknown_model
       )
 
   defp session_failure(:conversation_not_found, _),
@@ -1457,7 +1487,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       failure(
         @exit_usage,
         "That conversation is not part of this project.",
-        "Use ncode --continue, or --resume with an id from this project."
+        "Use ncode --continue, or --resume with an id from this project.",
+        :conversation_not_found
       )
 
   defp session_failure(:invalid_project, _),
@@ -1465,7 +1496,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       failure(
         @exit_usage,
         "That project directory cannot be opened.",
-        "Name a readable directory."
+        "Name a readable directory.",
+        :invalid_project
       )
 
   defp session_failure(reason, _selection) do

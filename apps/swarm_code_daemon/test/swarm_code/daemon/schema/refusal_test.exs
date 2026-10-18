@@ -45,4 +45,23 @@ defmodule SwarmCode.Daemon.Schema.RefusalTest do
     # its message, the path travels in the action.
     assert Refusal.database_mode("/other/swarm_code.db").message == error.message
   end
+
+  test "database_mode?/1 recognises the mode refusal for any path and no other" do
+    assert Refusal.database_mode?(Refusal.database_mode("/data/swarm_code.db"))
+    assert Refusal.database_mode?(Refusal.database_mode("/other/swarm_code.db"))
+    assert Refusal.database_mode?(%{message: Refusal.database_mode("").message})
+
+    for other <- [
+          Refusal.database_ahead(),
+          Refusal.not_a_database(),
+          Refusal.damaged(),
+          Refusal.desktop_upgrade_required()
+        ] do
+      refute Refusal.database_mode?(other)
+    end
+
+    refute Refusal.database_mode?(%{message: nil})
+    refute Refusal.database_mode?(%{})
+    refute Refusal.database_mode?(nil)
+  end
 end

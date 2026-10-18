@@ -11,7 +11,7 @@ defmodule SwarmCodeCLI.Release do
   Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
   """
 
-  alias SwarmCodeCLI.Release.Headless
+  alias SwarmCodeCLI.Release.{Headless, Reasons}
 
   @compile {:no_warn_undefined, [SwarmCode.Domain.Paths]}
 
@@ -183,7 +183,7 @@ defmodule SwarmCodeCLI.Release do
         else
           {:error, message} ->
             IO.puts(:stderr, "ncode: " <> message)
-            Headless.json_failure(options.format, message, 2)
+            Headless.json_failure(options.format, message, 2, Reasons.get(:usage))
         end
     end
   end

@@ -36,8 +36,13 @@ defmodule SwarmCodeCLI.Plain.OneShotFlagsTest do
     decoded = Enum.map(lines, &Jason.decode!/1)
     assert length(decoded) >= 2
 
-    assert %{"type" => "summary", "text" => "hello", "exit_code" => 0, "state" => "done"} =
-             List.last(decoded)
+    assert %{
+             "type" => "summary",
+             "text" => "hello",
+             "exit_code" => 0,
+             "state" => "done",
+             "reason" => nil
+           } = List.last(decoded)
 
     records = Enum.drop(decoded, -1)
     assert Enum.all?(records, &match?(%{"stream" => _, "text" => _}, &1))

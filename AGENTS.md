@@ -49,7 +49,7 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | Real unsaved session | `scripts/dev/run_live_session.sh` |
 | Headless session, one command per line on stdin | `scripts/dev/run_plain_session.sh [--ndjson]` |
 | Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `ncode` |
-| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9) |
+| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9); `-p --json` and stream-json name the cause of a non-zero exit in `reason` (`Release.Reasons`, pass 76) |
 | Settings (pass 74) | `ncode settings [QUERY]` opens the layer (`/settings`, F2); `ncode config help` lists the headless commands (`list/get/set/reset/keys/path/records/record/secret --stdin/search/mcp/export/import/doctor`) |
 | Re-derive the desktop domain | `mise exec -- mix swarm_code.provenance.sync --ref <desktop sha>` (read-only `git` on `~/dev/swarm-code` or `$SWARM_CODE_UPSTREAM`); `--check` verifies (in precommit) |
 | Re-pin a hand-edited ledger file outside the sync mappings | `mise exec -- mix swarm_code.provenance.repin <path> …` |
@@ -396,7 +396,19 @@ Headless and release (lane B):
   (`SWARM_STDIN_PIPED=1`, set only by the launcher); `-p -` reads the prompt from stdin.
   `--json`/`--output-format json` print one object even on failure (`state: not_started`);
   `--output-format stream-json` prints the `--plain --ndjson` records and ends with
-  `{"type":"summary",…}`. `--max-turns`/`--max-budget-usd` stop the owned run and every run
+  `{"type":"summary",…}`. Both objects carry a stable snake_case `reason` (pass 76): `null` when
+  `exit_code` is 0, else why (`data_lease_held`, `desktop_open`, `no_provider`,
+  `untrusted_approval`, `schema_incompatible`, `database_mode`, `run_failed`, `max_turns`,
+  `paused_workflow`, … the README's reason tables list every word; `Release.Reasons.all/0`
+  is the source and `entry/reasons_test.exs` pins the two together). A word is mapped from a
+  `StartupError` code, a session failure's `:reason` atom, a run's state or a stop kind the
+  one-shot names (`Reasons.for_failure/1`, `for_run/2`, `get/1`), never from a sentence, and
+  never creates an atom; an unlisted code is `startup_failed` (`usage` for exit 2, `run_failed`
+  for a run). Adding a word means a table row in `Reasons`, one in the README table and a test;
+  renaming or repurposing one breaks scripts. The launcher's own usage errors print
+  `"reason":"usage"` (`json_failure` in `rel/overlays/bin/ncode`). The five schema refusals
+  share the code `:schema_incompatible`, so `Schema.Refusal.database_mode?/1` is what tells
+  the mode refusal apart. `--max-turns`/`--max-budget-usd` stop the owned run and every run
   it launched (exit 1; the turn limit applies to each run's lead, the budget to their total
   cost); `--fail-on-denied` fails a done run that had denials. Denials are said in one stderr
   line. `-p` follows the runs its runs launch (`parent_run_id`, transitively: a swarm or
@@ -412,7 +424,9 @@ Headless and release (lane B):
   `auto`/`full` in an untrusted project before it writes the message, in the launcher's
   words); `/compact` has no tools, so no approval to carry.
 - **Exit codes:** 0 done, 1 failed, 2 usage, 3 refused, 4 changed elsewhere (`ncode config`),
-  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`).
+  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`). Exit 3 covers a held
+  lease, the open desktop, an untrusted `--approval`, no provider and every schema refusal; in
+  `-p --json` the `reason` field says which, the exit code and the sentence stay as they are.
 - `--resume` takes an exact title or a 6+ character id prefix (`SessionSelection.resolve/2`);
   bare `--resume` opens the picker (`SWARM_RESUME_PICKER=1`, TUI only).
 - The TUI exit summary (`PersistedSession.summary_text/1`) starts with `\r\e[2K` (it erases

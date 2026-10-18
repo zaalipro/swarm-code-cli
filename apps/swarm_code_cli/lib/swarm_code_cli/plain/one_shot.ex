@@ -43,6 +43,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     State
   }
 
+  alias SwarmCodeCLI.Release.Reasons
   alias SwarmCodeCLI.UI.DataSource
   alias SwarmCodeCLI.UI.DataSource.{DataBridge, Delivery, DTO, Request}
 
@@ -163,6 +164,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         fresh_line?: true,
         # This process stopped the run itself and has said why.
         stopped?: false,
+        # pass76: the `Release.Reasons` word of the first thing that made this
+        # process stop a run (a limit, a question, an approval nobody can answer).
+        stop_reason: nil,
         announced: MapSet.new(),
         details: [],
         sequence: 0
@@ -193,7 +197,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         {:noreply, state}
 
       _ ->
-        stop(finish(state, 1, "the saved session could not be opened."))
+        stop(
+          finish_with(state, :session_unavailable, 1, "the saved session could not be opened.")
+        )
     end
   end
 
@@ -208,7 +214,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     case safely(fn -> DataSource.consume(state.client, receipt, disposition) end) do
       :ok -> continue(next)
-      _ -> stop(finish(next, 1, "the session stopped answering."))
+      _ -> stop(finish_with(next, :session_unavailable, 1, "the session stopped answering."))
     end
   end
 
@@ -224,10 +230,14 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         {:swarm_code_ui_closed, client, epoch},
         %{client: client, epoch: epoch} = state
       ),
-      do: stop(finish(state, 1, "the session closed before the run finished."))
+      do:
+        stop(
+          finish_with(state, :session_closed, 1, "the session closed before the run finished.")
+        )
 
   def handle_info({:DOWN, monitor, :process, _, _}, %{client_monitor: monitor} = state),
-    do: stop(finish(state, 1, "the session closed before the run finished."))
+    do:
+      stop(finish_with(state, :session_closed, 1, "the session closed before the run finished."))
 
   # The source answers every request, if only with a failure; one that never
   # does must not keep the command waiting.
@@ -240,7 +250,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       when signal in [:sigterm, :sighup] and phase != :finished do
     state = if state.ui, do: Enum.reduce(tracked(state), state, &signal_stop/2), else: state
     words = SwarmCodeCLI.Release.Signals.words(signal)
-    stop(finish(state, SwarmCodeCLI.Release.Signals.exit_code(signal), words))
+    stop(finish_with(state, signal, SwarmCodeCLI.Release.Signals.exit_code(signal), words))
   end
 
   def handle_info(_, state), do: {:noreply, state}
@@ -295,7 +305,12 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         %{state | phase: :running, runs: Enum.take(ids, 8)}
 
       _ ->
-        finish(state, 1, "the prompt was not sent: " <> outcome_words(outcome) <> ".")
+        finish_with(
+          state,
+          :prompt_not_sent,
+          1,
+          "the prompt was not sent: " <> outcome_words(outcome) <> "."
+        )
     end
   end
 
@@ -311,7 +326,12 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     if outcome.status == :accepted do
       state
     else
-      stop_run(state, interaction.run_id, "the approval could not be denied, so the run")
+      stop_run(
+        state,
+        interaction.run_id,
+        "the approval could not be denied, so the run",
+        :approval_required
+      )
     end
   end
 
@@ -325,7 +345,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         send_prompt(state)
 
       {:error, _} ->
-        finish(state, 1, "the conversation could not be opened.")
+        finish_with(state, :session_unavailable, 1, "the conversation could not be opened.")
 
       _ ->
         state
@@ -387,13 +407,14 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         state
 
       Enum.any?(live, &turns_passed?(state, model, &1.id)) ->
-        limit_stop(state, "stopped after #{state.max_turns} turns.")
+        limit_stop(state, :max_turns, "stopped after #{state.max_turns} turns.")
 
       is_number(state.max_budget_usd) and cost > state.max_budget_usd ->
         subject = if length(runs) == 1, do: "the run", else: "the runs"
 
         limit_stop(
           state,
+          :max_budget,
           "stopped at --max-budget-usd #{budget(state.max_budget_usd)} " <>
             "(#{subject} cost $#{:erlang.float_to_binary(cost * 1.0, decimals: 2)})."
         )
@@ -415,7 +436,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp budget(x) when is_float(x), do: x |> Float.to_string() |> String.trim_trailing(".0")
   defp budget(x), do: to_string(x)
 
-  defp limit_stop(state, words) do
+  defp limit_stop(state, reason, words) do
+    state = note_stop_reason(state, reason)
+
     {state, sent?} =
       Enum.reduce(tracked(state), {state, false}, fn run_id, {state, sent?} ->
         if live_run?(state, run_id) do
@@ -428,8 +451,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       end)
 
     state = say(%{state | limited?: true}, words)
-    if sent?, do: %{state | stopped?: true}, else: finish(state, 1)
+    if sent?, do: %{state | stopped?: true}, else: finish_with(state, reason, 1)
   end
+
+  # The first cause wins: it is what the summary's `reason` says when the
+  # run then ends `stopped`.
+  defp note_stop_reason(state, reason),
+    do: %{state | stop_reason: state.stop_reason || Reasons.get(reason)}
 
   defp live_run?(state, run_id) do
     case Map.get(state.ui.read_model.runs, run_id) do
@@ -479,7 +507,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   # says so and sends nothing.
   defp send_prompt(%{prompt: prompt} = state) when is_binary(prompt) do
     if SwarmCodeCLI.UI.Keymap.settings_command?(prompt),
-      do: finish(state, 1, SwarmCodeCLI.Plain.Command.settings_words()),
+      do: finish_with(state, :prompt_not_sent, 1, SwarmCodeCLI.Plain.Command.settings_words()),
       else: send_line(state)
   end
 
@@ -494,12 +522,19 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)) do
       %{state | phase: :sending, dispatch: id}
     else
-      finish(state, 1, "the conversation cannot take a prompt right now" <> busy(state) <> ".")
+      finish_with(
+        state,
+        if(busy?(state), do: :conversation_busy, else: :prompt_not_sent),
+        1,
+        "the conversation cannot take a prompt right now" <> busy(state) <> "."
+      )
     end
   end
 
+  defp busy?(state), do: Keymap.live_turn(state.ui) != nil
+
   defp busy(state) do
-    if Keymap.live_turn(state.ui),
+    if busy?(state),
       do: " (a turn is still running; try --new)",
       else: ""
   end
@@ -625,12 +660,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     stop_run(
       state,
       item.run_id,
-      "the run asked \"#{prompt}\" and nobody is here to answer, so it"
+      "the run asked \"#{prompt}\" and nobody is here to answer, so it",
+      :question_asked
     )
   end
 
   defp answer(%{phase: :running, denials: denials} = state, item) when denials >= @max_denials,
-    do: stop_run(state, item.run_id, "#{@max_denials} approvals were denied, so the run")
+    do: stop_run(state, item.run_id, "#{@max_denials} approvals were denied, so the run", :denied)
 
   defp answer(%{phase: :running} = state, %DTO.PendingInteraction{kind: :approval} = item) do
     decisions = Keymap.decisions(item)
@@ -660,10 +696,15 @@ defmodule SwarmCodeCLI.Plain.OneShot do
             denied: Enum.take(state.denied ++ [what], 32)
         }
       else
-        stop_run(state, item.run_id, "#{what.label} could not be denied, so the run")
+        stop_run(
+          state,
+          item.run_id,
+          "#{what.label} could not be denied, so the run",
+          :approval_required
+        )
       end
     else
-      stop_run(state, item.run_id, "#{what.label} needs a person, so the run")
+      stop_run(state, item.run_id, "#{what.label} needs a person, so the run", :approval_required)
     end
   end
 
@@ -786,13 +827,14 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   # Stops the run and says why; a run this process cannot stop is left for
   # the session's close to stop, and the one-shot ends now.
-  defp stop_run(state, run_id, why) do
+  defp stop_run(state, run_id, why, reason) do
+    state = note_stop_reason(state, reason)
     id = elem(State.next_id(state.ui, :request), 0)
     {state, effects} = update(state, {:invoke, {:run_control, :stop, run_id}, id})
 
     if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)),
       do: say(%{state | stopped?: true}, why <> " was stopped."),
-      else: finish(state, 1, why <> " cannot continue; open ncode to answer it.")
+      else: finish_with(state, reason, 1, why <> " cannot continue; open ncode to answer it.")
   end
 
   # -- the end ----------------------------------------------------------------
@@ -925,12 +967,15 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     cond do
       runs == [] ->
-        finish(state, 1, "the run did not start.")
+        finish_with(state, :run_not_started, 1, "the run did not start.")
 
       Enum.all?(runs, &(&1.state == :done)) ->
         state = Enum.reduce(followed_runs(state, runs), state, &say(&2, run_words(state, &1)))
+
         # cli020 B3: `--fail-on-denied` fails a done run that had denials.
-        finish(state, if(state.fail_on_denied? and state.denied != [], do: 1, else: 0))
+        if state.fail_on_denied? and state.denied != [],
+          do: finish_with(state, :denied, 1),
+          else: finish(state, 0)
 
       true ->
         # Every run that did not finish is named, in order; the first line is
@@ -982,10 +1027,12 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp run_verb(_state, %DTO.RunSummary{state: state}), do: "ended #{state}."
 
-  defp finish(state, code, message \\ nil)
-  defp finish(%{phase: :finished} = state, _, _), do: state
+  # `reason` is a `Release.Reasons` word for a non-zero `code`; without one the
+  # summary names the stop this process made, else the run that did not finish.
+  defp finish(state, code, message \\ nil, reason \\ nil)
+  defp finish(%{phase: :finished} = state, _, _, _), do: state
 
-  defp finish(state, code, message) do
+  defp finish(state, code, message, reason) do
     state = if message, do: say(state, message), else: state
 
     state =
@@ -1001,10 +1048,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     case state.format do
       :json ->
-        write(state.output, [Jason.encode!(summary(state, code, message)), "\n"])
+        write(state.output, [Jason.encode!(summary(state, code, message, reason)), "\n"])
 
       :stream_json ->
-        summary = Map.put(summary(state, code, message), "type", "summary")
+        summary = Map.put(summary(state, code, message, reason), "type", "summary")
         write(state.output, [Jason.encode!(summary), "\n"])
 
       :text ->
@@ -1016,7 +1063,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     %{state | phase: :finished, mid_line?: false}
   end
 
-  defp summary(state, code, message) do
+  defp finish_with(state, key, code, message \\ nil),
+    do: finish(state, code, message, Reasons.get(key))
+
+  defp summary(state, code, message, reason) do
     runs = summary_runs(state)
     # The first run that did not finish speaks for the session; the first one
     # when all did.
@@ -1032,6 +1082,8 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       "conversation_id" => state.conversation,
       "run_id" => List.first(state.runs),
       "state" => if(run, do: Atom.to_string(run.state), else: "not_started"),
+      # pass76: why a non-zero exit happened, as a stable word (null when done).
+      "reason" => summary_reason(state, code, run, reason),
       # cli020 B5: the exact text; Jason escapes what JSON must, and a
       # script decides what reaches a terminal.
       "text" => text,
@@ -1044,6 +1096,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       "exit_code" => code
     }
   end
+
+  defp summary_reason(_state, 0, _run, _reason), do: nil
+  defp summary_reason(_state, _code, _run, reason) when is_binary(reason), do: reason
+  defp summary_reason(state, _code, run, nil), do: Reasons.for_run(run, state.stop_reason)
 
   defp summary_runs(%{final: [_ | _] = final}), do: final
   defp summary_runs(state), do: run_summaries(state)

@@ -155,7 +155,7 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
     {code, json, stderr} = one_shot(c)
 
     assert code == 0
-    assert %{"exit_code" => 0, "state" => "done", "runs" => [chat, swarm]} = json
+    assert %{"exit_code" => 0, "state" => "done", "reason" => nil, "runs" => [chat, swarm]} = json
     assert chat["launched"] == false and chat["state"] == "done"
     assert swarm["kind"] == "swarm" and swarm["state"] == "done" and swarm["launched"] == true
     assert swarm["parent_run_id"] == chat["id"]
@@ -171,7 +171,14 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
     {code, json, stderr} = one_shot(c)
 
     assert code == 1
-    assert %{"exit_code" => 1, "state" => "failed", "runs" => [chat, swarm]} = json
+
+    assert %{
+             "exit_code" => 1,
+             "state" => "failed",
+             "reason" => "run_failed",
+             "runs" => [chat, swarm]
+           } = json
+
     assert chat["state"] == "done"
     assert swarm["state"] == "failed"
     assert stderr =~ ~s(the swarm ")
@@ -201,7 +208,14 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
     assert Task.await(pauser, 30_000) == :ok
 
     assert code == 1
-    assert %{"exit_code" => 1, "state" => "paused", "runs" => [chat, flow]} = json
+
+    assert %{
+             "exit_code" => 1,
+             "state" => "paused",
+             "reason" => "paused_workflow",
+             "runs" => [chat, flow]
+           } = json
+
     assert chat["state"] == "done"
     assert flow["kind"] == "workflow" and flow["state"] == "paused"
     assert flow["parent_run_id"] == chat["id"]

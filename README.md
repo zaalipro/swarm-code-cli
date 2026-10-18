@@ -206,8 +206,8 @@ ncode [DIR] [--new | --continue | --resume ID] [--model M]
   as it streams (`-p -` reads the prompt from stdin). The project's approval mode
   applies; anything that would still need a person is denied, and a line on
   stderr says what (and, in full access, that nothing asks). A question stops the run. `--json` prints one object at the
-  end instead: `conversation_id`, `run_id`, `state`, `text`, `error`, `denied`,
-  `exit_code`.
+  end instead: `conversation_id`, `run_id`, `state`, `reason`, `text`, `error`,
+  `denied`, `exit_code`.
 - `--plain` is the line presenter for pipes, CI and SSH (one command per line,
   `help` lists them); it is chosen by itself when stdin or stdout is not a
   terminal. `--ndjson` prints one JSON record per line.
@@ -219,7 +219,76 @@ ncode [DIR] [--new | --continue | --resume ID] [--model M]
 ncode -p "summarise the open TODOs in lib/" > todos.md
 ncode -p "run the tests and fix what fails" --json | jq .state
 ncode -p - --model anthropic/claude-sonnet < review-request.md
+ncode -p "..." --json | jq -r '.reason // "ok"'
 ```
+
+With `--json` (or `--output-format stream-json`, whose last record is the same
+summary) a non-zero exit names its cause in `reason`, a snake_case word that
+scripts can branch on without reading the sentence. `reason` is `null` when the
+exit code is `0`. A refusal before any run began has `state: "not_started"`.
+The words below never change meaning; new ones may be added, so treat an
+unknown word like `startup_failed` (exit 3) or `run_failed` (exit 1).
+
+<!-- reasons:start -->
+
+Exit `3`, startup refused (nothing ran; the exit code and the sentence on stderr are unchanged):
+
+| Reason | Meaning |
+| --- | --- |
+| `data_lease_held` | Another `ncode` session holds your conversations database. |
+| `desktop_open` | The ncode app is open, and only one of them can use the database. |
+| `schema_incompatible` | The database comes from another ncode version, is not a database, or is damaged. |
+| `database_mode` | The database file's permissions are not `0600`. |
+| `data_folder_unsafe` | The private data folder is missing, not yours, or not mode `0700`. |
+| `desktop_check_failed` | `ncode` could not check whether the ncode app is running. |
+| `backup_failed` | The verified backup before a database upgrade could not be made. |
+| `migration_failed` | The database upgrade failed or timed out; the database was left as it was. |
+| `database_unavailable` | The conversations database could not be opened. |
+| `no_provider` | No model provider is set up. |
+| `no_endpoint` | `NCODE_BASE_URL` is missing. |
+| `no_model` | `NCODE_MODEL` is missing. |
+| `untrusted_approval` | `--approval auto` or `full` in a project that is not trusted. |
+| `startup_failed` | Any other startup failure (also the fallback). |
+
+Exit `2`, usage:
+
+| Reason | Meaning |
+| --- | --- |
+| `usage` | A bad flag, a missing value or an empty prompt on stdin. |
+| `unknown_model` | `--model` names a model no provider has. |
+| `conversation_not_found` | `--resume` names no conversation of this project. |
+| `conversation_ambiguous` | `--resume` matches several conversations. |
+| `invalid_project` | The project directory cannot be opened. |
+
+Exit `1`, the session or the run failed:
+
+| Reason | Meaning |
+| --- | --- |
+| `unexpected_error` | `ncode` stopped on an error it did not expect. |
+| `session_unavailable` | The saved session or the conversation could not be opened. |
+| `session_closed` | The session closed before the run finished. |
+| `prompt_not_sent` | The prompt was refused (for example `/settings` needs the full-screen view). |
+| `conversation_busy` | The conversation still has a turn running; use `--new`. |
+| `run_not_started` | The prompt started no run. |
+| `run_failed` | A run, or one it launched, failed. |
+| `run_stopped` | A run was stopped by someone else. |
+| `run_interrupted` | A run was interrupted. |
+| `run_paused` | A run is paused; `-p` does not resume it. |
+| `paused_workflow` | A workflow is paused (provider down or paused by hand); `ncode --resume ID`, then `/resume-run`. |
+| `max_turns` | `--max-turns` stopped the run. |
+| `max_budget` | `--max-budget-usd` stopped the run. |
+| `denied` | `--fail-on-denied` and a tool call was denied, or eight approvals were denied. |
+| `approval_required` | An approval nobody could give stopped the run. |
+| `question_asked` | The run asked a question and nobody could answer; `question` holds it. |
+
+Exit `129` and `143`, closed by a signal:
+
+| Reason | Meaning |
+| --- | --- |
+| `sighup` | The terminal closed (SIGHUP). |
+| `sigterm` | SIGTERM; the live runs were stopped. |
+
+<!-- reasons:end -->
 
 `ncode` loads provider settings from `~/.secrets` (or `NCODE_ENV_FILE`) when
 no key is exported, exactly like the development launchers, but always opens
