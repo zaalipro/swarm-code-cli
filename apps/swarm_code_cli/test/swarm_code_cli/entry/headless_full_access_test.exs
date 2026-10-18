@@ -5,7 +5,9 @@ defmodule SwarmCodeCLI.Entry.HeadlessFullAccessTest do
   says so once on stderr before the turn; the other modes and `--plain` say
   nothing new.
   """
-  use ExUnit.Case, async: true
+  # Not async: the empty-stderr assertion below captures the one named stderr
+  # device, which an async test writing to it meanwhile would fill.
+  use ExUnit.Case, async: false
   import ExUnit.CaptureIO
 
   alias SwarmCodeCLI.Release.Headless

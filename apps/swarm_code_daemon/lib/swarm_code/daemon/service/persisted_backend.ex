@@ -131,6 +131,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       SwarmCode.Domain.Storage.subscribe()
       # pass74 S1-10 (M3): cleanups keep back the conversation shown here.
       SwarmCode.Domain.UIState.opened(opts[:conversation_id])
+      ledger_started_at = DateTime.utc_now()
+      ledger_prune_ms = ledger_prune_ms(opts)
 
       state = %{
         opts: Keyword.put(opts, :project_root, root),
@@ -208,7 +210,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         elsewhere: nil,
         elsewhere_timer: nil,
         # cli020 C3 (bugs-19): the ledger prune this backend started (owned
-        # work under the job supervisor, never the init callback itself).
+        # work under the job supervisor, never the init callback itself),
+        # pass76: and the timer (`:erlang.start_timer` ref) of the next one.
         # cli020 C14: the clipboard image slots this session opened.
         clipboard_slots: %{},
         # cli020 C15: the running `!` command (one per conversation) and the
@@ -229,8 +232,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         ledger_prune:
           start_ledger_prune(
             Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
-            DateTime.utc_now()
+            ledger_started_at,
+            :start
           ),
+        ledger_started_at: ledger_started_at,
+        ledger_prune_ms: ledger_prune_ms,
+        ledger_timer: ledger_timer(ledger_prune_ms),
         # pass71 S2: running read jobs (task ref => job), where they run, and
         # the functions that do the slow work (tests inject blocking fakes).
         jobs: %{},
@@ -519,6 +526,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:DOWN, ref, :process, _, _}, %{ledger_prune: %Task{ref: ref}} = state),
     do: {:noreply, %{state | ledger_prune: nil}}
 
+  # pass76: the timer names its own ref, so a cancelled one that still delivers
+  # is stale. The next one is armed first: a failed pass is tried again later.
+  def handle_info({:timeout, ref, :ledger_prune_due}, %{ledger_timer: ref} = state) do
+    state = %{state | ledger_timer: ledger_timer(state.ledger_prune_ms)}
+    {:noreply, ledger_prune_due(state)}
+  end
+
+  def handle_info({:timeout, _stale, :ledger_prune_due}, state), do: {:noreply, state}
+
   # pass71 F8: a retry of a queued prompt whose start was refused.
   def handle_info({:drain_queue, conversation_id}, state) do
     if conversation_id == state.opts[:conversation_id],
@@ -778,6 +794,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def terminate(_, state) do
     Enum.each(state.queues.entries, fn {_id, entry} -> cancel_queue_effects(entry) end)
     cancel_jobs(state, wire_error(:source_unavailable))
+
+    with ref when is_reference(ref) <- Map.get(state, :ledger_timer),
+         do: Process.cancel_timer(ref)
+
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
     with %{task: %Task{} = task} <- Map.get(state, :git), do: Task.shutdown(task, :brutal_kill)
@@ -2904,12 +2924,34 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp clipboard_refusal(reason), do: reason
 
-  defp start_ledger_prune(supervisor, started_at) do
-    # cli020 C14: the same owned start-up work removes clipboard inbox files
-    # an earlier session left behind (older than an hour).
+  # pass76: the prune also runs every `@ledger_prune_ms` while the session
+  # lives, 5,000 rows at most per pass, as a task of its own (one at a time;
+  # a pass still running when the timer fires is left to finish). The timer is
+  # this process's and `terminate/2` cancels it.
+  @ledger_prune_ms 3_600_000
+
+  defp ledger_prune_ms(opts) do
+    case Keyword.get(opts, :ledger_prune_ms) do
+      ms when is_integer(ms) and ms > 0 -> ms
+      _ -> @ledger_prune_ms
+    end
+  end
+
+  defp ledger_timer(ms), do: :erlang.start_timer(ms, self(), :ledger_prune_due)
+
+  defp ledger_prune_due(%{ledger_prune: nil} = state) do
+    task = start_ledger_prune(state.task_supervisor, state.ledger_started_at, :tick)
+    %{state | ledger_prune: task}
+  end
+
+  defp ledger_prune_due(state), do: state
+
+  defp start_ledger_prune(supervisor, started_at, pass) do
     Task.Supervisor.async_nolink(supervisor, fn ->
-      ClipboardInbox.sweep(started_at)
-      CommandLedger.prune(started_at, started_at)
+      # cli020 C14: the same owned start-up work removes clipboard inbox files
+      # an earlier session left behind (older than an hour).
+      if pass == :start, do: ClipboardInbox.sweep(started_at)
+      CommandLedger.prune(DateTime.utc_now(), started_at)
     end)
   rescue
     _ -> nil

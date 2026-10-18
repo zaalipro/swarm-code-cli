@@ -5,7 +5,9 @@ defmodule SwarmCodeCLI.Release.HeadlessApprovalTest do
   untrusted project refuses `auto` and `full` (exit 3) before any service
   starts.
   """
-  use ExUnit.Case, async: true
+  # Not async: `capture_io(:stderr)` takes over the one named stderr device, so
+  # an async test writing to it meanwhile lands in the exact comparison below.
+  use ExUnit.Case, async: false
   import ExUnit.CaptureIO
 
   alias SwarmCodeCLI.Release

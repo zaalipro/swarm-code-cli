@@ -816,7 +816,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp stop_live_runs do
     if Process.whereis(SwarmCode.Domain.Registry) do
       %{stopped_runs: stopped} =
-        fun_with_deadline(fn -> SwarmCode.Daemon.Shutdown.run() end, 60_000)
+        fun_with_deadline(
+          fn -> SwarmCode.Daemon.Shutdown.run() end,
+          SwarmCode.Daemon.Shutdown.budget_ms()
+        )
 
       stopped
     else

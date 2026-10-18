@@ -119,7 +119,9 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   scheduler, MCP, settings). `SwarmCode.Daemon.*` wraps it: `FoundationGate` (canonical paths,
   process identity, private directories, signed macOS desktop detector, `CrossAppLease`, audited
   `Schema.Contract` probe, verified backup gate), `RepoLauncher`, and `Service.*` (owner-only Unix
-  socket `Connection`, `RequestRouter`, `CommandDispatcher`, durable `CommandLedger`,
+  socket `Connection`, `RequestRouter`, `CommandDispatcher`, durable `CommandLedger`
+  (`PersistedBackend` prunes it at start and then every hour on its own timer, 5,000 rows a
+  pass, as owned work; `terminate/2` cancels the timer),
   `PersistedBackend` for saved sessions vs `LiveBackend` for unsaved ones, projections).
   `Daemon.Boot` is the desktop's `Bootstrap` (interrupted runs, seeded providers, MCP, research
   sweep, attachment prune, delayed isolation sweep; never the Scheduler, which the desktop
@@ -427,6 +429,15 @@ Headless and release (lane B):
   129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`). Exit 3 covers a held
   lease, the open desktop, an untrusted `--approval`, no provider and every schema refusal; in
   `-p --json` the `reason` field says which, the exit code and the sentence stay as they are.
+  A signal hands the session its normal close and waits for it up to `Signals.deadline_ms/0`
+  (pass 76: `Daemon.Shutdown.budget_ms/0`, the sum of that shutdown's own phase deadlines plus a
+  margin, and 20 s for the stops around it; it was a fixed 10 s, which cut the shutdown short with
+  runs still `running`), then halts with the signal's code. A second signal halts at once, unless
+  it comes less than a second after the first (a closing terminal reaches the process through the
+  kernel and the shell both). `install/2` also removes OTP's SIGTERM answer (`init:stop/0` would
+  stop every application and exit 0 under the close) and keeps its SIGQUIT and SIGUSR1 halts.
+  `Shutdown.budget_ms/0` and `Signals.deadline_ms/0` move with the phase constants: do not
+  restate a number for them.
 - `--resume` takes an exact title or a 6+ character id prefix (`SessionSelection.resolve/2`);
   bare `--resume` opens the picker (`SWARM_RESUME_PICKER=1`, TUI only).
 - The TUI exit summary (`PersistedSession.summary_text/1`) starts with `\r\e[2K` (it erases
