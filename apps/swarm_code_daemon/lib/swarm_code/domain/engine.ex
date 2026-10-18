@@ -417,6 +417,9 @@ defmodule SwarmCode.Domain.Engine do
                kind: "compact",
                prompt: message,
                model: chat.model,
+               # CLI: the run whose continuation this compaction precedes
+               # (`compact_then_turn/4`), so `ncode -p` follows it as it follows the turn.
+               launched_by_run_id: opts[:launched_by_run_id],
                # Spec 50 §4 (merge): a compactor is never a planner — it reads the
                # history and writes one summary — so the run says `build` outright
                # rather than leaving the column nil for `Run.agent_name/1` to guess.
@@ -486,7 +489,10 @@ defmodule SwarmCode.Domain.Engine do
     # second compaction, and a compaction that fails must not make every later
     # turn pay for the same failure. The next turn over the threshold raises
     # the flag again.
-    case start_compact(conversation, "", auto: true) do
+    case start_compact(conversation, "",
+           auto: true,
+           launched_by_run_id: opts[:launched_by_run_id]
+         ) do
       {:ok, compact_run_id} ->
         user = store_user_now(conversation, text, attachments, opts)
         chain_turn(conversation, text, attachments, opts, user, compact_run_id)
@@ -525,7 +531,12 @@ defmodule SwarmCode.Domain.Engine do
     started =
       Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
         key = {:chain, conversation.id, compact_run_id}
-        {:ok, _owner} = Registry.register(SwarmCode.Domain.Registry, key, nil)
+        # CLI: the value names the run this turn continues, so `ncode -p` can
+        # ask whether a followed run still has a launch pending
+        # (`Daemon.Service.RunProcesses.pending?/1`); nil for a user's own send.
+        {:ok, _owner} =
+          Registry.register(SwarmCode.Domain.Registry, key, opts[:launched_by_run_id])
+
         send(caller, {ref, :chained})
 
         # A compaction that failed, timed out or was stopped still leaves the

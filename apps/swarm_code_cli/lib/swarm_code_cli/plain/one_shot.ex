@@ -20,11 +20,15 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   until every one of them has ended, names each on `error`, lists them under
   `runs` in the JSON summary, and exits `1` when any failed or was stopped.
   Nothing caps how many are followed: the set is what was launched. That
-  includes the chat turn a finished workflow starts to report its result
-  (the domain records the workflow as its launcher). A finished run whose
-  process still runs may be about to start that turn, so the session does not
-  conclude until the process is gone (`server_alive?`; a bounded time in all,
-  `@exit_wait_ms`).
+  includes the chat turn a finished workflow starts to report its result, and
+  the compaction that turn waits for when the conversation asked for one (the
+  domain records the workflow as the launcher of both). A finished workflow
+  whose launch is still pending (`launch_pending?`: its process has not
+  stopped, or a turn is chained onto a compaction on its behalf) may be about
+  to start that turn, so the session does not conclude until the launch has
+  happened and its run is followed. Nothing but that fact ends the wait: the
+  domain bounds the hook the turn waits for and the compaction's chain, and a
+  signal or a limit still ends the session.
   `--max-turns` applies to the lead of each followed run, `--max-budget-usd`
   to the cost of all of them together; a limit stops every live run, and one
   that is first heard of after the limit fired.
@@ -57,11 +61,8 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   @terminal [:done, :failed, :stopped, :interrupted, :superseded]
   # Nothing more happens to a paused run without a person.
   @settled [:paused | @terminal]
-  # A finished run's process normally ends within milliseconds of its row
-  # turning terminal; a process that never ends must not hold `-p` for ever.
-  @exit_wait_ms 10_000
+  # How often a pending launch is asked about again.
   @recheck_ms 25
-  @exit_rechecks div(@exit_wait_ms, @recheck_ms)
   # A model that keeps asking for what nobody can approve is stopped rather
   # than denied forever.
   @max_denials 8
@@ -78,9 +79,8 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   Options: `data_source`, `source_epoch`, `conversation_id`, `prompt`, and
   optionally `format` (`:text` | `:json`), `output` and `error` (IO devices),
   `progress` (tool lines on `error`), `clock` (a zero-arity millisecond clock),
-  `server_alive?` (`run_id -> boolean`: does the run's process still run; none
-  by default) and `exit_wait` (`{recheck_ms, max_rechecks}`, how long a
-  running process is waited for).
+  `launch_pending?` (`run_id -> boolean`: does the run still have a launch to
+  make; none by default) and `recheck_ms` (how often that is asked again).
   """
   @spec run(keyword()) :: 0 | 1 | 129 | 143
   def run(options) do
@@ -159,11 +159,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         known: MapSet.new(),
         # The runs a fired limit has asked to stop.
         stopping: MapSet.new(),
-        # A finished run's process may still be starting its continuation.
-        server_alive?: Keyword.get(options, :server_alive?, fn _ -> false end),
-        exit_wait: Keyword.get(options, :exit_wait, {@recheck_ms, @exit_rechecks}),
-        exit_timer: nil,
-        exit_rechecks: 0,
+        # A finished workflow may still be starting its continuation.
+        launch_pending?: Keyword.get(options, :launch_pending?, fn _ -> false end),
+        recheck_ms: Keyword.get(options, :recheck_ms, @recheck_ms),
+        launch_timer: nil,
         # The settled summaries of the tracked runs, once they are read, and
         # the sentence about the first that did not finish.
         final: [],
@@ -269,10 +268,8 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     continue(own_response(%{state | own: own}, purpose, :deadline))
   end
 
-  def handle_info({:timeout, timer, :exit_recheck}, %{exit_timer: timer} = state) do
-    state = %{state | exit_timer: nil, exit_rechecks: state.exit_rechecks + 1}
-    continue(check(state))
-  end
+  def handle_info({:timeout, timer, :launch_recheck}, %{launch_timer: timer} = state),
+    do: continue(check(%{state | launch_timer: nil}))
 
   def handle_info({:shutdown_signal, signal}, %{phase: phase} = state)
       when signal in [:sigterm, :sighup] and phase != :finished do
@@ -899,31 +896,35 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     cond do
       not Enum.all?(runs, &(&1 != nil and &1.state in @settled)) -> state
-      finishing?(state, runs) -> await_exit(state)
+      pending_launch?(state, runs) -> await_launch(state)
       true -> query_completion(state)
     end
   end
 
   defp maybe_settle(state), do: state
 
-  # A row reads `done` before its process has stopped, and a workflow's
-  # process starts its continuation (a chat turn it is recorded as the
-  # launcher of) in between. Concluding on the row would close the session on
-  # a turn that does not exist yet, so the processes of the ended runs are
-  # waited for, for a bounded time.
-  defp finishing?(%{exit_wait: {_ms, max}, exit_rechecks: done}, _runs) when done >= max,
-    do: false
-
-  defp finishing?(state, runs) do
+  # A row reads `done` before its run is over: a workflow's process starts the
+  # continuation (a chat turn it is recorded as the launcher of) after that,
+  # possibly after a hook has run, and possibly by handing it to a chain task
+  # that waits for a compaction. Concluding on the rows would close the session
+  # on a turn that does not exist yet, so an ended run is asked whether it still
+  # has a launch to make. The answer is a fact of the run's own lifecycle, so
+  # waiting for it needs no time limit, and it never turns back to true: once
+  # it is false the launch's row exists, and a completion query sent after
+  # that reads it. Only a workflow starts anything after its row is terminal;
+  # a chat or swarm that lingers is the session close's to wait for.
+  defp pending_launch?(state, runs) do
     Enum.any?(runs, fn run ->
-      run.state in @terminal and match?(true, safely(fn -> state.server_alive?.(run.id) end))
+      ended_workflow?(run) and match?(true, safely(fn -> state.launch_pending?.(run.id) end))
     end)
   end
 
-  defp await_exit(%{exit_timer: nil, exit_wait: {ms, _max}} = state),
-    do: %{state | exit_timer: :erlang.start_timer(ms, self(), :exit_recheck)}
+  defp ended_workflow?(run), do: run.kind == :workflow and run.state in @terminal
 
-  defp await_exit(state), do: state
+  defp await_launch(%{launch_timer: nil, recheck_ms: ms} = state),
+    do: %{state | launch_timer: :erlang.start_timer(ms, self(), :launch_recheck)}
+
+  defp await_launch(state), do: state
 
   # The run's last state and its whole answer are read once more after it
   # ends: a non-streaming provider's answer and a long answer's rest arrive
@@ -946,6 +947,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp own_response(state, :completion, %DTO.WorkspaceSnapshot{state: :idle} = snapshot) do
     # The snapshot can show a run launched since the read model last heard.
+    known = state.known
     state = follow(state, snapshot.runs)
     ids = tracked(state)
     by_id = Map.new(snapshot.runs, &{&1.id, &1})
@@ -959,8 +961,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       length(runs) != length(ids) or not Enum.all?(runs, &(&1.state in @settled)) ->
         %{state | phase: :running}
 
-      finishing?(state, runs) ->
-        await_exit(%{state | phase: :running})
+      pending_launch?(state, runs) ->
+        await_launch(%{state | phase: :running})
+
+      # A workflow first seen here was not asked about before this snapshot
+      # was read, and may have launched something since.
+      Enum.any?(runs, &(ended_workflow?(&1) and not MapSet.member?(known, &1.id))) ->
+        query_completion(%{state | phase: :running})
 
       true ->
         read_answers(state, snapshot, runs)
@@ -1124,7 +1131,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp finish(%{phase: :finished} = state, _, _, _), do: state
 
   defp finish(state, code, message, reason) do
-    if state.exit_timer, do: :erlang.cancel_timer(state.exit_timer)
+    if state.launch_timer, do: :erlang.cancel_timer(state.launch_timer)
     state = if message, do: say(state, message), else: state
 
     state =
@@ -1152,7 +1159,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     safely(fn -> DataSource.close(state.client) end)
     if state.observer, do: send(state.observer, {:one_shot, self(), {:finished, code}})
-    %{state | phase: :finished, mid_line?: false, exit_timer: nil}
+    %{state | phase: :finished, mid_line?: false, launch_timer: nil}
   end
 
   defp finish_with(state, key, code, message \\ nil),

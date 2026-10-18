@@ -460,28 +460,29 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
     end
   end
 
-  describe "a finished run whose process still runs" do
+  describe "a finished workflow whose launch is pending" do
     @continuation "99999999-9999-4999-8999-999999999999"
+    @compaction "88888888-8888-4888-8888-888888888888"
 
-    defp alive_flag(context) do
+    defp pending_flag(context) do
       {:ok, flag} = Agent.start_link(fn -> true end)
       on_exit(fn -> if Process.alive?(flag), do: Agent.stop(flag) end)
-      Map.put(context, :alive, flag)
+      Map.put(context, :pending, flag)
     end
 
-    defp alive?(%{alive: flag}), do: fn _id -> Agent.get(flag, & &1) end
+    defp pending?(%{pending: flag}), do: fn _id -> Agent.get(flag, & &1) end
 
     test "is waited for, and the turn it starts is followed to its end", context do
-      context = alive_flag(context)
+      context = pending_flag(context)
       flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
 
       session =
-        start(context, format: :json, server_alive?: alive?(context))
+        start(context, format: :json, launch_pending?: pending?(context))
         |> accept()
         |> child_update(flow)
         |> run_update(:done)
 
-      # Both rows read done; the workflow's process has not ended.
+      # Both rows read done; the workflow's launch has not happened.
       refute_completion_query()
       refute_received {:code, _}
 
@@ -493,10 +494,10 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
 
       session = child_update(session, continuation)
       # The recheck timer reads the flag on its own schedule: the one-shot must
-      # have heard the continuation before the process is reported gone, or it
+      # have heard the continuation before the launch is reported made, or it
       # (rightly) concludes on the two ended rows and asks for the completion.
       _ = :sys.get_state(session.owner)
-      Agent.update(context.alive, fn _ -> false end)
+      Agent.update(context.pending, fn _ -> false end)
       refute_completion_query()
 
       done = %{continuation | state: :done}
@@ -516,44 +517,221 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
                ~s(ncode: the chat "[workflow review flow finished]" finished.)
     end
 
-    test "is not waited for once it has ended and started nothing", context do
-      context = alive_flag(context)
+    # The workflow handed its continuation to a compaction (a run it launched)
+    # and a chain task: once the compaction has ended, every row reads done and
+    # the turn exists nowhere but in that task.
+    test "is waited for when its compaction has ended and only the chained turn is left",
+         context do
+      context = pending_flag(context)
+      flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
+
+      compaction =
+        child(@compaction, :chat, :done, @workflow, created_sequence: 3, title: "/compact")
+
+      session =
+        start(context, format: :json, launch_pending?: pending?(context), recheck_ms: 1)
+        |> accept()
+        |> child_update(flow)
+        |> child_update(compaction)
+        |> run_update(:done)
+
+      refute_completion_query()
+      refute_received {:code, _}
+
+      continuation =
+        child(@continuation, :chat, :running, @workflow,
+          created_sequence: 4,
+          title: "[workflow review flow finished]"
+        )
+
+      session = child_update(session, continuation)
+      _ = :sys.get_state(session.owner)
+      Agent.update(context.pending, fn _ -> false end)
+      refute_completion_query()
+
+      done = %{continuation | state: :done}
+      session = child_update(session, done)
+      complete(session, [run(:done), flow, compaction, done], [])
+      assert code(session) == 0
+
+      assert %{"exit_code" => 0, "runs" => runs} = json(context)
+      assert Enum.map(runs, & &1["id"]) == [H.run_id(), @workflow, @compaction, @continuation]
+      assert text(context.error) =~ ~s(ncode: the chat "/compact" finished.)
+    end
+
+    test "is not waited for once it has launched nothing", context do
+      context = pending_flag(context)
       flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
 
       session =
-        start(context, format: :json, server_alive?: alive?(context), exit_wait: {10, 1_000})
+        start(context, format: :json, launch_pending?: pending?(context), recheck_ms: 10)
         |> accept()
         |> child_update(flow)
         |> run_update(:done)
 
       refute_completion_query()
-      Agent.update(context.alive, fn _ -> false end)
+      Agent.update(context.pending, fn _ -> false end)
 
       complete(session, [run(:done), flow], [])
       assert code(session) == 0
       assert %{"runs" => [_, %{"id" => @workflow}]} = json(context)
     end
 
-    test "is waited for a bounded time", context do
-      context = alive_flag(context)
+    # Running out of rechecks was once taken for "launched nothing" (a 10 s
+    # cap): a launch that waits on a hook past it was dropped and the session
+    # reported success. Only the launch ending ends the wait.
+    test "is waited for however many times it is asked, and never reported as success",
+         context do
+      test = self()
+      {:ok, asked} = Agent.start_link(fn -> 0 end)
+      {:ok, held} = Agent.start_link(fn -> true end)
+
+      pending? = fn id ->
+        if id == @workflow do
+          n = Agent.get_and_update(asked, &{&1 + 1, &1 + 1})
+          send(test, {:asked, n})
+          Agent.get(held, & &1)
+        else
+          false
+        end
+      end
+
       flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
 
       session =
-        start(context, format: :json, server_alive?: alive?(context), exit_wait: {5, 4})
+        start(context, format: :json, launch_pending?: pending?, recheck_ms: 1)
         |> accept()
         |> child_update(flow)
         |> run_update(:done)
 
-      # The process never ends; the wait does.
-      complete(session, [run(:done), flow], [])
+      # Far past any budget a test or a user could have set, and still waiting.
+      assert_receive {:asked, 150}, 10_000
+      refute_completion_query()
+      refute_received {:code, _}
+
+      continuation =
+        child(@continuation, :chat, :running, @workflow,
+          created_sequence: 3,
+          title: "[workflow review flow finished]"
+        )
+
+      session = child_update(session, continuation)
+      _ = :sys.get_state(session.owner)
+      Agent.update(held, fn _ -> false end)
+      refute_completion_query()
+
+      done = %{continuation | state: :done}
+      session = child_update(session, done)
+      complete(session, [run(:done), flow, done], [])
       assert code(session) == 0
+      assert %{"runs" => [_, _, %{"id" => @continuation, "state" => "done"}]} = json(context)
     end
 
-    test "does not hold a paused run, which has no process to wait for", context do
+    test "a launch that fails is the session's failure once it has been waited for", context do
+      context = pending_flag(context)
+      flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
+
+      session =
+        start(context, format: :json, launch_pending?: pending?(context), recheck_ms: 1)
+        |> accept()
+        |> child_update(flow)
+        |> run_update(:done)
+
+      refute_completion_query()
+
+      broken =
+        child(@continuation, :chat, :failed, @workflow,
+          created_sequence: 3,
+          title: "[workflow review flow finished]",
+          error: "provider refused"
+        )
+
+      session = child_update(session, broken)
+      _ = :sys.get_state(session.owner)
+      Agent.update(context.pending, fn _ -> false end)
+
+      complete(session, [run(:done), flow, broken], [])
+      assert code(session) == 1
+
+      assert %{"state" => "failed", "reason" => "run_failed", "error" => error} = json(context)
+      assert error =~ ~s(the chat "[workflow review flow finished]" failed: provider refused)
+    end
+
+    test "is asked again about a workflow only the completion snapshot showed", context do
+      context = pending_flag(context)
+      Agent.update(context.pending, fn _ -> false end)
+      flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
+
+      session =
+        start(context, format: :json, launch_pending?: pending?(context))
+        |> accept()
+        |> run_update(:done)
+
+      # The model never heard of the workflow, so nobody asked about its launch
+      # before this read; the read may predate that launch's row.
+      complete(session, [run(:done), flow], [])
+      refute_received {:code, _}
+
+      continuation = child(@continuation, :chat, :done, @workflow, created_sequence: 3)
+      complete(session, [run(:done), flow, continuation], [])
+      assert code(session) == 0
+      assert %{"runs" => [_, _, %{"id" => @continuation}]} = json(context)
+    end
+
+    test "does not outlive a signal: SIGTERM ends the wait with its own code", context do
+      flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
+
+      session =
+        start(context, format: :json, launch_pending?: fn _id -> true end, recheck_ms: 1)
+        |> accept()
+        |> child_update(flow)
+        |> run_update(:done)
+
+      refute_completion_query()
+      SwarmCodeCLI.Release.Signals.notify(session.task.pid, :sigterm)
+
+      assert code(session) == 143
+      assert %{"exit_code" => 143, "reason" => "sigterm"} = json(context)
+      assert text(context.error) =~ "ncode: stopped by SIGTERM"
+    end
+
+    test "a limit still stops the turn the launch made while it was waited for", context do
+      context = pending_flag(context)
+      flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
+
+      session =
+        start(context,
+          format: :json,
+          launch_pending?: pending?(context),
+          recheck_ms: 1,
+          max_budget_usd: 0.05
+        )
+        |> accept()
+        |> child_update(flow)
+        |> run_update(:done)
+
+      refute_completion_query()
+      continuation = child(@continuation, :chat, :running, @workflow, created_sequence: 3)
+      session = child_update(session, %{continuation | cost_usd: 0.06})
+
+      assert_receive {:source,
+                      {:request, :command, %Request{kind: {:run_control, :stop, @continuation}}}},
+                     5_000
+
+      stopped = %{continuation | state: :stopped, cost_usd: 0.06}
+      session = child_update(session, stopped)
+      Agent.update(context.pending, fn _ -> false end)
+
+      complete(session, [run(:done), flow, stopped], [])
+      assert code(session) == 1
+      assert %{"reason" => "max_budget", "state" => "stopped"} = json(context)
+    end
+
+    test "does not hold a paused run, which launches nothing", context do
       paused = child(@workflow, :workflow, :paused, H.run_id(), error: "parked")
 
       session =
-        start(context, format: :json, server_alive?: fn id -> id == @workflow end)
+        start(context, format: :json, launch_pending?: fn id -> id == @workflow end)
         |> accept()
         |> child_update(paused)
         |> run_update(:done)
@@ -561,6 +739,18 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
       complete(session, [run(:done), paused], [])
       assert code(session) == 1
       assert %{"state" => "paused"} = json(context)
+    end
+
+    test "does not hold a chat or swarm that lingers: only a workflow launches after it ends",
+         context do
+      session =
+        start(context, format: :json, launch_pending?: fn _id -> true end)
+        |> accept()
+        |> child_update(child(@swarm, :swarm, :done, H.run_id()))
+        |> run_update(:done)
+
+      complete(session, [run(:done), child(@swarm, :swarm, :done, H.run_id())], [])
+      assert code(session) == 0
     end
   end
 end

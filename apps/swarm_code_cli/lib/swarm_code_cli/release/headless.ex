@@ -238,8 +238,9 @@ defmodule SwarmCodeCLI.Release.Headless do
         prompt: prompt,
         format: format,
         progress: tty?(:stderr),
-        # A finished workflow's process starts its continuation before it ends.
-        server_alive?: &RunProcesses.alive?/1
+        # A finished workflow starts its continuation before its process ends,
+        # and may hand it to a task that waits for a compaction.
+        launch_pending?: &RunProcesses.pending?/1
       ] ++ extra
     )
   end

@@ -426,10 +426,27 @@ Headless and release (lane B):
   continuation (`workflow_run` `continue`, `mission_start`: `RunServer.continue_assistant/2`
   starts a chat turn with `store_user: false`) is one of those runs: a recorded provenance
   patch (`engine.ex` `chat_run_attrs`, `run_server.ex` `continue_assistant`) stores the
-  workflow as its `launched_by_run_id`. The workflow's row reads `done` before its process
-  starts that turn, so `-p` does not conclude while the process of an ended run still lives
-  (`Daemon.Service.RunProcesses.alive?/1`, passed as `server_alive?`; at most 10 s in all).
-  A `paused` run (a workflow parked by the provider being down or by hand; the
+  workflow as its `launched_by_run_id`. When the conversation asked for an automatic
+  compaction (`compact_due`), `Engine.compact_then_turn` starts a compaction run and a chain
+  task (`{:chain, conversation_id, compaction_run_id}` in the domain registry) that starts the
+  turn when it ends: the same patch stores the workflow as the compaction run's
+  `launched_by_run_id` (`start_compact` takes `launched_by_run_id:`) and as the chain's registry
+  value (the eventual turn already carries it through `opts`). A turn that cannot start at all
+  (no provider, the project gone) leaves no row after a `store_user: false` launch, with or
+  without a compaction (`continue_assistant/2` drops the result and `end_chain/5` needs the
+  stored user message), so `-p` cannot report that case. The workflow's row reads `done`
+  before its process has started that turn (a trusted `user_prompt_submit` hook runs first, up
+  to its timeout, before any row exists) or handed it to the chain, so `-p` does not conclude
+  while a workflow it follows has a launch pending:
+  `Daemon.Service.RunProcesses.pending?/1` (the run's server lives, or a chain task carries the
+  run's id as its value), passed as `launch_pending?` and asked every `recheck_ms` (25 ms). It
+  is a fact of the processes' own lifecycle, so there is **no time limit** on it: a server
+  stops right after `continue_assistant/2` returns (`{:stop, :normal, finish_workflow(…)}`), a
+  chain task ends when its turn's row is written (it waits at most 60 s for the compaction,
+  `@auto_compact_wait_ms`), and a hook is cut at 60 s (`Hooks.run_supervised`). Running out of a
+  budget was once taken for "launched nothing" (a 10 s cap that reported success); never
+  reintroduce one that does. A signal still ends the wait with its own code, and a limit still
+  stops a turn that appears. A `paused` run (a workflow parked by the provider being down or by hand; the
   CLI has no Watchdog) ends the wait with a stderr sentence that says why and how to continue
   (`ncode --resume <conversation id>`, then `/resume-run`) and exit 1.
   `--approval MODE` (`SWARM_HEADLESS_APPROVAL`) is a `PersistedBackend` start option passed to
