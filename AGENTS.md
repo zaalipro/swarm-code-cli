@@ -394,8 +394,15 @@ Headless and release (lane B):
   (`SWARM_STDIN_PIPED=1`, set only by the launcher); `-p -` reads the prompt from stdin.
   `--json`/`--output-format json` print one object even on failure (`state: not_started`);
   `--output-format stream-json` prints the `--plain --ndjson` records and ends with
-  `{"type":"summary",…}`. `--max-turns`/`--max-budget-usd` stop the owned run (exit 1);
-  `--fail-on-denied` fails a done run that had denials. Denials are said in one stderr line.
+  `{"type":"summary",…}`. `--max-turns`/`--max-budget-usd` stop the owned run and every run
+  it launched (exit 1; the turn limit applies to each run's lead, the budget to their total
+  cost); `--fail-on-denied` fails a done run that had denials. Denials are said in one stderr
+  line. `-p` follows the runs its runs launch (`parent_run_id`, transitively: a swarm or
+  workflow a tool started), waits until each has ended, names each on stderr, lists them as
+  `runs` in the JSON summary (`state` is the first run that did not finish) and exits 1 if
+  any failed. A `paused` run (a workflow parked by the provider being down or by hand; the
+  CLI has no Watchdog) ends the wait with a stderr sentence that says why and how to continue
+  (`ncode --resume <conversation id>`, then `/resume-run`) and exit 1.
   `--approval MODE` (`SWARM_HEADLESS_APPROVAL`) is a `PersistedBackend` start option passed to
   the runs it starts (plain prompts, prompts and slash commands drained from the queue, the
   dispatcher's chat/swarm launches and `retry_run`'s swarm; cli020 fix S1), and workflow launches

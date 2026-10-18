@@ -4486,8 +4486,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "verdict" => verdict && blank_nil(verdict["summary"])
     }
 
+    facts = put_pause_reason(facts, row, panel.workflows[row.id])
     %{run | agents: agents, panel: facts}
   end
+
+  # A paused workflow run says why it was parked in the run's `error`, the
+  # one sentence a headless `-p` run reports when it cannot resume the run.
+  defp put_pause_reason(facts, %{status: "paused"}, %{pause_message: message})
+       when is_binary(message) and message != "",
+       do: Map.put(facts, "error", clip(message, 200))
+
+  defp put_pause_reason(facts, _row, _workflow), do: facts
 
   # cli020 C5: the newest open op of an agent of this run that the provider
   # is being asked again for (`Operation` writes `retrying n/N · reason`).

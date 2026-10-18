@@ -1,0 +1,14 @@
+# CLI-local change to lib/swarm_code/tools/mission_start.ex at a93d6d8, after the rewrite
+# rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
+--- a/apps/swarm_code_daemon/lib/swarm_code/domain/tools/mission_start.ex
++++ b/apps/swarm_code_daemon/lib/swarm_code/domain/tools/mission_start.ex
+@@ -97,7 +97,8 @@
+           budget: Missions.budget(plan, rounds),
+           max_live: parallel,
+           created_by: "model",
+-          auto_continue: true
++          auto_continue: true,
++          launched_by_run_id: ctx[:run_id]
+         }
+ 
+         case Workflows.launch(attrs) do
