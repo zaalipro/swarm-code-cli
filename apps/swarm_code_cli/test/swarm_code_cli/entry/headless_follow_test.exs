@@ -4,7 +4,9 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
   `start_swarm` (or `workflow_run`), which returns as soon as the run is
   launched, so the chat run finishes first. The one-shot still waits for the
   launched run, reports it, and exits 1 if it failed. A workflow that parks as
-  paused ends the wait with how to continue.
+  paused ends the wait with how to continue. A workflow that finishes starts a
+  chat turn with its result (the default `continue`); that turn, and what it
+  launches in turn, is followed too.
   """
   use ExUnit.Case, async: false
 
@@ -47,20 +49,10 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
             sse(socket, %{"content" => "Launched."}, "stop")
 
           String.contains?(text, "CHAT-ASK") ->
-            {name, args} = tool
+            tool_call(socket, tool)
 
-            call = %{
-              "tool_calls" => [
-                %{
-                  "index" => 0,
-                  "id" => "call-1",
-                  "type" => "function",
-                  "function" => %{"name" => name, "arguments" => Jason.encode!(args)}
-                }
-              ]
-            }
-
-            sse(socket, call, "tool_calls")
+          is_function(launched, 2) ->
+            launched.(socket, text)
 
           true ->
             launched.(socket)
@@ -82,6 +74,21 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
       Conversations.update(c.conversation, %{chat_provider_id: provider.id, chat_model: "fixture"})
 
     %{c | conversation: conversation}
+  end
+
+  defp tool_call(socket, {name, args}) do
+    call = %{
+      "tool_calls" => [
+        %{
+          "index" => 0,
+          "id" => "call-1",
+          "type" => "function",
+          "function" => %{"name" => name, "arguments" => Jason.encode!(args)}
+        }
+      ]
+    }
+
+    sse(socket, call, "tool_calls")
   end
 
   defp sse(socket, delta, finish) do
@@ -109,7 +116,7 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
 
   # The stack `with_saved_session` and `Headless` build: backend, service
   # socket, daemon client, then the one-shot on top.
-  defp one_shot(c, backend_options \\ []) do
+  defp one_shot(c, backend_options \\ [], format \\ :json) do
     epoch = Ecto.UUID.generate()
     nonce = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
     dir = Path.join("/tmp", "scl-follow-#{System.unique_integer([:positive])}")
@@ -141,14 +148,29 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
         source_epoch: epoch,
         conversation_id: c.conversation.id,
         prompt: @ask,
-        format: :json,
+        format: format,
         output: output,
-        error: error
+        error: error,
+        server_alive?: &SwarmCode.Daemon.Service.RunProcesses.alive?/1
       )
 
-    {code, output |> StringIO.contents() |> elem(1) |> String.trim() |> Jason.decode!(),
-     error |> StringIO.contents() |> elem(1)}
+    {code, summary(format, output), error |> StringIO.contents() |> elem(1)}
   end
+
+  # `--json` prints one object; stream-json prints records and ends with the
+  # summary object; text prints the answer and no object.
+  defp summary(:json, output),
+    do: output |> StringIO.contents() |> elem(1) |> String.trim() |> Jason.decode!()
+
+  defp summary(:stream_json, output) do
+    lines = output |> StringIO.contents() |> elem(1) |> String.split("\n", trim: true)
+    summary = lines |> List.last() |> Jason.decode!()
+    assert summary["type"] == "summary"
+    assert Enum.all?(Enum.drop(lines, -1), &(&1 |> Jason.decode!() |> Map.has_key?("stream")))
+    Map.delete(summary, "type")
+  end
+
+  defp summary(:text, output), do: output |> StringIO.contents() |> elem(1)
 
   test "the swarm a chat run launched is waited for, reported, and exits 0", c do
     c = provider(c, {"start_swarm", %{"task" => @mark, "agents" => 4}}, &lead_answers/1)
@@ -183,6 +205,88 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
     assert swarm["state"] == "failed"
     assert stderr =~ ~s(the swarm ")
     assert stderr =~ "failed"
+  end
+
+  # A workflow that finishes with the default `continue` hands its result to
+  # the assistant in a fresh chat turn, started by the workflow's own process
+  # after its row reads done. What answers that turn is `continuation`.
+  defp workflow_provider(c, continuation) do
+    provider(c, {"workflow_run", %{"source" => @workflow, "budget" => 1}}, fn socket, text ->
+      cond do
+        String.contains?(text, "finished]") -> continuation.(socket)
+        String.contains?(text, "SWARM-TASK-MARK") -> lead_fails(socket)
+        true -> lead_answers(socket)
+      end
+    end)
+  end
+
+  defp continuation_answers(socket), do: sse(socket, %{"content" => "the report"}, "stop")
+
+  defp run_states(c), do: Enum.map(Conversations.list_runs(c.conversation.id), & &1.status)
+
+  test "a workflow's automatic continuation is followed and reported", c do
+    c = workflow_provider(c, &continuation_answers/1)
+    {code, json, stderr} = one_shot(c, approval_mode: "full_access")
+
+    assert code == 0
+    assert %{"exit_code" => 0, "state" => "done", "reason" => nil, "runs" => runs} = json
+    assert [chat, flow, report] = runs
+    assert chat["launched"] == false and flow["kind"] == "workflow"
+    assert report["kind"] == "chat" and report["state"] == "done" and report["launched"] == true
+    assert report["parent_run_id"] == flow["id"]
+    assert json["text"] =~ "the report"
+    assert stderr =~ ~s(ncode: the workflow ")
+    assert stderr =~ ~s(ncode: the chat "[workflow follow-flow finished]" finished.)
+
+    # Nothing was left to the session's close: every run had ended.
+    assert run_states(c) == ["done", "done", "done"]
+  end
+
+  test "stream-json names the automatic continuation in its summary", c do
+    c = workflow_provider(c, &continuation_answers/1)
+    {code, json, _stderr} = one_shot(c, [approval_mode: "full_access"], :stream_json)
+
+    assert code == 0
+    assert %{"runs" => [_chat, _flow, %{"kind" => "chat", "launched" => true}]} = json
+  end
+
+  test "a failing automatic continuation fails the session and is named", c do
+    c = workflow_provider(c, &lead_fails/1)
+    {code, json, stderr} = one_shot(c, approval_mode: "full_access")
+
+    assert code == 1
+
+    assert %{
+             "exit_code" => 1,
+             "state" => "failed",
+             "reason" => "run_failed",
+             "error" => error,
+             "runs" => [_chat, flow, report]
+           } = json
+
+    assert flow["state"] == "done"
+    assert report["kind"] == "chat" and report["state"] == "failed"
+    assert error =~ ~s(the chat "[workflow follow-flow finished]" failed)
+    assert stderr =~ ~s(ncode: the workflow ")
+    assert stderr =~ ~s(the chat "[workflow follow-flow finished]" failed)
+    assert Enum.sort(run_states(c)) == ["done", "done", "failed"]
+  end
+
+  test "what the automatic continuation launches is followed too", c do
+    c =
+      workflow_provider(c, fn socket ->
+        tool_call(socket, {"start_swarm", %{"task" => "SWARM-TASK-MARK"}})
+      end)
+
+    {code, json, _stderr} = one_shot(c, approval_mode: "full_access")
+
+    assert code == 1
+    assert %{"state" => "failed", "reason" => "run_failed", "runs" => runs} = json
+    assert [_chat, flow, report, swarm] = runs
+    assert report["parent_run_id"] == flow["id"]
+    assert swarm["kind"] == "swarm" and swarm["parent_run_id"] == report["id"]
+    assert swarm["state"] == "failed"
+    assert Enum.sort(run_states(c)) == ["done", "done", "done", "failed"]
   end
 
   test "a workflow that parks as paused ends the wait and says how to continue", c do

@@ -412,11 +412,21 @@ Headless and release (lane B):
   share the code `:schema_incompatible`, so `Schema.Refusal.database_mode?/1` is what tells
   the mode refusal apart. `--max-turns`/`--max-budget-usd` stop the owned run and every run
   it launched (exit 1; the turn limit applies to each run's lead, the budget to their total
-  cost); `--fail-on-denied` fails a done run that had denials. Denials are said in one stderr
+  cost); `--fail-on-denied` fails a done run that had denials. A limit that fired stays fired:
+  a run first heard of after it (its update can arrive after the one that crossed the limit)
+  is asked to stop too, once. Denials are said in one stderr
   line. `-p` follows the runs its runs launch (`parent_run_id`, transitively: a swarm or
-  workflow a tool started), waits until each has ended, names each on stderr, lists them as
-  `runs` in the JSON summary (`state` is the first run that did not finish) and exits 1 if
-  any failed. A `paused` run (a workflow parked by the provider being down or by hand; the
+  workflow a tool started), with no cap on how many, waits until each has ended, names each
+  on stderr, lists them as `runs` in the JSON summary (`state` is the first run that did not
+  finish; `error` is the sentence of the first run that did not finish, whatever launched
+  runs finished before it) and exits 1 if any failed. A finished workflow's default
+  continuation (`workflow_run` `continue`, `mission_start`: `RunServer.continue_assistant/2`
+  starts a chat turn with `store_user: false`) is one of those runs: a recorded provenance
+  patch (`engine.ex` `chat_run_attrs`, `run_server.ex` `continue_assistant`) stores the
+  workflow as its `launched_by_run_id`. The workflow's row reads `done` before its process
+  starts that turn, so `-p` does not conclude while the process of an ended run still lives
+  (`Daemon.Service.RunProcesses.alive?/1`, passed as `server_alive?`; at most 10 s in all).
+  A `paused` run (a workflow parked by the provider being down or by hand; the
   CLI has no Watchdog) ends the wait with a stderr sentence that says why and how to continue
   (`ncode --resume <conversation id>`, then `/resume-run`) and exit 1.
   `--approval MODE` (`SWARM_HEADLESS_APPROVAL`) is a `PersistedBackend` start option passed to

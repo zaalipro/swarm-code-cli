@@ -19,10 +19,11 @@ defmodule SwarmCodeCLI.Release.Headless do
             [
               SwarmCode.Daemon.Service,
               SwarmCode.Daemon.Service.PersistedBackend,
+              SwarmCode.Daemon.Service.RunProcesses,
               Ecto.UUID
             ]}
 
-  alias SwarmCode.Daemon.Service.PersistedBackend
+  alias SwarmCode.Daemon.Service.{PersistedBackend, RunProcesses}
   alias SwarmCodeCLI.Plain.{OneShot, Options}
   alias SwarmCodeCLI.Release.{PersistedSession, Reasons}
   alias SwarmCodeCLI.UI.DataSource.Daemon
@@ -236,7 +237,9 @@ defmodule SwarmCodeCLI.Release.Headless do
         conversation_id: conversation,
         prompt: prompt,
         format: format,
-        progress: tty?(:stderr)
+        progress: tty?(:stderr),
+        # A finished workflow's process starts its continuation before it ends.
+        server_alive?: &RunProcesses.alive?/1
       ] ++ extra
     )
   end

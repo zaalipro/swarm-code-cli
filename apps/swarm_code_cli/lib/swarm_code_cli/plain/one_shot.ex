@@ -19,8 +19,15 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   through `parent_run_id`, transitively) is followed too: the session waits
   until every one of them has ended, names each on `error`, lists them under
   `runs` in the JSON summary, and exits `1` when any failed or was stopped.
+  Nothing caps how many are followed: the set is what was launched. That
+  includes the chat turn a finished workflow starts to report its result
+  (the domain records the workflow as its launcher). A finished run whose
+  process still runs may be about to start that turn, so the session does not
+  conclude until the process is gone (`server_alive?`; a bounded time in all,
+  `@exit_wait_ms`).
   `--max-turns` applies to the lead of each followed run, `--max-budget-usd`
-  to the cost of all of them together; a limit stops every live run.
+  to the cost of all of them together; a limit stops every live run, and one
+  that is first heard of after the limit fired.
 
   A run that parks as `paused` (a workflow whose provider stayed down, or one
   paused by hand) does not end by itself here, because nothing resumes it. The
@@ -50,7 +57,11 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   @terminal [:done, :failed, :stopped, :interrupted, :superseded]
   # Nothing more happens to a paused run without a person.
   @settled [:paused | @terminal]
-  @max_followed 64
+  # A finished run's process normally ends within milliseconds of its row
+  # turning terminal; a process that never ends must not hold `-p` for ever.
+  @exit_wait_ms 10_000
+  @recheck_ms 25
+  @exit_rechecks div(@exit_wait_ms, @recheck_ms)
   # A model that keeps asking for what nobody can approve is stopped rather
   # than denied forever.
   @max_denials 8
@@ -66,7 +77,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   Options: `data_source`, `source_epoch`, `conversation_id`, `prompt`, and
   optionally `format` (`:text` | `:json`), `output` and `error` (IO devices),
-  `progress` (tool lines on `error`), `clock` (a zero-arity millisecond clock).
+  `progress` (tool lines on `error`), `clock` (a zero-arity millisecond clock),
+  `server_alive?` (`run_id -> boolean`: does the run's process still run; none
+  by default) and `exit_wait` (`{recheck_ms, max_rechecks}`, how long a
+  running process is waited for).
   """
   @spec run(keyword()) :: 0 | 1 | 129 | 143
   def run(options) do
@@ -139,8 +153,17 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         ui: nil,
         dispatch: nil,
         runs: [],
-        # Runs launched by `runs` (transitively), in the order they were found.
+        # Runs launched by `runs` (transitively), newest found first and never
+        # capped, and the ids of both for membership tests.
         followed: [],
+        known: MapSet.new(),
+        # The runs a fired limit has asked to stop.
+        stopping: MapSet.new(),
+        # A finished run's process may still be starting its continuation.
+        server_alive?: Keyword.get(options, :server_alive?, fn _ -> false end),
+        exit_wait: Keyword.get(options, :exit_wait, {@recheck_ms, @exit_rechecks}),
+        exit_timer: nil,
+        exit_rechecks: 0,
         # The settled summaries of the tracked runs, once they are read, and
         # the sentence about the first that did not finish.
         final: [],
@@ -246,6 +269,11 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     continue(own_response(%{state | own: own}, purpose, :deadline))
   end
 
+  def handle_info({:timeout, timer, :exit_recheck}, %{exit_timer: timer} = state) do
+    state = %{state | exit_timer: nil, exit_rechecks: state.exit_rechecks + 1}
+    continue(check(state))
+  end
+
   def handle_info({:shutdown_signal, signal}, %{phase: phase} = state)
       when signal in [:sigterm, :sighup] and phase != :finished do
     state = if state.ui, do: Enum.reduce(tracked(state), state, &signal_stop/2), else: state
@@ -302,7 +330,8 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         finish(reconcile(state, "command", text), 0)
 
       %{status: :accepted, identifiers: ids} ->
-        %{state | phase: :running, runs: Enum.take(ids, 8)}
+        runs = Enum.take(ids, 8)
+        %{state | phase: :running, runs: runs, known: MapSet.new(runs)}
 
       _ ->
         finish_with(
@@ -391,7 +420,16 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     end
   end
 
-  defp enforce_limits(%{limited?: true} = state), do: state
+  defp enforce_limits(%{phase: :finished} = state), do: state
+
+  # A fired limit stays fired: the update of a run launched before it can
+  # arrive after the update that crossed it, and that run is stopped too.
+  defp enforce_limits(%{limited?: true} = state) do
+    case stop_live(state) do
+      {state, []} -> state
+      {state, [_ | _]} -> finish(state, 1, nil, state.stop_reason)
+    end
+  end
 
   # The turn limit looks at each live run's lead; the budget at what all the
   # tracked runs cost together, so a swarm a chat launched cannot spend past
@@ -438,20 +476,28 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp limit_stop(state, reason, words) do
     state = note_stop_reason(state, reason)
-
-    {state, sent?} =
-      Enum.reduce(tracked(state), {state, false}, fn run_id, {state, sent?} ->
-        if live_run?(state, run_id) do
-          id = elem(State.next_id(state.ui, :request), 0)
-          {state, effects} = update(state, {:invoke, {:run_control, :stop, run_id}, id})
-          {state, sent? or Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1))}
-        else
-          {state, sent?}
-        end
-      end)
+    {state, _unstoppable} = stop_live(state)
+    sent? = MapSet.size(state.stopping) > 0
 
     state = say(%{state | limited?: true}, words)
     if sent?, do: %{state | stopped?: true}, else: finish_with(state, reason, 1)
+  end
+
+  # Asks every tracked run that is live and not yet asked to stop. Returns the
+  # live ones that offer no stop to ask for.
+  defp stop_live(state) do
+    Enum.reduce(tracked(state), {state, []}, fn run_id, {state, unstoppable} ->
+      if live_run?(state, run_id) and not MapSet.member?(state.stopping, run_id) do
+        id = elem(State.next_id(state.ui, :request), 0)
+        {state, effects} = update(state, {:invoke, {:run_control, :stop, run_id}, id})
+
+        if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)),
+          do: {%{state | stopping: MapSet.put(state.stopping, run_id)}, unstoppable},
+          else: {state, [run_id | unstoppable]}
+      else
+        {state, unstoppable}
+      end
+    end)
   end
 
   # The first cause wins: it is what the summary's `reason` says when the
@@ -468,23 +514,36 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   # -- runs the prompt's runs launched ---------------------------------------
 
-  defp tracked(state), do: state.runs ++ state.followed
+  # The prompt's runs, then the ones they launched, in the order found.
+  defp tracked(state), do: state.runs ++ Enum.reverse(state.followed)
 
   # Adds the runs among `runs` that a tracked run launched, and those they
-  # launched in turn, oldest first, up to `@max_followed`.
+  # launched in turn, oldest first. None is left out: a run that is not
+  # followed would be neither waited for nor reported, and the session's close
+  # would stop it.
   defp follow(state, runs) do
-    known = MapSet.new(tracked(state))
+    by_parent = Enum.group_by(runs, & &1.parent_run_id)
+    follow_children(state, by_parent, MapSet.to_list(state.known))
+  end
 
+  defp follow_children(state, _by_parent, []), do: state
+
+  defp follow_children(state, by_parent, parents) do
     fresh =
-      runs
-      |> Enum.filter(&(is_binary(&1.parent_run_id) and &1.parent_run_id in known))
-      |> Enum.reject(&(&1.id in known))
+      parents
+      |> Enum.flat_map(&Map.get(by_parent, &1, []))
+      |> Enum.reject(&MapSet.member?(state.known, &1.id))
+      |> Enum.uniq_by(& &1.id)
       |> Enum.sort_by(&{&1.created_sequence, &1.id})
-      |> Enum.take(@max_followed - length(state.followed))
+      |> Enum.map(& &1.id)
 
-    if fresh == [],
-      do: state,
-      else: follow(%{state | followed: state.followed ++ Enum.map(fresh, & &1.id)}, runs)
+    state = %{
+      state
+      | followed: Enum.reverse(fresh, state.followed),
+        known: Enum.into(fresh, state.known)
+    }
+
+    follow_children(state, by_parent, fresh)
   end
 
   # A run whose cost stays unknown is never stopped by the budget; said once,
@@ -546,10 +605,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   # lead's before its message exists).
   defp answer_items(state) do
     model = state.ui.read_model
-    ids = tracked(state)
 
     for item <- ReadModel.items(model, :workspace),
-        item.run_id in ids,
+        MapSet.member?(state.known, item.run_id),
         item.role == :assistant and item.kind == :text and item.id != item.node_id,
         do: ReadModel.transcript_item(model, item.id)
   end
@@ -614,10 +672,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp announce_tools(state) do
     model = state.ui.read_model
-    ids = tracked(state)
 
     Enum.reduce(ReadModel.items(model, :workspace), state, fn item, state ->
-      if item.run_id in ids and item.kind == :tool and
+      if MapSet.member?(state.known, item.run_id) and item.kind == :tool and
            not MapSet.member?(state.announced, item.id) do
         title =
           case item.tool do
@@ -639,7 +696,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     state.ui.read_model.interactions
     |> Map.values()
     |> Enum.filter(
-      &(&1.state == :pending and &1.run_id in tracked(state) and
+      &(&1.state == :pending and MapSet.member?(state.known, &1.run_id) and
           not MapSet.member?(state.handled, {&1.id, &1.expected_revision}))
     )
     |> Enum.sort_by(&{&1.created_at, &1.id})
@@ -755,10 +812,8 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   # (`"blocked by …"`, `"hook blocked: …"`, from the op's error in the item's
   # text) counts as denied, once per item.
   defp count_blocked(state, items) do
-    ids = tracked(state)
-
     Enum.reduce(items, state, fn item, state ->
-      if item.run_id in ids and item.kind == :tool and
+      if MapSet.member?(state.known, item.run_id) and item.kind == :tool and
            not MapSet.member?(state.blocked, item.id) and blocked?(item.text) do
         %{
           state
@@ -842,14 +897,33 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp maybe_settle(%{phase: :running} = state) do
     runs = Enum.map(tracked(state), &Map.get(state.ui.read_model.runs, &1))
 
-    if Enum.all?(runs, &(&1 != nil and &1.state in @settled)) do
-      query_completion(state)
-    else
-      state
+    cond do
+      not Enum.all?(runs, &(&1 != nil and &1.state in @settled)) -> state
+      finishing?(state, runs) -> await_exit(state)
+      true -> query_completion(state)
     end
   end
 
   defp maybe_settle(state), do: state
+
+  # A row reads `done` before its process has stopped, and a workflow's
+  # process starts its continuation (a chat turn it is recorded as the
+  # launcher of) in between. Concluding on the row would close the session on
+  # a turn that does not exist yet, so the processes of the ended runs are
+  # waited for, for a bounded time.
+  defp finishing?(%{exit_wait: {_ms, max}, exit_rechecks: done}, _runs) when done >= max,
+    do: false
+
+  defp finishing?(state, runs) do
+    Enum.any?(runs, fn run ->
+      run.state in @terminal and match?(true, safely(fn -> state.server_alive?.(run.id) end))
+    end)
+  end
+
+  defp await_exit(%{exit_timer: nil, exit_wait: {ms, _max}} = state),
+    do: %{state | exit_timer: :erlang.start_timer(ms, self(), :exit_recheck)}
+
+  defp await_exit(state), do: state
 
   # The run's last state and its whole answer are read once more after it
   # ends: a non-streaming provider's answer and a long answer's rest arrive
@@ -875,30 +949,21 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     state = follow(state, snapshot.runs)
     ids = tracked(state)
     by_id = Map.new(snapshot.runs, &{&1.id, &1})
-    runs = Enum.flat_map(ids, &List.wrap(by_id[&1]))
+    model_runs = state.ui.read_model.runs
 
-    if length(runs) == length(ids) and Enum.all?(runs, &(&1.state in @settled)) do
-      items =
-        Enum.filter(
-          snapshot.transcript.items,
-          &(&1.run_id in ids and &1.role == :assistant and &1.kind == :text and
-              &1.id != &1.node_id)
-        )
+    # The snapshot holds the newest runs only; a followed run beyond it is
+    # what the deltas last said (all tracked runs had settled to get here).
+    runs = Enum.flat_map(ids, &List.wrap(by_id[&1] || model_runs[&1]))
 
-      state =
-        state
-        |> print_answer(items)
-        |> count_blocked(Enum.filter(snapshot.transcript.items, &(&1.run_id in ids)))
+    cond do
+      length(runs) != length(ids) or not Enum.all?(runs, &(&1.state in @settled)) ->
+        %{state | phase: :running}
 
-      details =
-        for item <- items,
-            item.detail_ref != nil,
-            byte_size(Map.get(state.texts, item.id, "")) < item.detail_ref.total_bytes,
-            do: {item.id, item.detail_ref.id}
+      finishing?(state, runs) ->
+        await_exit(%{state | phase: :running})
 
-      next_detail(%{state | details: details, phase: :fetching}, runs)
-    else
-      %{state | phase: :running}
+      true ->
+        read_answers(state, snapshot, runs)
     end
   end
 
@@ -914,6 +979,30 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp own_response(state, {:detail, _, _, runs}, _) do
     next_detail(say(state, "the rest of the answer could not be read."), runs)
+  end
+
+  defp read_answers(state, snapshot, runs) do
+    items =
+      Enum.filter(
+        snapshot.transcript.items,
+        &(MapSet.member?(state.known, &1.run_id) and &1.role == :assistant and
+            &1.kind == :text and &1.id != &1.node_id)
+      )
+
+    state =
+      state
+      |> print_answer(items)
+      |> count_blocked(
+        Enum.filter(snapshot.transcript.items, &MapSet.member?(state.known, &1.run_id))
+      )
+
+    details =
+      for item <- items,
+          item.detail_ref != nil,
+          byte_size(Map.get(state.texts, item.id, "")) < item.detail_ref.total_bytes,
+          do: {item.id, item.detail_ref.id}
+
+    next_detail(%{state | details: details, phase: :fetching}, runs)
   end
 
   defp next_detail(%{details: []} = state, runs), do: conclude(state, runs)
@@ -978,17 +1067,19 @@ defmodule SwarmCodeCLI.Plain.OneShot do
           else: finish(state, 0)
 
       true ->
-        # Every run that did not finish is named, in order; the first line is
-        # the summary's `error`. The line saying why this process stopped a
-        # run was written when it did.
-        lines =
+        # Every run that did not finish is named, in order, and so is every
+        # launched run that did; the summary's `error` is the first line of a
+        # run that did not. The line saying why this process stopped a run was
+        # written when it did.
+        entries =
           for run <- runs,
               not (run.state == :done and run.id in state.runs),
               not (state.stopped? and run.state == :stopped),
-              do: run_words(state, run)
+              do: {run.state, run_words(state, run)}
 
-        state = Enum.reduce(lines, state, &say(&2, &1))
-        finish(%{state | error_text: List.first(lines)}, 1)
+        state = Enum.reduce(entries, state, fn {_state, line}, state -> say(state, line) end)
+        error = Enum.find_value(entries, fn {run_state, line} -> run_state != :done && line end)
+        finish(%{state | error_text: error}, 1)
     end
   end
 
@@ -1033,6 +1124,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp finish(%{phase: :finished} = state, _, _, _), do: state
 
   defp finish(state, code, message, reason) do
+    if state.exit_timer, do: :erlang.cancel_timer(state.exit_timer)
     state = if message, do: say(state, message), else: state
 
     state =
@@ -1060,7 +1152,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     safely(fn -> DataSource.close(state.client) end)
     if state.observer, do: send(state.observer, {:one_shot, self(), {:finished, code}})
-    %{state | phase: :finished, mid_line?: false}
+    %{state | phase: :finished, mid_line?: false, exit_timer: nil}
   end
 
   defp finish_with(state, key, code, message \\ nil),

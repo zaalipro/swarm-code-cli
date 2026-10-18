@@ -229,4 +229,334 @@ defmodule SwarmCodeCLI.Plain.OneShotFollowTest do
     assert code(session) == 1
     assert text(context.error) =~ "stopped at --max-budget-usd 0.05 (the runs cost $0.07)."
   end
+
+  describe "a limit that fired before a launched run was heard of" do
+    test "--max-budget-usd stops a run whose first update comes after the crossing one",
+         context do
+      session =
+        start(context, format: :json, max_budget_usd: 0.05)
+        |> accept()
+        |> run_update(:running, cost_usd: 0.06)
+
+      # The chat run crossed the limit; the swarm it launched is not known yet.
+      assert_receive {:source, {:request, :command, %Request{kind: {:run_control, :stop, id}}}},
+                     5_000
+
+      assert id == H.run_id()
+      refute_receive {:source, {:request, :command, _}}, 100
+
+      session = child_update(session, child(@swarm, :swarm, :running, H.run_id()))
+
+      assert_receive {:source,
+                      {:request, :command, %Request{kind: {:run_control, :stop, @swarm}}}},
+                     5_000
+
+      # Asked once, not on every update that follows.
+      session = child_update(session, child(@swarm, :swarm, :running, H.run_id()))
+      refute_receive {:source, {:request, :command, _}}, 100
+
+      session =
+        session
+        |> run_update(:stopped, cost_usd: 0.06)
+        |> child_update(child(@swarm, :swarm, :stopped, H.run_id()))
+
+      complete(
+        session,
+        [run(:stopped, cost_usd: 0.06), child(@swarm, :swarm, :stopped, H.run_id())],
+        []
+      )
+
+      assert code(session) == 1
+      assert %{"reason" => "max_budget", "runs" => runs} = json(context)
+      assert Enum.map(runs, & &1["state"]) == ["stopped", "stopped"]
+      assert text(context.error) =~ "stopped at --max-budget-usd 0.05"
+    end
+
+    test "--max-turns stops a run whose first update comes after the crossing one", context do
+      session =
+        start(context, format: :json, max_turns: 2)
+        |> accept()
+        |> run_update(:running)
+        |> agent_update(3)
+
+      assert_receive {:source, {:request, :command, %Request{kind: {:run_control, :stop, id}}}},
+                     5_000
+
+      assert id == H.run_id()
+
+      session = child_update(session, child(@workflow, :workflow, :running, H.run_id()))
+
+      assert_receive {:source,
+                      {:request, :command, %Request{kind: {:run_control, :stop, @workflow}}}},
+                     5_000
+
+      session =
+        session
+        |> run_update(:stopped)
+        |> child_update(child(@workflow, :workflow, :stopped, H.run_id()))
+
+      complete(session, [run(:stopped), child(@workflow, :workflow, :stopped, H.run_id())], [])
+      assert code(session) == 1
+      assert %{"reason" => "max_turns", "runs" => [_, %{"id" => @workflow}]} = json(context)
+    end
+
+    test "a run discovered later that offers no stop ends the session, reported as running",
+         context do
+      session =
+        start(context, format: :json, max_budget_usd: 0.05)
+        |> accept()
+        |> run_update(:running, cost_usd: 0.06)
+
+      assert_receive {:source, {:request, :command, %Request{kind: {:run_control, :stop, _}}}},
+                     5_000
+
+      child_update(
+        session,
+        child(@swarm, :swarm, :running, H.run_id(), allowed_actions: [])
+      )
+
+      assert code(session) == 1
+      assert %{"reason" => "max_budget", "runs" => runs} = json(context)
+
+      assert Enum.map(runs, &{&1["id"], &1["state"]}) == [
+               {H.run_id(), "running"},
+               {@swarm, "running"}
+             ]
+    end
+  end
+
+  describe "runs without a cap" do
+    @count 70
+
+    defp numbered(n),
+      do: "88888888-8888-4888-8888-" <> String.pad_leading(Integer.to_string(n), 12, "0")
+
+    defp workflow(n, state, extra \\ []) do
+      child(
+        numbered(n),
+        :workflow,
+        state,
+        H.run_id(),
+        [created_sequence: n + 1, title: "flow #{n}"] ++ extra
+      )
+    end
+
+    defp heard(session, runs), do: Enum.reduce(runs, session, &child_update(&2, &1))
+
+    test "a failed run past the 64th is waited for, named, and fails the session", context do
+      all =
+        for n <- 1..@count,
+            do: if(n == 66, do: workflow(n, :failed, error: "boom"), else: workflow(n, :done))
+
+      session =
+        start(context, format: :json)
+        |> accept()
+        |> heard(all)
+        |> run_update(:done)
+
+      complete(session, [run(:done) | all], [])
+      assert code(session) == 1
+
+      summary = json(context)
+      assert %{"exit_code" => 1, "state" => "failed", "reason" => "run_failed"} = summary
+      assert summary["error"] == ~s(the workflow "flow 66" failed: boom)
+      assert length(summary["runs"]) == @count + 1
+      assert numbered(@count) in Enum.map(summary["runs"], & &1["id"])
+      assert Enum.count(summary["runs"], &(&1["state"] == "failed")) == 1
+      assert text(context.error) =~ ~s(ncode: the workflow "flow 70" finished.)
+    end
+
+    test "a run past the 64th that is still running holds the session until it ends", context do
+      early = for n <- 1..(@count - 1), do: workflow(n, :done)
+
+      session =
+        start(context, format: :json)
+        |> accept()
+        |> heard(early)
+        |> child_update(workflow(@count, :running))
+        |> run_update(:done)
+
+      refute_completion_query()
+      refute_received {:code, _}
+
+      last = workflow(@count, :done)
+      session = child_update(session, last)
+      complete(session, [run(:done) | early] ++ [last], [])
+      assert code(session) == 0
+
+      assert %{"runs" => runs} = json(context)
+      assert length(runs) == @count + 1
+      assert Enum.all?(runs, &(&1["state"] == "done"))
+    end
+
+    test "a followed run the snapshot's page no longer holds is read from the deltas",
+         context do
+      all = for n <- 1..@count, do: workflow(n, :done)
+
+      session =
+        start(context, format: :json)
+        |> accept()
+        |> heard(all)
+        |> run_update(:done)
+
+      complete(session, [run(:done) | Enum.drop(all, 10)], [])
+      assert code(session) == 0
+      assert %{"runs" => runs} = json(context)
+      assert length(runs) == @count + 1
+    end
+  end
+
+  describe "the error of a mixed outcome" do
+    test "names the first run that did not finish, not a launched run that did", context do
+      swarm = child(@swarm, :swarm, :done, H.run_id(), title: "good swarm")
+
+      broken =
+        child(@workflow, :workflow, :failed, H.run_id(),
+          created_sequence: 3,
+          title: "bad flow",
+          error: "worker crashed"
+        )
+
+      session =
+        start(context, format: :json)
+        |> accept()
+        |> child_update(swarm)
+        |> child_update(broken)
+        |> run_update(:done)
+
+      complete(session, [run(:done), swarm, broken], [])
+      assert code(session) == 1
+
+      assert %{"error" => error, "state" => "failed", "runs" => runs} = json(context)
+      assert error == ~s(the workflow "bad flow" failed: worker crashed)
+      assert Enum.map(runs, & &1["state"]) == ["done", "done", "failed"]
+
+      stderr = text(context.error)
+      assert stderr =~ ~s(ncode: the swarm "good swarm" finished.)
+      assert stderr =~ ~s(ncode: the workflow "bad flow" failed: worker crashed)
+    end
+
+    test "is the pause sentence when a finished run precedes a paused one", context do
+      swarm = child(@swarm, :swarm, :done, H.run_id(), title: "good swarm")
+
+      paused =
+        child(@workflow, :workflow, :paused, H.run_id(),
+          created_sequence: 3,
+          title: "parked flow",
+          error: "provider down"
+        )
+
+      session =
+        start(context, format: :json)
+        |> accept()
+        |> child_update(swarm)
+        |> child_update(paused)
+        |> run_update(:done)
+
+      complete(session, [run(:done), swarm, paused], [])
+      assert code(session) == 1
+      assert %{"error" => error, "state" => "paused"} = json(context)
+      assert error =~ ~s(the workflow "parked flow" paused: provider down)
+    end
+  end
+
+  describe "a finished run whose process still runs" do
+    @continuation "99999999-9999-4999-8999-999999999999"
+
+    defp alive_flag(context) do
+      {:ok, flag} = Agent.start_link(fn -> true end)
+      on_exit(fn -> if Process.alive?(flag), do: Agent.stop(flag) end)
+      Map.put(context, :alive, flag)
+    end
+
+    defp alive?(%{alive: flag}), do: fn _id -> Agent.get(flag, & &1) end
+
+    test "is waited for, and the turn it starts is followed to its end", context do
+      context = alive_flag(context)
+      flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
+
+      session =
+        start(context, format: :json, server_alive?: alive?(context))
+        |> accept()
+        |> child_update(flow)
+        |> run_update(:done)
+
+      # Both rows read done; the workflow's process has not ended.
+      refute_completion_query()
+      refute_received {:code, _}
+
+      continuation =
+        child(@continuation, :chat, :running, @workflow,
+          created_sequence: 3,
+          title: "[workflow review flow finished]"
+        )
+
+      session = child_update(session, continuation)
+      Agent.update(context.alive, fn _ -> false end)
+      refute_completion_query()
+
+      done = %{continuation | state: :done}
+      session = child_update(session, done)
+      complete(session, [run(:done), flow, done], [])
+      assert code(session) == 0
+
+      assert %{"exit_code" => 0, "runs" => runs} = json(context)
+
+      assert [
+               %{"launched" => false},
+               %{"id" => @workflow, "launched" => true},
+               %{"id" => @continuation, "kind" => "chat", "launched" => true, "state" => "done"}
+             ] = runs
+
+      assert text(context.error) =~
+               ~s(ncode: the chat "[workflow review flow finished]" finished.)
+    end
+
+    test "is not waited for once it has ended and started nothing", context do
+      context = alive_flag(context)
+      flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
+
+      session =
+        start(context, format: :json, server_alive?: alive?(context), exit_wait: {10, 1_000})
+        |> accept()
+        |> child_update(flow)
+        |> run_update(:done)
+
+      refute_completion_query()
+      Agent.update(context.alive, fn _ -> false end)
+
+      complete(session, [run(:done), flow], [])
+      assert code(session) == 0
+      assert %{"runs" => [_, %{"id" => @workflow}]} = json(context)
+    end
+
+    test "is waited for a bounded time", context do
+      context = alive_flag(context)
+      flow = child(@workflow, :workflow, :done, H.run_id(), title: "review flow")
+
+      session =
+        start(context, format: :json, server_alive?: alive?(context), exit_wait: {5, 4})
+        |> accept()
+        |> child_update(flow)
+        |> run_update(:done)
+
+      # The process never ends; the wait does.
+      complete(session, [run(:done), flow], [])
+      assert code(session) == 0
+    end
+
+    test "does not hold a paused run, which has no process to wait for", context do
+      paused = child(@workflow, :workflow, :paused, H.run_id(), error: "parked")
+
+      session =
+        start(context, format: :json, server_alive?: fn id -> id == @workflow end)
+        |> accept()
+        |> child_update(paused)
+        |> run_update(:done)
+
+      complete(session, [run(:done), paused], [])
+      assert code(session) == 1
+      assert %{"state" => "paused"} = json(context)
+    end
+  end
 end

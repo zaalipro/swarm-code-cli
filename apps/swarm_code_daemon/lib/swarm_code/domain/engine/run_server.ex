@@ -4933,7 +4933,13 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
     if SwarmCode.Domain.Engine.chat_run_ids(conversation.id) == [] do
       text = "[workflow #{wf.display_name} finished]\n" <> workflow_summary(wf)
-      SwarmCode.Domain.Engine.start_chat_turn(conversation, text, [], store_user: false)
+
+      # CLI: the turn records the workflow as its launcher, as `start_swarm`
+      # does for a swarm, so a headless `-p` follows it.
+      SwarmCode.Domain.Engine.start_chat_turn(conversation, text, [],
+        store_user: false,
+        launched_by_run_id: state.run.id
+      )
     end
   end
 

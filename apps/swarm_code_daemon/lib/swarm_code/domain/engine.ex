@@ -315,6 +315,9 @@ defmodule SwarmCode.Domain.Engine do
         ),
       # Spec 45 §5.2: a resumed turn names the run it continues.
       resumed_from_run_id: opts[:resume_of],
+      # CLI: the workflow whose result this turn continues, so `ncode -p`
+      # keeps following what a launched run leads to (`RunServer.continue_assistant/2`).
+      launched_by_run_id: opts[:launched_by_run_id],
       # Spec 50 §4: the run remembers the mode it ran in; the conversation's
       # flag is free to change afterwards, and §7's gate asks the run.
       mode: conversation.mode || "build",
