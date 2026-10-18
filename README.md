@@ -146,8 +146,10 @@ and `/quit`; `/panel`, `/diff`, `/theme` and `/mouse` are kept in `cli.json`.
 Typing `/` lists every command above the composer. The project's approval mode is the desktop's and is always on
 the status line: a new project is read-only until `/trust`; in `auto`, edits and
 safe commands (`ls`, `git status`) run by themselves and other commands ask.
-Quitting stops the session's runs and prints a short summary that lists the runs
-it stopped and a `ncode --resume <id>` hint for the conversation. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
+Quitting stops the runs of every conversation of the session (the confirmation counts them
+all and says how many are in other conversations) and prints a short summary that lists the
+runs it stopped, naming the conversation of those from other conversations, and a
+`ncode --resume <id>` hint for the conversation. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
 to the terminal; a session that closes on "the daemon connection closed" says why there. A second `ncode` on the same database exits with status 3
 and one sentence naming the first one's process; a Ctrl-C outside the full-screen
 view (while it starts, during `-p`, after the summary) simply ends the program.

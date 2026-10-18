@@ -1121,7 +1121,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         prompt && "  " <> label.("Last prompt") <> prompt,
         summary[:spent] && "  " <> label.("Spent") <> spent_line(summary[:spent]),
         files != [] && "  " <> label.("Files changed") <> files_line(files),
-        stopped != [] && "  " <> label.("Stopped") <> stopped_lines(stopped),
+        stopped != [] &&
+          "  " <> label.("Stopped") <> stopped_lines(stopped, summary[:conversation]),
         notice && "  " <> label.("Note") <> notice,
         "  " <> label.("Resume") <> resume_command(summary[:root], summary[:conversation]),
         ""
@@ -1138,23 +1139,42 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   # pass71 S4 (R1): every run the quit stopped, one per line under the count.
+  # pass76: the quit stops the runs of every conversation, so the count says
+  # how many ran in other conversations than `shown` and each of those lines
+  # names its conversation.
   @doc false
-  def stopped_lines(runs) do
+  def stopped_lines(runs, shown \\ nil) do
     indent = "\n" <> String.duplicate(" ", 16) <> "· "
 
     Enum.join([
-      plural(length(runs), "live run")
-      | Enum.map(runs, fn run -> indent <> stopped_run(run) end)
+      plural(length(runs), "live run") <>
+        elsewhere_count(Enum.count(runs, &elsewhere?(&1, shown)))
+      | Enum.map(runs, fn run -> indent <> stopped_run(run, shown) end)
     ])
   end
 
-  defp stopped_run(run) do
+  defp elsewhere_count(0), do: ""
+  defp elsewhere_count(1), do: " (1 in another conversation)"
+  defp elsewhere_count(count), do: " (#{count} in other conversations)"
+
+  defp elsewhere?(run, shown),
+    do: is_binary(shown) and is_binary(run[:conversation_id]) and run[:conversation_id] != shown
+
+  defp stopped_run(run, shown) do
     title = one_line(run[:title]) || "Untitled run"
 
-    case run[:kind] do
-      kind when kind in [nil, "", "chat"] -> title
-      kind -> title <> " · " <> (one_line(kind) || "run")
-    end
+    kind =
+      case run[:kind] do
+        kind when kind in [nil, "", "chat"] -> ""
+        kind -> " · " <> (one_line(kind) || "run")
+      end
+
+    where =
+      if elsewhere?(run, shown),
+        do: " · in " <> (one_line(run[:conversation]) || "another conversation"),
+        else: ""
+
+    title <> kind <> where
   end
 
   defp files_line(files) do

@@ -427,6 +427,19 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
 
   defp hover(state), do: Theme.style(:hover, state.capabilities).background
 
+  # pass76: a quit stops every conversation's runs; the dialog says how many
+  # of the counted ones are not in the conversation shown.
+  defp elsewhere_words(elsewhere, live) when is_integer(elsewhere) and elsewhere > 0 do
+    cond do
+      elsewhere >= live and live == 1 -> "It is in another conversation. "
+      elsewhere >= live -> "All of them are in other conversations. "
+      elsewhere == 1 -> "1 is in another conversation. "
+      true -> "#{elsewhere} are in other conversations. "
+    end
+  end
+
+  defp elsewhere_words(_elsewhere, _live), do: ""
+
   defp message_layer?({kind, _}) when kind in [:unsent_changes, :confirm_intent, :command_report],
     do: true
 
@@ -758,10 +771,12 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
         cancel =
           control("cancel", Density.safe("Esc cancel", state, 20), {:local, :close_top_layer})
 
+        elsewhere = elsewhere_words(Map.get(state, :quit_live_elsewhere), live)
+
         {Density.safe("Stop " <> runs <> " and quit?", state, 60),
          [
-           {"quit_live_runs", Density.safe("They stop when ncode quits." <> draft, state, 200),
-            nil}
+           {"quit_live_runs",
+            Density.safe(elsewhere <> "They stop when ncode quits." <> draft, state, 240), nil}
          ], quit ++ [cancel], focused}
 
       _ ->

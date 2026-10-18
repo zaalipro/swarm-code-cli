@@ -1,12 +1,14 @@
 defmodule SwarmCodeCLI.UI.DataSource.DTO.ShellSnapshot do
   @moduledoc "Bounded, closed ShellSnapshot presentation facts."
   use SwarmCodeCLI.UI.DataSource.DTO.Schema,
-    wire_defaults: [rate_limits: [], vitals: nil],
+    wire_defaults: [rate_limits: [], vitals: nil, elsewhere: nil],
     fields: [
       # pass70 C1: every provider's last rate-limit window (`rate_limit` deltas).
       rate_limits: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.RateLimit}},
       # cli021 C2: the side panel's vitals at the time of the snapshot.
       vitals: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Vitals}},
+      # pass76: the live runs and waits of the other conversations.
+      elsewhere: {:optional, {:dto, SwarmCodeCLI.UI.DataSource.DTO.Elsewhere}},
       runs: {:list, {:dto, SwarmCodeCLI.UI.DataSource.DTO.RunSummary}},
       connection: {:dto, SwarmCodeCLI.UI.DataSource.DTO.Connection},
       counts: {:dto, SwarmCodeCLI.UI.DataSource.DTO.Counts},
@@ -22,6 +24,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.ShellSnapshot do
     defaults: [
       rate_limits: [],
       vitals: nil,
+      elsewhere: nil,
       runs: [],
       connection: nil,
       counts: nil,

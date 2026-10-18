@@ -37,11 +37,19 @@ defmodule SwarmCode.Daemon.Shutdown do
   @session_end_projects 20
 
   @typedoc """
-  `stopped_runs` (pass71 S4): the runs the quit stopped, oldest first, each
-  `%{id, kind, title}` (`title` is the run's label, else its prompt; either
-  may be nil). `stopped` is their count.
+  `stopped_runs` (pass71 S4): the runs the quit stopped, in every
+  conversation, oldest first, each `%{id, kind, title, conversation_id,
+  conversation}` (`title` is the run's label, else its prompt; `conversation`
+  is the title of the conversation it belongs to; any may be nil). `stopped`
+  is their count.
   """
-  @type stopped_run :: %{id: binary(), kind: binary() | nil, title: binary() | nil}
+  @type stopped_run :: %{
+          id: binary(),
+          kind: binary() | nil,
+          title: binary() | nil,
+          conversation_id: binary() | nil,
+          conversation: binary() | nil
+        }
   @type result :: %{
           paused: non_neg_integer(),
           stopped: non_neg_integer(),
@@ -158,15 +166,29 @@ defmodule SwarmCode.Daemon.Shutdown do
           id: id,
           kind: run.kind,
           title: text(run.label) || text(run.prompt),
+          conversation_id: run.conversation_id,
+          conversation: conversation_title(run.conversation_id),
           at: run.inserted_at && DateTime.to_unix(run.inserted_at, :microsecond)
         }
 
       nil ->
-        %{id: id, kind: nil, title: nil, at: nil}
+        unknown_run(id)
     end
   rescue
-    _ -> %{id: id, kind: nil, title: nil, at: nil}
+    _ -> unknown_run(id)
   end
+
+  defp unknown_run(id),
+    do: %{id: id, kind: nil, title: nil, conversation_id: nil, conversation: nil, at: nil}
+
+  defp conversation_title(id) when is_binary(id) do
+    case Conversations.get(id) do
+      %{title: title} -> text(title)
+      _ -> nil
+    end
+  end
+
+  defp conversation_title(_), do: nil
 
   defp text(value) when is_binary(value) do
     if String.trim(value) == "", do: nil, else: value

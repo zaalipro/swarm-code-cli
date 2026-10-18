@@ -2060,10 +2060,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp open_destination(state, {kind, id}), do: Watch.open(state, :workspace, kind, id)
 
   # A quit the user asked for confirms unsent work and live runs: the release
-  # stops every run it owns on the way out. A terminal that failed or is
-  # closing only confirms unsent work, as before.
+  # stops every run it owns on the way out, in every conversation. A terminal
+  # that failed or is closing only confirms unsent work, as before.
   defp exit_requested(state, kind, count_live? \\ true) do
     live = if count_live?, do: live_run_count(state), else: 0
+    elsewhere = if count_live?, do: live_elsewhere_count(state), else: 0
 
     if State.dirty?(state) or live > 0 do
       layer = {:unsent_changes, kind}
@@ -2076,6 +2077,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
          state
          | exit_pending: kind,
            quit_live_runs: live,
+           quit_live_elsewhere: elsewhere,
            layers: layers,
            hidden_focus: state.focus,
            focus: "cancel"
@@ -2085,10 +2087,23 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
-  @doc "The runs a quit would stop: every run in view that has not finished."
+  @doc """
+  The runs a quit would stop: every run in view that has not finished and
+  every live run of the session's other conversations (the daemon's
+  `elsewhere` fact; the quit stops them all).
+  """
   @spec live_run_count(State.t()) :: non_neg_integer()
-  def live_run_count(state),
-    do: Enum.count(state.read_model.runs, fn {_, run} -> run.state in @live_states end)
+  def live_run_count(state) do
+    Enum.count(state.read_model.runs, fn {_, run} -> run.state in @live_states end) +
+      live_elsewhere_count(state)
+  end
+
+  @doc "How many of `live_run_count/1` run in conversations other than the one shown."
+  @spec live_elsewhere_count(State.t()) :: non_neg_integer()
+  def live_elsewhere_count(%{read_model: %{elsewhere: %{live: live}}}) when is_integer(live),
+    do: live
+
+  def live_elsewhere_count(_state), do: 0
 
   defp repair_switcher(old, %{layers: [{kind, _} = layer | _]} = next)
        when kind in [:switcher, :action_menu, :region_filter] do

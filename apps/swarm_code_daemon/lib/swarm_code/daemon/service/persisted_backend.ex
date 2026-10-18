@@ -47,6 +47,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @stream_events [:assistant_delta, :assistant_reset, :reasoning_delta, :reasoning_reset]
   alias SwarmCode.Daemon.Service.AgentStatus
   alias SwarmCode.Daemon.Service.ContextWindow
+  alias SwarmCode.Daemon.Service.Elsewhere
   alias SwarmCode.Daemon.Service.Vitals
   alias SwarmCode.Daemon.Service.PanelFacts
   alias SwarmCode.Daemon.Service.Settings.Deltas, as: SettingsDeltas
@@ -106,6 +107,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       Events.subscribe(opts[:conversation_id])
       Events.ui_subscribe()
+      # pass76: a run of any conversation changing status moves the
+      # `elsewhere` fact (live runs and waits of the other conversations).
+      Conversations.subscribe_runs()
       # cli021 C2: the side panel's vitals, measured only while a shell watch
       # exists (`sync_vitals/1`); it stops with this process.
       {:ok, vitals} =
@@ -199,6 +203,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # cli021 C2: the vitals process (model speeds and memory of the shown
         # conversation).
         vitals: vitals,
+        # pass76: the `elsewhere` facts last sent on the shell watch and the
+        # timer (`:erlang.start_timer` ref) that recomputes them.
+        elsewhere: nil,
+        elsewhere_timer: nil,
         # cli020 C3 (bugs-19): the ledger prune this backend started (owned
         # work under the job supervisor, never the init callback itself).
         # cli020 C14: the clipboard image slots this session opened.
@@ -282,6 +290,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          false <- Map.has_key?(state.watches, key),
          true <- map_size(state.watches) < 128,
          state <- refresh(state),
+         state <- baseline_elsewhere(state, request.params["slot"]),
          {:ok, kind, body} <- snapshot(request.params, scope, nil, state) do
       entry = %{
         scope: scope,
@@ -609,7 +618,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: {:noreply, toast(state, "info", "ncode", text, nil)}
 
   def handle_info({:waiting_changed}, state),
-    do: {:noreply, schedule_refresh(waiting_elsewhere(state))}
+    do: {:noreply, state |> waiting_elsewhere() |> arm_elsewhere() |> schedule_refresh()}
+
+  # pass76: any conversation's run changed status.
+  def handle_info({:run_status, _conversation_id, _status}, state),
+    do: {:noreply, arm_elsewhere(state)}
+
+  # The timer names its own ref: a replaced one that still delivers is stale.
+  def handle_info({:timeout, ref, :elsewhere_due}, %{elsewhere_timer: {ref, kind}} = state),
+    do: {:noreply, publish_elsewhere(%{state | elsewhere_timer: nil}, kind)}
+
+  def handle_info({:timeout, _stale, :elsewhere_due}, state), do: {:noreply, state}
 
   # Runs of this conversation may be research or workflow runs; the library
   # itself is read on demand, so a changed workflow file needs no delta.
@@ -772,6 +791,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     SettingsTasks.terminate(state.settings_tasks)
     cancel_facts_job(state.facts_job, state.task_supervisor)
     AgentStatus.cancel_all(state.agent_status, state.task_supervisor)
+    cancel_elsewhere(state)
 
     SwarmCode.Domain.PubSub.unsubscribe(
       SwarmCode.Domain.PubSub,
@@ -2052,7 +2072,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         end)
 
       reload(%{
-        state
+        release_elsewhere(%{state | watches: watches})
         | opts: Keyword.put(state.opts, :conversation_id, id),
           watches: watches,
           runs: %{},
@@ -2394,6 +2414,84 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         wait.conversation_id
       )
     end)
+  end
+
+  # pass76: the live runs and waits of the other conversations. A trigger (a
+  # run of any conversation changed status, a wait appeared or went) arms one
+  # settle timer; a status event can reach us before the run is registered or
+  # before its process is gone, so the settled reading is checked once more,
+  # and then every 2 s while a run lives elsewhere. Nothing is read or armed
+  # unless a client is on the shell watch. The timer is this process's own and
+  # `terminate/2` cancels it.
+  @elsewhere_settle_ms 250
+  @elsewhere_recheck_ms 2_000
+
+  defp arm_elsewhere(%{elsewhere_timer: {_ref, :settle}} = state), do: state
+
+  defp arm_elsewhere(state) do
+    if shell_watch?(state) do
+      cancel_elsewhere(state)
+      %{state | elsewhere_timer: elsewhere_timer(@elsewhere_settle_ms, :settle)}
+    else
+      state
+    end
+  end
+
+  defp shell_watch?(state), do: Enum.any?(state.watches, fn {_key, e} -> e.slot == "shell" end)
+
+  defp elsewhere_timer(ms, kind), do: {:erlang.start_timer(ms, self(), :elsewhere_due), kind}
+
+  defp cancel_elsewhere(%{elsewhere_timer: {ref, _kind}}), do: Process.cancel_timer(ref)
+  defp cancel_elsewhere(_state), do: :ok
+
+  defp publish_elsewhere(state, kind) do
+    if shell_watch?(state) do
+      facts = Elsewhere.facts(state.opts[:conversation_id])
+      state = if facts == state.elsewhere, do: state, else: send_elsewhere(state, facts)
+
+      if kind == :settle or facts.live > 0,
+        do: %{state | elsewhere_timer: elsewhere_timer(@elsewhere_recheck_ms, :recheck)},
+        else: state
+    else
+      state
+    end
+  end
+
+  # `state.elsewhere` is what every shell watch was last told. The first shell
+  # watch takes the facts as they are now (its snapshot says exactly these) and
+  # later deltas are measured against them; the last one leaving drops them.
+  defp baseline_elsewhere(%{elsewhere: nil} = state, "shell"),
+    do: %{state | elsewhere: Elsewhere.facts(state.opts[:conversation_id])}
+
+  defp baseline_elsewhere(state, _slot), do: state
+
+  defp release_elsewhere(state) do
+    if shell_watch?(state) do
+      state
+    else
+      cancel_elsewhere(state)
+      %{state | elsewhere: nil, elsewhere_timer: nil}
+    end
+  end
+
+  defp elsewhere_body(state),
+    do: Elsewhere.body(state.elsewhere || Elsewhere.facts(state.opts[:conversation_id]))
+
+  defp send_elsewhere(state, facts) do
+    revision = state.revision + 1
+
+    broadcast(%{state | revision: revision, elsewhere: facts}, %{
+      "kind" => "elsewhere",
+      "entity_id" => nil,
+      "run_id" => nil,
+      "conversation_id" => nil,
+      "channel" => nil,
+      "attempt_id" => nil,
+      "text" => nil,
+      "body" => Elsewhere.body(facts),
+      "sequence" => 0,
+      "revision" => revision
+    })
   end
 
   defp conversation_title(id) do
@@ -4611,7 +4709,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "settings_update",
                 "settings_task",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "elsewhere"
               ]
 
             _other when settings_delta? ->
@@ -4626,7 +4725,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "elsewhere"
               ]
 
             # pass70 C6: background commands belong to the workspace and the
@@ -4638,7 +4738,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "elsewhere"
               ]
 
             _ ->
@@ -4651,6 +4752,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "background_remove",
                 "desktop_running",
                 "vitals",
+                "elsewhere",
                 "shell_upsert",
                 "shell_remove"
               ]
@@ -4793,7 +4895,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       {entry, watches} ->
         Process.demonitor(entry.monitor, [:flush])
-        sync_vitals(%{state | watches: watches})
+        sync_vitals(release_elsewhere(%{state | watches: watches}))
     end
   end
 
@@ -4866,6 +4968,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "rate_limits" =>
                   state.rate_limits |> Map.values() |> Enum.sort_by(& &1["provider"]),
                 "vitals" => vitals_body(state),
+                "elsewhere" => elsewhere_body(state),
                 "runs" => selected,
                 "connection" => %{
                   "state" => "connected",

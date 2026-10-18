@@ -4,14 +4,17 @@ defmodule SwarmCodeCLI.UI.Reducer.Attention do
   title, derived after every transition from what changed.
 
     * `{:bell, :needs_you}` when an approval or question of the conversation in
-      view first appears, and `{:bell, :turn_done}` when a run this session
-      started reaches done, failed or stopped; only while the terminal
-      reported focus lost (`state.terminal_focus == :lost`, so a terminal
-      without focus reports never bells) and at most once per 2 s (the
-      owner's clock, `state.last_bell_at`). Each bell is followed by
-      `{:notify_os, text}`, the words a notification shows ("ncode: <project>
-      needs you (approval)", "… finished"); the session runtime picks one of
-      the two by `terminal.notify` (bell, OSC 9, the OS notification centre).
+      view first appears, or of any other conversation of the session (the
+      daemon's `elsewhere` fact; the words name that conversation), and
+      `{:bell, :turn_done}` when a run this session started reaches done,
+      failed or stopped; only while the terminal reported focus lost
+      (`state.terminal_focus == :lost`, so a terminal without focus reports
+      never bells) and at most once per 2 s (the owner's clock,
+      `state.last_bell_at`). Each bell is followed by `{:notify_os, text}`, the
+      words a notification shows ("ncode: <project> needs you (approval)",
+      "… needs you (approval in <conversation>)", "… finished"); the session
+      runtime picks one of the two by `terminal.notify` (bell, OSC 9, the OS
+      notification centre).
     * `{:terminal_title, text}` whenever the title changes: `ncode · <project>`
       idle, `… · working` while a run of the conversation is live, `… · needs
       you` while an interaction waits, `… · done` after an unfocused finish
@@ -43,24 +46,52 @@ defmodule SwarmCodeCLI.UI.Reducer.Attention do
 
   defp bells(previous, next) do
     needs = new_needs(previous, next)
+    elsewhere = new_elsewhere(previous, next)
     done = finished_runs(previous, next)
 
     cond do
       next.terminal_focus != :lost or next.notify == :off ->
         {next, []}
 
-      needs == [] and done == [] ->
+      needs == [] and elsewhere == [] and done == [] ->
         {next, []}
 
       not bell_allowed?(next) ->
         {next, []}
 
-      needs != [] ->
-        kind = if Enum.any?(needs, &(&1 == :approval)), do: "approval", else: "question"
-        ring(next, :needs_you, "#{prefix(next)} needs you (#{kind})")
+      needs != [] or elsewhere != [] ->
+        ring(next, :needs_you, "#{prefix(next)} needs you (#{needs_words(needs, elsewhere)})")
 
       true ->
         ring(next, :turn_done, "#{prefix(next)} #{outcome_word(done)}")
+    end
+  end
+
+  # "approval" for the conversation in view; "approval in <title>" when the
+  # only new request waits in one other conversation; "approval in N
+  # conversations" when they span several (the one in view counts as one).
+  defp needs_words(needs, elsewhere) do
+    kinds = needs ++ Enum.map(elsewhere, & &1.kind)
+    kind = if Enum.any?(kinds, &(&1 == :approval)), do: "approval", else: "question"
+
+    conversations =
+      elsewhere
+      |> Enum.uniq_by(& &1.conversation_id)
+      |> Enum.map(&conversation_name(&1.title))
+
+    case {needs, conversations} do
+      {_, []} -> kind
+      {[], [name]} -> kind <> " in " <> name
+      {_, names} -> "#{kind} in #{length(names) + if(needs == [], do: 0, else: 1)} conversations"
+    end
+  end
+
+  defp conversation_name(title) do
+    with {:ok, safe} <- SafeText.external(title, SafeText.Limits.content()),
+         name when name != "" <- safe |> SafeText.value() |> String.trim() do
+      Width.elide(name, @project_cells, :end, :narrow)
+    else
+      _ -> "another conversation"
     end
   end
 
@@ -94,6 +125,30 @@ defmodule SwarmCodeCLI.UI.Reducer.Attention do
 
     for {id, kind} <- pending(next), not Map.has_key?(before, id), do: kind
   end
+
+  # The approvals and questions of the session's other conversations (the
+  # daemon's `elsewhere` fact) that were not waiting before this transition.
+  # Without a fact held before there is no baseline: what already waited when
+  # the first one arrived rings nothing. A conversation in view before or now
+  # belongs to the in-view rule: switching away from one that waits is not
+  # news, because that wait moves into this list as the shell watch re-snapshots.
+  defp new_elsewhere(previous, next) do
+    with %{waiting: before} <- previous.read_model.elsewhere,
+         %{waiting: now} <- next.read_model.elsewhere do
+      known = MapSet.new(before, &{&1.run_id, &1.id})
+      seen = [viewed(previous), viewed(next)]
+
+      for wait <- now,
+          not MapSet.member?(known, {wait.run_id, wait.id}),
+          wait.conversation_id not in seen,
+          do: wait
+    else
+      _ -> []
+    end
+  end
+
+  defp viewed(%{destination: {:conversation, id}}), do: id
+  defp viewed(_state), do: nil
 
   defp pending(state) do
     case state.destination do

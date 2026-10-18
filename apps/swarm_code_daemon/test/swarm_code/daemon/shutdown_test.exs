@@ -122,6 +122,47 @@ defmodule SwarmCode.Daemon.ShutdownTest do
     end
   end
 
+  # pass76 cli-quit-attention: the quit stops the runs of every conversation,
+  # and each stopped run says which conversation it belonged to.
+  test "quit reports the runs of every conversation with the conversation's title" do
+    alias SwarmCode.Domain.{Conversations, Projects}
+    root = Path.join(System.tmp_dir!(), "shutdown-conv-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+    {:ok, project} = Projects.create(%{name: "Quit across", root_path: root})
+    {:ok, first} = Conversations.create(project.id)
+    {:ok, second} = Conversations.create(project.id)
+    {:ok, first} = Conversations.update(first, %{title: "First work"})
+
+    runs =
+      for {conversation, prompt} <- [{first, "Fix the login test"}, {second, "Research caching"}] do
+        {:ok, run} =
+          Conversations.create_run(%{
+            conversation_id: conversation.id,
+            kind: "chat",
+            prompt: prompt,
+            status: "running",
+            started_at: DateTime.utc_now()
+          })
+
+        {conversation, run, fake_run_server(run.id, {conversation.id, "chat"})}
+      end
+
+    assert %{stopped: 2, stopped_runs: stopped} = Shutdown.run(teardown: false, flush_ms: 0)
+
+    assert Enum.sort_by(stopped, & &1.title)
+           |> Enum.map(&{&1.title, &1.conversation_id, &1.conversation}) ==
+             [
+               {"Fix the login test", first.id, "First work"},
+               {"Research caching", second.id, "New conversation"}
+             ]
+
+    for {_conversation, run, server} <- runs do
+      assert Enum.any?(stopped, &(&1.id == run.id))
+      assert_receive {:stopped, ^server}
+    end
+  end
+
   # cli020 A2 (desktop Quit at 4c7c577, spec 74 ARCHITECTURE-6): a quit waits,
   # bounded, for the run-end isolation cleanups once the runs are down.
   @tag :capture_log

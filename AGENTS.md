@@ -124,7 +124,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   `Daemon.Boot` is the desktop's `Bootstrap` (interrupted runs, seeded providers, MCP, research
   sweep, attachment prune, delayed isolation sweep; never the Scheduler, which the desktop
   owns) and `Daemon.Shutdown` its `Quit` (stop runs, kill background commands, wait for the
-  flush, stop run/research/MCP/LSP subtrees): quitting a session stops its runs.
+  flush, stop run/research/MCP/LSP subtrees): quitting a session stops the runs of every
+  conversation, not only the one on screen.
   `domain/runtime.ex` starts the domain's children, including `Tools.BackgroundProcs`,
   `Hooks.TaskSupervisor` (every tool call's post-hook needs it) and `LSP.Supervisor`.
   `Daemon.Runtime.Run` is the transient in-memory runtime the live launcher uses; saved sessions go
@@ -231,7 +232,8 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   turn or closes the top layer and never moves focus; Ctrl-C closes a layer, else clears the
   draft (Ctrl-Z restores it), else stops the turn (also the turn Enter just sent, before it
   shows), and none of those arms the quit; two idle Ctrl-C presses within 1.5 s quit (pass71
-  R1, asking "Stop N live runs and quit?" when runs are live); Enter before the conversation
+  R1, asking "Stop N live runs and quit?" when runs are live in any conversation of the
+  session, and saying how many are in other conversations); Enter before the conversation
   has loaded is kept and sent once it has (R2); `q` closes or quits only in select
   mode (Ctrl-T), dialogs and pickers. Ctrl-J (the port decodes a bare LF as Ctrl-J) and Ctrl-O insert a
   newline; Ctrl-X edits the draft in `$VISUAL`/`$EDITOR`. An approval card opens over the
@@ -443,9 +445,10 @@ Keys and terminal (lane D):
   failed or stopped run; Enter/`o` on a tool row open its full output. Large pastes collapse to
   `[Pasted text #N · L lines]` and are expanded on send (`Draft.Pastes`). A `/search` with hits
   opens the palette on its `?` rows (`State.search_results`).
-- Attention (D3): while the terminal reports focus lost, a new approval/question or the end of a
-  run this session started rings once per 2 s as BEL, OSC 9 or an OS notification
-  (`terminal.notify`), and the window title says `ncode · <project>` [`· working`, `· needs
+- Attention (D3): while the terminal reports focus lost, a new approval/question (in any
+  conversation of the session; the words name another conversation: `ncode: <project> needs you
+  (approval in <title>)`) or the end of a run this session started rings once per 2 s as BEL, OSC 9
+  or an OS notification (`terminal.notify`), and the window title says `ncode · <project>` [`· working`, `· needs
   you`, `· done`] (`terminal.title`); the port saves and restores the terminal's own title.
 - Copy (D4): `y` uses `/usr/bin/pbcopy` on macOS outside SSH, otherwise OSC 52 (tmux
   passthrough when `TMUX` is set); the notice says which.
@@ -561,6 +564,19 @@ of `docs/research/2026-10-07-cli020-outcome.md`. No desktop change, no sync, no 
   workspace's `local_zone` (`Next.local_zone/0`, read once per daemon) and, left blank, is
   filled by the daemon's changeset with the same function. `Library.schedule_form/2` applies
   this to new and daemon-supplied forms.
+- Other conversations (pass 76): the read model holds the shown conversation only, but a quit
+  stops every conversation's runs and a request can wait in any of them. The shell watch
+  therefore carries `DTO.Elsewhere` (`ShellSnapshot.elsewhere` and the `elsewhere` delta,
+  `ReadModel.elsewhere`): `live` runs outside the shown conversation (exact) and the newest 32
+  `waiting` approvals/questions there, each with its conversation's title. `Daemon.Service.Elsewhere`
+  reads the run registry and the waits table; `PersistedBackend` recomputes it 250 ms after a
+  run status event of any conversation or a waits change, once more 2 s later and then every 2 s
+  while a run lives elsewhere (one owned timer, only while a client watches the shell). The
+  reducer reads it purely: `Reducer.live_run_count/1` (quit confirmation: `quit_live_runs`, and
+  `quit_live_elsewhere` for the dialog's "N are in other conversations") and
+  `Reducer.Attention` (a wait id not in the previous fact rings once per the 2 s throttle; the
+  first fact held is a baseline). `Shutdown.run/1`'s `stopped_runs` carry `conversation_id` and
+  `conversation`, so the exit summary names where the runs of other conversations ran.
 - Quit summary (F5): `Files changed` is the net change of the session (`net_changed/3` in
   `release/persisted_session.ex`): a path whose file equals the session's first checkpoint of it,
   or was absent before and is absent now, is left out (a rewind or a hand revert).

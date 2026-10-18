@@ -23,6 +23,9 @@ defmodule SwarmCodeCLI.UI.State do
     # Live runs the quit confirmation is about; the dialog says "Stop N live
     # runs and quit?" when this is above zero.
     quit_live_runs: 0,
+    # How many of those are in conversations other than the one shown
+    # (`ReadModel.elsewhere`); the dialog says so.
+    quit_live_elsewhere: 0,
     # While an approval or question has just opened by itself, keys keep typing
     # into the draft until the user pauses; this is that pause's timer id.
     interaction_grace: nil,
