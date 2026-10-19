@@ -5,7 +5,9 @@ defmodule SwarmCodeCLI.Release.HeadlessApprovalTest do
   untrusted project refuses `auto` and `full` (exit 3) before any service
   starts.
   """
-  use ExUnit.Case, async: true
+  # Not async: `capture_io(:stderr)` takes over the one named stderr device, so
+  # an async test writing to it meanwhile lands in the exact comparison below.
+  use ExUnit.Case, async: false
   import ExUnit.CaptureIO
 
   alias SwarmCodeCLI.Release
@@ -65,7 +67,28 @@ defmodule SwarmCodeCLI.Release.HeadlessApprovalTest do
         end)
       end)
 
-    assert %{"state" => "not_started", "error" => @sentence, "exit_code" => 3} =
+    assert %{
+             "state" => "not_started",
+             "reason" => "untrusted_approval",
+             "error" => @sentence,
+             "exit_code" => 3
+           } = Jason.decode!(stdout)
+  end
+
+  test "stream-json ends with the same reason" do
+    {stdout, _stderr} =
+      with_io(:stderr, fn ->
+        capture_io(fn ->
+          assert Headless.run({:prompt, "hi", :stream_json},
+                   project_root: System.tmp_dir!(),
+                   conversation: "new",
+                   approval_mode: "full_access",
+                   with_saved_session: opened(session(nil), self())
+                 ) == 3
+        end)
+      end)
+
+    assert %{"type" => "summary", "reason" => "untrusted_approval", "exit_code" => 3} =
              Jason.decode!(stdout)
   end
 

@@ -28,6 +28,7 @@ defmodule SwarmCodeCLI.Release.HeadlessJsonTest do
 
     assert %{
              "state" => "not_started",
+             "reason" => "startup_failed",
              "conversation_id" => nil,
              "run_id" => nil,
              "text" => "",
@@ -53,6 +54,19 @@ defmodule SwarmCodeCLI.Release.HeadlessJsonTest do
                  3
       end)
 
-    assert %{"type" => "summary", "error" => "no", "exit_code" => 3} = Jason.decode!(out)
+    assert %{"type" => "summary", "error" => "no", "exit_code" => 3, "reason" => "startup_failed"} =
+             Jason.decode!(out)
+  end
+
+  # pass76 cli-reason-codes: a caller that knows why names it.
+  test "a given reason is the one printed, in json and in the stream" do
+    for mode <- [{:prompt, "x", :json}, {:prompt, "x", :stream_json}, :json, :stream_json] do
+      out =
+        capture_io(fn ->
+          assert Headless.json_failure(mode, "no", 3, "data_lease_held") == 3
+        end)
+
+      assert %{"reason" => "data_lease_held", "exit_code" => 3} = Jason.decode!(out)
+    end
   end
 end

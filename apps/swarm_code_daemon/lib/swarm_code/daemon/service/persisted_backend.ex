@@ -47,6 +47,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @stream_events [:assistant_delta, :assistant_reset, :reasoning_delta, :reasoning_reset]
   alias SwarmCode.Daemon.Service.AgentStatus
   alias SwarmCode.Daemon.Service.ContextWindow
+  alias SwarmCode.Daemon.Service.Elsewhere
   alias SwarmCode.Daemon.Service.Vitals
   alias SwarmCode.Daemon.Service.PanelFacts
   alias SwarmCode.Daemon.Service.Settings.Deltas, as: SettingsDeltas
@@ -106,6 +107,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       Events.subscribe(opts[:conversation_id])
       Events.ui_subscribe()
+      # pass76: a run of any conversation changing status moves the
+      # `elsewhere` fact (live runs and waits of the other conversations).
+      Conversations.subscribe_runs()
       # cli021 C2: the side panel's vitals, measured only while a shell watch
       # exists (`sync_vitals/1`); it stops with this process.
       {:ok, vitals} =
@@ -127,6 +131,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       SwarmCode.Domain.Storage.subscribe()
       # pass74 S1-10 (M3): cleanups keep back the conversation shown here.
       SwarmCode.Domain.UIState.opened(opts[:conversation_id])
+      ledger_started_at = DateTime.utc_now()
+      ledger_prune_ms = ledger_prune_ms(opts)
 
       state = %{
         opts: Keyword.put(opts, :project_root, root),
@@ -199,8 +205,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # cli021 C2: the vitals process (model speeds and memory of the shown
         # conversation).
         vitals: vitals,
+        # pass76: the `elsewhere` facts last sent on the shell watch and the
+        # timer (`:erlang.start_timer` ref) that recomputes them.
+        elsewhere: nil,
+        elsewhere_timer: nil,
         # cli020 C3 (bugs-19): the ledger prune this backend started (owned
-        # work under the job supervisor, never the init callback itself).
+        # work under the job supervisor, never the init callback itself),
+        # pass76: and the timer (`:erlang.start_timer` ref) of the next one.
         # cli020 C14: the clipboard image slots this session opened.
         clipboard_slots: %{},
         # cli020 C15: the running `!` command (one per conversation) and the
@@ -221,8 +232,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         ledger_prune:
           start_ledger_prune(
             Keyword.get(opts, :task_supervisor, SwarmCode.Domain.TaskSupervisor),
-            DateTime.utc_now()
+            ledger_started_at,
+            :start
           ),
+        ledger_started_at: ledger_started_at,
+        ledger_prune_ms: ledger_prune_ms,
+        ledger_timer: ledger_timer(ledger_prune_ms),
         # pass71 S2: running read jobs (task ref => job), where they run, and
         # the functions that do the slow work (tests inject blocking fakes).
         jobs: %{},
@@ -282,6 +297,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          false <- Map.has_key?(state.watches, key),
          true <- map_size(state.watches) < 128,
          state <- refresh(state),
+         state <- baseline_elsewhere(state, request.params["slot"]),
          {:ok, kind, body} <- snapshot(request.params, scope, nil, state) do
       entry = %{
         scope: scope,
@@ -510,6 +526,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:DOWN, ref, :process, _, _}, %{ledger_prune: %Task{ref: ref}} = state),
     do: {:noreply, %{state | ledger_prune: nil}}
 
+  # pass76: the timer names its own ref, so a cancelled one that still delivers
+  # is stale. The next one is armed first: a failed pass is tried again later.
+  def handle_info({:timeout, ref, :ledger_prune_due}, %{ledger_timer: ref} = state) do
+    state = %{state | ledger_timer: ledger_timer(state.ledger_prune_ms)}
+    {:noreply, ledger_prune_due(state)}
+  end
+
+  def handle_info({:timeout, _stale, :ledger_prune_due}, state), do: {:noreply, state}
+
   # pass71 F8: a retry of a queued prompt whose start was refused.
   def handle_info({:drain_queue, conversation_id}, state) do
     if conversation_id == state.opts[:conversation_id],
@@ -609,7 +634,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: {:noreply, toast(state, "info", "ncode", text, nil)}
 
   def handle_info({:waiting_changed}, state),
-    do: {:noreply, schedule_refresh(waiting_elsewhere(state))}
+    do: {:noreply, state |> waiting_elsewhere() |> arm_elsewhere() |> schedule_refresh()}
+
+  # pass76: any conversation's run changed status.
+  def handle_info({:run_status, _conversation_id, _status}, state),
+    do: {:noreply, arm_elsewhere(state)}
+
+  # The timer names its own ref: a replaced one that still delivers is stale.
+  def handle_info({:timeout, ref, :elsewhere_due}, %{elsewhere_timer: {ref, kind}} = state),
+    do: {:noreply, publish_elsewhere(%{state | elsewhere_timer: nil}, kind)}
+
+  def handle_info({:timeout, _stale, :elsewhere_due}, state), do: {:noreply, state}
 
   # Runs of this conversation may be research or workflow runs; the library
   # itself is read on demand, so a changed workflow file needs no delta.
@@ -759,6 +794,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def terminate(_, state) do
     Enum.each(state.queues.entries, fn {_id, entry} -> cancel_queue_effects(entry) end)
     cancel_jobs(state, wire_error(:source_unavailable))
+
+    with ref when is_reference(ref) <- Map.get(state, :ledger_timer),
+         do: Process.cancel_timer(ref)
+
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
     with %{task: %Task{} = task} <- Map.get(state, :git), do: Task.shutdown(task, :brutal_kill)
@@ -772,6 +811,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     SettingsTasks.terminate(state.settings_tasks)
     cancel_facts_job(state.facts_job, state.task_supervisor)
     AgentStatus.cancel_all(state.agent_status, state.task_supervisor)
+    cancel_elsewhere(state)
 
     SwarmCode.Domain.PubSub.unsubscribe(
       SwarmCode.Domain.PubSub,
@@ -2052,7 +2092,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         end)
 
       reload(%{
-        state
+        release_elsewhere(%{state | watches: watches})
         | opts: Keyword.put(state.opts, :conversation_id, id),
           watches: watches,
           runs: %{},
@@ -2394,6 +2434,85 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         wait.conversation_id
       )
     end)
+  end
+
+  # pass76: the session's live runs (`total`, which the quit confirmation
+  # counts) and the live runs and waits of the other conversations. A trigger
+  # (a run of any conversation changed status, a wait appeared or went) arms
+  # one settle timer; a status event can reach us before the run is registered
+  # or before its process is gone, so the settled reading is checked once
+  # more, and then every 2 s while a run lives. Nothing is read or armed
+  # unless a client is on the shell watch. The timer is this process's own and
+  # `terminate/2` cancels it.
+  @elsewhere_settle_ms 250
+  @elsewhere_recheck_ms 2_000
+
+  defp arm_elsewhere(%{elsewhere_timer: {_ref, :settle}} = state), do: state
+
+  defp arm_elsewhere(state) do
+    if shell_watch?(state) do
+      cancel_elsewhere(state)
+      %{state | elsewhere_timer: elsewhere_timer(@elsewhere_settle_ms, :settle)}
+    else
+      state
+    end
+  end
+
+  defp shell_watch?(state), do: Enum.any?(state.watches, fn {_key, e} -> e.slot == "shell" end)
+
+  defp elsewhere_timer(ms, kind), do: {:erlang.start_timer(ms, self(), :elsewhere_due), kind}
+
+  defp cancel_elsewhere(%{elsewhere_timer: {ref, _kind}}), do: Process.cancel_timer(ref)
+  defp cancel_elsewhere(_state), do: :ok
+
+  defp publish_elsewhere(state, kind) do
+    if shell_watch?(state) do
+      facts = Elsewhere.facts(state.opts[:conversation_id])
+      state = if facts == state.elsewhere, do: state, else: send_elsewhere(state, facts)
+
+      if kind == :settle or facts.total > 0,
+        do: %{state | elsewhere_timer: elsewhere_timer(@elsewhere_recheck_ms, :recheck)},
+        else: state
+    else
+      state
+    end
+  end
+
+  # `state.elsewhere` is what every shell watch was last told. The first shell
+  # watch takes the facts as they are now (its snapshot says exactly these) and
+  # later deltas are measured against them; the last one leaving drops them.
+  defp baseline_elsewhere(%{elsewhere: nil} = state, "shell"),
+    do: %{state | elsewhere: Elsewhere.facts(state.opts[:conversation_id])}
+
+  defp baseline_elsewhere(state, _slot), do: state
+
+  defp release_elsewhere(state) do
+    if shell_watch?(state) do
+      state
+    else
+      cancel_elsewhere(state)
+      %{state | elsewhere: nil, elsewhere_timer: nil}
+    end
+  end
+
+  defp elsewhere_body(state),
+    do: Elsewhere.body(state.elsewhere || Elsewhere.facts(state.opts[:conversation_id]))
+
+  defp send_elsewhere(state, facts) do
+    revision = state.revision + 1
+
+    broadcast(%{state | revision: revision, elsewhere: facts}, %{
+      "kind" => "elsewhere",
+      "entity_id" => nil,
+      "run_id" => nil,
+      "conversation_id" => nil,
+      "channel" => nil,
+      "attempt_id" => nil,
+      "text" => nil,
+      "body" => Elsewhere.body(facts),
+      "sequence" => 0,
+      "revision" => revision
+    })
   end
 
   defp conversation_title(id) do
@@ -2806,12 +2925,34 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp clipboard_refusal(reason), do: reason
 
-  defp start_ledger_prune(supervisor, started_at) do
-    # cli020 C14: the same owned start-up work removes clipboard inbox files
-    # an earlier session left behind (older than an hour).
+  # pass76: the prune also runs every `@ledger_prune_ms` while the session
+  # lives, 5,000 rows at most per pass, as a task of its own (one at a time;
+  # a pass still running when the timer fires is left to finish). The timer is
+  # this process's and `terminate/2` cancels it.
+  @ledger_prune_ms 3_600_000
+
+  defp ledger_prune_ms(opts) do
+    case Keyword.get(opts, :ledger_prune_ms) do
+      ms when is_integer(ms) and ms > 0 -> ms
+      _ -> @ledger_prune_ms
+    end
+  end
+
+  defp ledger_timer(ms), do: :erlang.start_timer(ms, self(), :ledger_prune_due)
+
+  defp ledger_prune_due(%{ledger_prune: nil} = state) do
+    task = start_ledger_prune(state.task_supervisor, state.ledger_started_at, :tick)
+    %{state | ledger_prune: task}
+  end
+
+  defp ledger_prune_due(state), do: state
+
+  defp start_ledger_prune(supervisor, started_at, pass) do
     Task.Supervisor.async_nolink(supervisor, fn ->
-      ClipboardInbox.sweep(started_at)
-      CommandLedger.prune(started_at, started_at)
+      # cli020 C14: the same owned start-up work removes clipboard inbox files
+      # an earlier session left behind (older than an hour).
+      if pass == :start, do: ClipboardInbox.sweep(started_at)
+      CommandLedger.prune(DateTime.utc_now(), started_at)
     end)
   rescue
     _ -> nil
@@ -4486,8 +4627,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "verdict" => verdict && blank_nil(verdict["summary"])
     }
 
+    facts = put_pause_reason(facts, row, panel.workflows[row.id])
     %{run | agents: agents, panel: facts}
   end
+
+  # A paused workflow run says why it was parked in the run's `error`, the
+  # one sentence a headless `-p` run reports when it cannot resume the run.
+  defp put_pause_reason(facts, %{status: "paused"}, %{pause_message: message})
+       when is_binary(message) and message != "",
+       do: Map.put(facts, "error", clip(message, 200))
+
+  defp put_pause_reason(facts, _row, _workflow), do: facts
 
   # cli020 C5: the newest open op of an agent of this run that the provider
   # is being asked again for (`Operation` writes `retrying n/N · reason`).
@@ -4602,7 +4752,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "settings_update",
                 "settings_task",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "elsewhere"
               ]
 
             _other when settings_delta? ->
@@ -4617,7 +4768,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "elsewhere"
               ]
 
             # pass70 C6: background commands belong to the workspace and the
@@ -4629,7 +4781,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "toast",
                 "rate_limit",
                 "desktop_running",
-                "vitals"
+                "vitals",
+                "elsewhere"
               ]
 
             _ ->
@@ -4642,6 +4795,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "background_remove",
                 "desktop_running",
                 "vitals",
+                "elsewhere",
                 "shell_upsert",
                 "shell_remove"
               ]
@@ -4784,7 +4938,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
       {entry, watches} ->
         Process.demonitor(entry.monitor, [:flush])
-        sync_vitals(%{state | watches: watches})
+        sync_vitals(release_elsewhere(%{state | watches: watches}))
     end
   end
 
@@ -4857,6 +5011,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "rate_limits" =>
                   state.rate_limits |> Map.values() |> Enum.sort_by(& &1["provider"]),
                 "vitals" => vitals_body(state),
+                "elsewhere" => elsewhere_body(state),
                 "runs" => selected,
                 "connection" => %{
                   "state" => "connected",

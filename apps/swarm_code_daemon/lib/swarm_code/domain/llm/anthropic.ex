@@ -126,7 +126,13 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
     body = if r.tools == [], do: body, else: Map.put(body, "tools", format_tools(r.tools))
 
     init = %{
-      sse: "",
+      sse: SSE.new_pending(),
+      # pass76 fix-m3-sse (M3-R1-002): set when the stream must end now; the
+      # transport closes the request and does not retry.
+      halt?: false,
+      # pass76 fix-m3-sse (M3-R1-001): the exact key, redacted from in-band
+      # error text before the heuristic masks can cut it.
+      secret: key(r.provider),
       text: Chunks.new(),
       reasoning: Chunks.new(),
       # `blocks` holds the one content block that is open right now, by index;
@@ -690,11 +696,29 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
   end
 
   defp handle_chunk(data, acc, on_event, name) do
-    {events, rest} = SSE.parse(acc.sse, data)
+    case SSE.push(acc.sse, data) do
+      {:ok, events, rest} ->
+        Enum.reduce(events, %{acc | sse: rest}, fn event, acc ->
+          handle_event(event.data, acc, on_event, name)
+        end)
 
-    Enum.reduce(events, %{acc | sse: rest}, fn event, acc ->
-      handle_event(event.data, acc, on_event, name)
-    end)
+      {:overflow, events, limit} ->
+        acc =
+          Enum.reduce(events, %{acc | sse: SSE.new_pending()}, fn event, acc ->
+            handle_event(event.data, acc, on_event, name)
+          end)
+
+        acc =
+          if is_binary(acc.error),
+            do: acc,
+            else: %{
+              acc
+              | error: "#{name} SSE event exceeded #{limit} bytes without ending",
+                error_type: "invalid_response"
+            }
+
+        %{acc | halt?: true}
+    end
   end
 
   defp handle_event(data, acc, on_event, name) do
@@ -831,7 +855,7 @@ defmodule SwarmCode.Domain.LLM.Anthropic do
 
     %{
       acc
-      | error: "#{name} stream error: " <> HTTP.redact(message),
+      | error: "#{name} stream error: " <> HTTP.redact_key(message, [acc.secret]),
         # Spec 51 §6.1: `retry_if/1` reads the type, not the prose.
         error_type: get_in(json, ["error", "type"])
     }

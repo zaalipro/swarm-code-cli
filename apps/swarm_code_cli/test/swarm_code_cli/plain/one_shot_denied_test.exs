@@ -70,6 +70,7 @@ defmodule SwarmCodeCLI.Plain.OneShotDeniedTest do
 
     json = Jason.decode!(text(context.output))
     assert json["exit_code"] == 0
+    assert json["reason"] == nil
     assert length(json["denied"]) == 2
   end
 
@@ -78,7 +79,7 @@ defmodule SwarmCodeCLI.Plain.OneShotDeniedTest do
     session = deny_both(session)
 
     assert code(session) == 1
-    assert Jason.decode!(text(context.output))["exit_code"] == 1
+    assert %{"exit_code" => 1, "reason" => "denied"} = Jason.decode!(text(context.output))
     assert text(context.error) =~ "(approval mode auto)"
     assert text(context.error) =~ "/approval full runs every command without asking."
   end

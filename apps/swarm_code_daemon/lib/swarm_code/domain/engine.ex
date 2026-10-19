@@ -196,13 +196,17 @@ defmodule SwarmCode.Domain.Engine do
       # budget, instead of the literal `8 * 120_000` — on a 1 M model the read
       # window used to be ~4× smaller than the budget the trimmer is sized for,
       # and on a 128 k gateway model it was ~8× larger.
+      # pass76 fix-m2-inflight-backfill: the same note for the rows a completed
+      # compaction reloads verbatim from behind its summary.
+      in_flight = in_flight_beside(conversation.id, run.id)
+
       history =
         Conversations.list_history_window(
           conversation.id,
           4 * SwarmCode.Domain.Engine.Context.budget(chat.model, settings)
         )
-        |> note_in_flight(in_flight_beside(conversation.id, run.id))
-        |> Prompts.history_to_messages()
+        |> note_in_flight(in_flight)
+        |> Prompts.history_to_messages(&note_in_flight(&1, in_flight))
         |> replace_last_user(prompt)
 
       # spec 70 D3: the session_start hook's output joins the instructions —
@@ -315,6 +319,9 @@ defmodule SwarmCode.Domain.Engine do
         ),
       # Spec 45 §5.2: a resumed turn names the run it continues.
       resumed_from_run_id: opts[:resume_of],
+      # CLI: the workflow whose result this turn continues, so `ncode -p`
+      # keeps following what a launched run leads to (`RunServer.continue_assistant/2`).
+      launched_by_run_id: opts[:launched_by_run_id],
       # Spec 50 §4: the run remembers the mode it ran in; the conversation's
       # flag is free to change afterwards, and §7's gate asks the run.
       mode: conversation.mode || "build",
@@ -414,6 +421,9 @@ defmodule SwarmCode.Domain.Engine do
                kind: "compact",
                prompt: message,
                model: chat.model,
+               # CLI: the run whose continuation this compaction precedes
+               # (`compact_then_turn/4`), so `ncode -p` follows it as it follows the turn.
+               launched_by_run_id: opts[:launched_by_run_id],
                # Spec 50 §4 (merge): a compactor is never a planner — it reads the
                # history and writes one summary — so the run says `build` outright
                # rather than leaving the column nil for `Run.agent_name/1` to guess.
@@ -483,7 +493,10 @@ defmodule SwarmCode.Domain.Engine do
     # second compaction, and a compaction that fails must not make every later
     # turn pay for the same failure. The next turn over the threshold raises
     # the flag again.
-    case start_compact(conversation, "", auto: true) do
+    case start_compact(conversation, "",
+           auto: true,
+           launched_by_run_id: opts[:launched_by_run_id]
+         ) do
       {:ok, compact_run_id} ->
         user = store_user_now(conversation, text, attachments, opts)
         chain_turn(conversation, text, attachments, opts, user, compact_run_id)
@@ -522,7 +535,12 @@ defmodule SwarmCode.Domain.Engine do
     started =
       Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
         key = {:chain, conversation.id, compact_run_id}
-        {:ok, _owner} = Registry.register(SwarmCode.Domain.Registry, key, nil)
+        # CLI: the value names the run this turn continues, so `ncode -p` can
+        # ask whether a followed run still has a launch pending
+        # (`Daemon.Service.RunProcesses.pending?/1`); nil for a user's own send.
+        {:ok, _owner} =
+          Registry.register(SwarmCode.Domain.Registry, key, opts[:launched_by_run_id])
+
         send(caller, {ref, :chained})
 
         # A compaction that failed, timed out or was stopped still leaves the
@@ -1355,10 +1373,20 @@ defmodule SwarmCode.Domain.Engine do
 
   defp resume_chat(run) do
     conv = Conversations.get!(run.conversation_id)
-    nodes = Conversations.list_nodes(run.id)
+
+    # pass76 eng-resume-latest: a consensus run reads plans, verdicts and gate
+    # answers out of `prompt`/`result`/`input`, so only it loads whole rows.
+    {prompt, nodes} =
+      if run.consensus == true do
+        nodes = Conversations.list_nodes(run.id)
+        {resume_prompt(run, nodes), nodes}
+      else
+        {nodes, earlier} = Conversations.list_resume_nodes(run.id, :chat)
+        {resume_prompt(run, nodes, earlier), nodes}
+      end
 
     start_chat_turn(conv, "/resume", [],
-      prompt: resume_prompt(run, nodes),
+      prompt: prompt,
       resume_of: run.id,
       goal_id: run.goal_id,
       consensus_rounds: consensus_rounds_seed(run, nodes),
@@ -1412,11 +1440,11 @@ defmodule SwarmCode.Domain.Engine do
 
   defp resume_swarm(run) do
     conv = Conversations.get!(run.conversation_id)
-    nodes = Conversations.list_nodes(run.id)
+    {nodes, earlier} = Conversations.list_resume_nodes(run.id, :swarm)
 
     start_swarm(conv, run.prompt || "",
       message: "/resume",
-      prompt: resume_prompt(run, nodes),
+      prompt: resume_prompt(run, nodes, earlier),
       resume_of: run.id,
       goal_id: run.goal_id,
       launched_by_run_id: run.launched_by_run_id
@@ -1444,8 +1472,10 @@ defmodule SwarmCode.Domain.Engine do
   interruption, and — for a consensus run — where the rounds stood, so the
   planner carries on from the latest verdict instead of starting over.
   """
-  @spec resume_prompt(map(), [map()]) :: String.t()
-  def resume_prompt(%{kind: "swarm"} = run, nodes) do
+  @spec resume_prompt(map(), [map()], non_neg_integer()) :: String.t()
+  def resume_prompt(run, nodes, earlier \\ 0)
+
+  def resume_prompt(%{kind: "swarm"} = run, nodes, earlier) do
     reports =
       for n <- nodes,
           n.kind == "agent",
@@ -1453,26 +1483,38 @@ defmodule SwarmCode.Domain.Engine do
           is_binary(n.result) and n.result != "",
           do: "#{n.name}: #{String.slice(n.result, 0, 400)}" <> branch_note(n)
 
+    omitted =
+      if earlier > 0, do: "(#{earlier} earlier finished workers omitted)\n", else: ""
+
     to_string(run.prompt) <>
       "\n\nALREADY DONE by the previous attempt (worker reports):\n" <>
+      omitted <>
       if(reports == [], do: "(nothing finished)", else: Enum.join(reports, "\n")) <>
       "\nContinue; do not redo finished work."
   end
 
-  def resume_prompt(run, nodes) do
-    titles =
+  # pass76 eng-resume-latest: the NEWEST finished ops (newest last), with the
+  # count of the earlier ones that are not listed.
+  def resume_prompt(run, nodes, earlier) do
+    finished =
       nodes
       |> Enum.filter(&(&1.kind == "op" and &1.status == "done" and &1.op_type != "llm"))
       |> Enum.sort_by(& &1.position)
-      |> Enum.take(20)
-      |> Enum.map(& &1.title)
+
+    shown = Enum.take(finished, -20)
+    earlier = earlier + length(finished) - length(shown)
+    titles = Enum.map(shown, & &1.title)
 
     base =
       if titles == [],
         do: "Continue the interrupted turn. Pick up where you left off.",
         else:
-          "Continue the interrupted turn. Ops completed before the interruption: " <>
-            Enum.join(titles, ", ") <> ". Pick up where you left off."
+          "Continue the interrupted turn. Ops completed before the interruption" <>
+            if(earlier > 0,
+              do: " (the latest #{length(shown)}; #{earlier} earlier omitted)",
+              else: ""
+            ) <>
+            ": " <> Enum.join(titles, ", ") <> ". Pick up where you left off."
 
     case consensus_state_block(run, nodes) do
       nil -> base
@@ -1648,7 +1690,7 @@ defmodule SwarmCode.Domain.Engine do
 
   @spec stop_agent(String.t(), String.t()) :: :ok
   def stop_agent(run_id, node_id) do
-    RunServer.stop_agent(run_id, node_id)
+    RunServer.stop_agent_bounded(run_id, node_id)
     :ok
   end
 
@@ -1690,6 +1732,14 @@ defmodule SwarmCode.Domain.Engine do
   @spec running_run_ids() :: [String.t()]
   def running_run_ids do
     Registry.select(SwarmCode.Domain.Registry, [{{{:run, :"$1"}, :_, :_}, [], [:"$1"]}])
+  end
+
+  @doc "Ids of the conversations that have any run going right now (one registry read)."
+  @spec running_conversation_ids() :: MapSet.t(String.t())
+  def running_conversation_ids do
+    SwarmCode.Domain.Registry
+    |> Registry.select([{{{:run, :_}, :_, {:"$1", :_}}, [], [:"$1"]}])
+    |> MapSet.new()
   end
 
   @spec chat_running?(String.t()) :: boolean()

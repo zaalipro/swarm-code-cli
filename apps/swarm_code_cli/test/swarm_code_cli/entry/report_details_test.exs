@@ -4,7 +4,9 @@ defmodule SwarmCodeCLI.Release.ReportDetailsTest do
   something in it, and never for a refusal the user fixes from the sentence
   itself (no provider, no endpoint, no model, a usage error).
   """
-  use ExUnit.Case, async: true
+  # `capture_io(:stderr)` replaces the global stderr device, so any concurrent
+  # test that writes to stderr would land in the captured text.
+  use ExUnit.Case, async: false
   import ExUnit.CaptureIO
 
   alias SwarmCodeCLI.Release.PersistedSession

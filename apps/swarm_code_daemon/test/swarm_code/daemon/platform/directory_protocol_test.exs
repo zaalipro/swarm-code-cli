@@ -227,6 +227,61 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocolTest do
     assert {:ok, {:error, ^error}} = DirectoryProtocol.decode_reply(:pwd, payload)
   end
 
+  defp payload_of(reply) do
+    assert {:ok, frame} = DirectoryProtocol.encode_reply(:pwd, reply)
+
+    assert {:ok, payload, <<>>} =
+             DirectoryProtocol.push(DirectoryProtocol.new_decoder(), IO.iodata_to_binary(frame))
+
+    payload
+  end
+
+  # The wire document with the atom term `from` replaced by `replacement`.
+  defp replace_atom(payload, from, replacement),
+    do: payload |> Jason.decode!() |> walk(from, replacement) |> Jason.encode!()
+
+  defp walk(%{"$type" => "atom", "value" => from}, from, replacement), do: replacement
+
+  defp walk(%{} = map, from, replacement),
+    do: Map.new(map, fn {key, value} -> {key, walk(value, from, replacement)} end)
+
+  defp walk(list, from, replacement) when is_list(list),
+    do: Enum.map(list, &walk(&1, from, replacement))
+
+  defp walk(other, _from, _replacement), do: other
+
+  test "a schema refusal's typed cause crosses the closed protocol, and only a known one" do
+    error = SwarmCode.Daemon.Schema.Refusal.database_mode("/data/swarm_code.db")
+    assert error.cause == :database_mode
+
+    for refusal <- [error, SwarmCode.Daemon.Schema.Refusal.damaged()] do
+      payload = payload_of({:error, refusal})
+      assert {:ok, {:error, ^refusal}} = DirectoryProtocol.decode_reply(:pwd, payload)
+    end
+
+    for cause <- StartupError.causes() do
+      assert {:ok, _frame} =
+               DirectoryProtocol.encode_reply(:pwd, {:error, %{error | cause: cause}})
+    end
+
+    # A cause the module does not list cannot be sent ...
+    for bad <- [:invented, "database_mode", 7, [:database_mode]] do
+      assert {:error, :invalid_protocol} =
+               DirectoryProtocol.encode_reply(:pwd, {:error, %{error | cause: bad}})
+    end
+
+    # ... nor received: an unknown atom, or the right word as plain text.
+    payload = payload_of({:error, error})
+
+    unknown = replace_atom(payload, "database_mode", %{"$type" => "atom", "value" => "invented"})
+    assert {:error, :invalid_protocol} = DirectoryProtocol.decode_reply(:pwd, unknown)
+
+    text = replace_atom(payload, "database_mode", "database_mode")
+    assert {:error, :invalid_protocol} = DirectoryProtocol.decode_reply(:pwd, text)
+
+    assert {:ok, {:error, ^error}} = DirectoryProtocol.decode_reply(:pwd, payload)
+  end
+
   test "open-source replies contain exactly the identities requested by the source specs" do
     probe = %Probe{
       application_id: 0,

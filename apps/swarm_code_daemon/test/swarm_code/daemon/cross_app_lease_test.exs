@@ -390,10 +390,10 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     GenServer.stop(successor)
   end
 
-  test "admit_repo returns immediate mode and fifteen-second timeouts", %{opts: opts} do
+  test "admit_repo returns immediate mode and a pool timeout above busy_timeout", %{opts: opts} do
     # Asserts the guarded Repo option list desktop parity (the shared domain
     # modules assume IMMEDIATE transactions): default_transaction_mode
-    # :immediate, busy_timeout 15_000, timeout 15_000.
+    # :immediate, busy_timeout 15_000, timeout 60_000 (strictly above busy_timeout).
     #
     # The handshake needs :starting_repo phase + a generation + a caller that
     # is a linked child of the coordinator. Reaching :starting_repo through
@@ -422,7 +422,8 @@ defmodule SwarmCode.Daemon.CrossAppLeaseTest do
     assert_receive {:admitted, {:ok, repo_opts}}, 5_000
     assert Keyword.get(repo_opts, :default_transaction_mode) == :immediate
     assert Keyword.get(repo_opts, :busy_timeout) == 15_000
-    assert Keyword.get(repo_opts, :timeout) == 15_000
+    assert Keyword.get(repo_opts, :timeout) == 60_000
+    assert Keyword.get(repo_opts, :timeout) > Keyword.get(repo_opts, :busy_timeout)
 
     GenServer.stop(owner)
     assert is_pid(caller)

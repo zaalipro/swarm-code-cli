@@ -35,14 +35,14 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
       family; → `{:always_prefix, family}`), `:deny`, `:deny_stop`. `[]` for a
       question.
     * `requested_at` — `DateTime` (UTC) when the run started waiting.
-    * `deadline_at` — `DateTime` when the ask has a timer (30 min after
-      `requested_at`), nil for approvals and infinite asks (pass 75).
+    * `deadline_at` — `DateTime` when the ask's own timer fires; only an
+      `ask_user` with an explicit timeout has one, nil for approvals and every
+      other ask (they never expire).
     * `questions` — for a question row, the unanswered questions
       (`%{index, question, options: [%{label, description}], multiple,
       header, total}`), `[]` for an approval.
   """
 
-  alias SwarmCode.Domain.Engine.Questions
   alias SwarmCode.Domain.Tools.CommandSafety
 
   @max_rows 64
@@ -134,10 +134,15 @@ defmodule SwarmCode.Domain.Engine.PendingInteractions do
         if(family && classification != :dangerous, do: [:always_prefix], else: []) ++
         [:deny, :deny_stop]
 
-  # pass75: when the ask's 30-minute timer fires; nil for an ask without one
-  # (the consensus gate waits for ever).
-  defp deadline_at(%{timer: timer, requested_at: %DateTime{} = at}) when is_reference(timer),
-    do: DateTime.add(at, Questions.deadline_ms(:question), :millisecond)
+  # When the ask's own timer fires. Only an explicitly requested `ask_user`
+  # timeout installs one; otherwise (and for the consensus gate) the ask waits
+  # with no clock and there is no deadline.
+  defp deadline_at(%{timer: timer}) when is_reference(timer) do
+    case Process.read_timer(timer) do
+      ms when is_integer(ms) -> DateTime.add(DateTime.utc_now(), ms, :millisecond)
+      _ -> nil
+    end
+  end
 
   defp deadline_at(_), do: nil
 

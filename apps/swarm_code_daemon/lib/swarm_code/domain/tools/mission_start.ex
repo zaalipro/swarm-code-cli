@@ -97,7 +97,8 @@ defmodule SwarmCode.Domain.Tools.MissionStart do
           budget: Missions.budget(plan, rounds),
           max_live: parallel,
           created_by: "model",
-          auto_continue: true
+          auto_continue: true,
+          launched_by_run_id: ctx[:run_id]
         }
 
         case Workflows.launch(attrs) do

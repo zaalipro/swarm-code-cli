@@ -34,14 +34,27 @@ defmodule SwarmCode.Daemon.Shutdown do
   # cli020 A'4 (desktop pass 72 F9, `Quit.session_end_hooks/1`): the
   # `session_end` hooks get this long, all projects together.
   @session_end_ms 5_000
+  # What a hook that ignored its cap gets before it is shut down.
+  @session_end_grace_ms 1_000
   @session_end_projects 20
+  # pass76: pausing workflows, stopping the runs and killing the survivors have
+  # no deadline of their own; a caller allows this much beyond the phases.
+  @unbounded_steps_ms 9_000
 
   @typedoc """
-  `stopped_runs` (pass71 S4): the runs the quit stopped, oldest first, each
-  `%{id, kind, title}` (`title` is the run's label, else its prompt; either
-  may be nil). `stopped` is their count.
+  `stopped_runs` (pass71 S4): the runs the quit stopped, in every
+  conversation, oldest first, each `%{id, kind, title, conversation_id,
+  conversation}` (`title` is the run's label, else its prompt; `conversation`
+  is the title of the conversation it belongs to; any may be nil). `stopped`
+  is their count.
   """
-  @type stopped_run :: %{id: binary(), kind: binary() | nil, title: binary() | nil}
+  @type stopped_run :: %{
+          id: binary(),
+          kind: binary() | nil,
+          title: binary() | nil,
+          conversation_id: binary() | nil,
+          conversation: binary() | nil
+        }
   @type result :: %{
           paused: non_neg_integer(),
           stopped: non_neg_integer(),
@@ -83,6 +96,25 @@ defmodule SwarmCode.Daemon.Shutdown do
     }
   end
 
+  @doc """
+  pass76: the longest `run/1` takes with its default deadlines (51 s): the
+  `session_end` hooks and their grace, the journal flush, the reaper and
+  cleanup wait they share, and one teardown wait per subtree. Whoever waits
+  for a quit derives its patience from this, never from a number of its own.
+  """
+  @spec max_ms() :: pos_integer()
+  def max_ms do
+    @session_end_ms + @session_end_grace_ms + @flush_ms + @cleanup_ms +
+      length(@teardown) * @teardown_ms
+  end
+
+  @doc """
+  pass76: how long a caller waits for `run/1` before it gives up on it (60 s):
+  `max_ms/0` plus a margin for the steps that have no deadline of their own.
+  """
+  @spec budget_ms() :: pos_integer()
+  def budget_ms, do: max_ms() + @unbounded_steps_ms
+
   # cli020 A'4 (competitors-10): the desktop's `Quit.session_end_hooks/1` at
   # 7b8f379f, run before the runs stop (contract A'4). Each trusted project
   # this session opened runs its `session_end` hooks once, concurrently under
@@ -105,7 +137,7 @@ defmodule SwarmCode.Daemon.Shutdown do
         end
 
       tasks
-      |> Task.yield_many(cap_ms + 1_000)
+      |> Task.yield_many(cap_ms + @session_end_grace_ms)
       |> Enum.each(fn {task, answer} -> answer || Task.shutdown(task, :brutal_kill) end)
     end
 
@@ -158,15 +190,29 @@ defmodule SwarmCode.Daemon.Shutdown do
           id: id,
           kind: run.kind,
           title: text(run.label) || text(run.prompt),
+          conversation_id: run.conversation_id,
+          conversation: conversation_title(run.conversation_id),
           at: run.inserted_at && DateTime.to_unix(run.inserted_at, :microsecond)
         }
 
       nil ->
-        %{id: id, kind: nil, title: nil, at: nil}
+        unknown_run(id)
     end
   rescue
-    _ -> %{id: id, kind: nil, title: nil, at: nil}
+    _ -> unknown_run(id)
   end
+
+  defp unknown_run(id),
+    do: %{id: id, kind: nil, title: nil, conversation_id: nil, conversation: nil, at: nil}
+
+  defp conversation_title(id) when is_binary(id) do
+    case Conversations.get(id) do
+      %{title: title} -> text(title)
+      _ -> nil
+    end
+  end
+
+  defp conversation_title(_), do: nil
 
   defp text(value) when is_binary(value) do
     if String.trim(value) == "", do: nil, else: value

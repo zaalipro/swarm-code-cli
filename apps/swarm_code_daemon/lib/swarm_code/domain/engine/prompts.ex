@@ -500,8 +500,12 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   @verbatim_user_tokens 20_000
   @verbatim_marker "[Your earlier requests, verbatim — the summary below may have dropped detail from them]"
 
-  def history_to_messages(messages) do
-    verbatim_user_messages(messages) ++ do_history_to_messages(messages)
+  # pass76 fix-m2-inflight-backfill: `annotate` maps the rows the verbatim block
+  # reloads from behind the floor (they carry `run_id` until the block is built),
+  # so an in-flight launch there reads as the same note as one in the window.
+  def history_to_messages(messages, annotate \\ &Function.identity/1)
+      when is_function(annotate, 1) do
+    verbatim_user_messages(messages, annotate) ++ do_history_to_messages(messages)
   end
 
   @doc "The marker above the verbatim block a compaction keeps (spec 66 T17)."
@@ -511,7 +515,10 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   # asked for before it is behind `compact_floor/1` and would never be sent
   # again. Newest first until the cap, then back into their original order, then
   # the summary itself (which the caller's own list already carries).
-  defp verbatim_user_messages([%Message{role: "compact", content: content} = first | _rest])
+  defp verbatim_user_messages(
+         [%Message{role: "compact", content: content} = first | _rest],
+         annotate
+       )
        when content != "" do
     with id when is_binary(id) <- first.conversation_id,
          position when is_integer(position) <- first.position,
@@ -522,6 +529,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
              4 * @verbatim_user_tokens
            ) do
       rows
+      |> annotate.()
       |> Enum.reduce_while([], fn m, kept ->
         candidate = [%{role: "user", content: String.trim(m.content)} | kept]
 
@@ -549,7 +557,7 @@ defmodule SwarmCode.Domain.Engine.Prompts do
     end
   end
 
-  defp verbatim_user_messages(_messages), do: []
+  defp verbatim_user_messages(_messages, _annotate), do: []
 
   defp do_history_to_messages(messages) do
     recent = recent_image_ids(messages)

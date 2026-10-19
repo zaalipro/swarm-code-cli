@@ -19,12 +19,13 @@ defmodule SwarmCodeCLI.Release.Headless do
             [
               SwarmCode.Daemon.Service,
               SwarmCode.Daemon.Service.PersistedBackend,
+              SwarmCode.Daemon.Service.RunProcesses,
               Ecto.UUID
             ]}
 
-  alias SwarmCode.Daemon.Service.PersistedBackend
+  alias SwarmCode.Daemon.Service.{PersistedBackend, RunProcesses}
   alias SwarmCodeCLI.Plain.{OneShot, Options}
-  alias SwarmCodeCLI.Release.PersistedSession
+  alias SwarmCodeCLI.Release.{PersistedSession, Reasons}
   alias SwarmCodeCLI.UI.DataSource.Daemon
 
   @type mode :: {:prompt, binary(), :text | :json} | {:plain, :text | :ndjson}
@@ -54,40 +55,58 @@ defmodule SwarmCodeCLI.Release.Headless do
            ) do
       code
     else
-      {:error, failure} -> json_failure(mode, failure.message, PersistedSession.report(failure))
+      {:error, failure} ->
+        json_failure(
+          mode,
+          failure.message,
+          PersistedSession.report(failure),
+          Reasons.for_failure(failure)
+        )
     end
   rescue
-    error -> fail_json(mode, "ncode stopped unexpectedly (#{inspect(error.__struct__)}).")
+    error ->
+      fail_json(
+        mode,
+        "ncode stopped unexpectedly (#{inspect(error.__struct__)}).",
+        Reasons.get(:unexpected_error)
+      )
   catch
-    kind, _ -> fail_json(mode, "ncode stopped unexpectedly (#{kind}).")
+    kind, _ ->
+      fail_json(mode, "ncode stopped unexpectedly (#{kind}).", Reasons.get(:unexpected_error))
   end
 
   @doc """
   cli020 B4: a `-p … --json` that ends before the run prints the summary
   object anyway (stdout is the script's), beside the stderr line. Returns
   `code`. Other modes print nothing.
+
+  pass76: the object carries a stable `reason` word (`Release.Reasons`);
+  without one it is `usage` for exit 2 and `startup_failed` otherwise.
   """
-  @spec json_failure(mode() | :json | term(), String.t(), non_neg_integer()) :: non_neg_integer()
-  def json_failure(mode, sentence, code)
+  @spec json_failure(mode() | :json | term(), String.t(), non_neg_integer(), String.t() | nil) ::
+          non_neg_integer()
+  def json_failure(mode, sentence, code, reason \\ nil)
 
-  def json_failure(:json, sentence, code), do: print_failure(sentence, code)
+  def json_failure(:json, sentence, code, reason), do: print_failure(sentence, code, reason)
 
-  def json_failure({:prompt, _prompt, :json}, sentence, code), do: print_failure(sentence, code)
+  def json_failure({:prompt, _prompt, :json}, sentence, code, reason),
+    do: print_failure(sentence, code, reason)
 
   # cli020 B23: a stream ends with the summary object whatever stopped it.
-  def json_failure(:stream_json, sentence, code),
-    do: print_failure(sentence, code, %{"type" => "summary"})
+  def json_failure(:stream_json, sentence, code, reason),
+    do: print_failure(sentence, code, reason, %{"type" => "summary"})
 
-  def json_failure({:prompt, _prompt, :stream_json}, sentence, code),
-    do: print_failure(sentence, code, %{"type" => "summary"})
+  def json_failure({:prompt, _prompt, :stream_json}, sentence, code, reason),
+    do: print_failure(sentence, code, reason, %{"type" => "summary"})
 
-  def json_failure(_mode, _sentence, code), do: code
+  def json_failure(_mode, _sentence, code, _reason), do: code
 
-  defp print_failure(sentence, code, extra \\ %{}) do
+  defp print_failure(sentence, code, reason, extra \\ %{}) do
     if code != 0 do
       object =
         Map.merge(extra, %{
           "state" => "not_started",
+          "reason" => reason || Reasons.for_failure(%{status: code}),
           "conversation_id" => nil,
           "run_id" => nil,
           "text" => "",
@@ -103,7 +122,7 @@ defmodule SwarmCodeCLI.Release.Headless do
     code
   end
 
-  defp fail_json(mode, text), do: json_failure(mode, text, fail(text))
+  defp fail_json(mode, text, reason), do: json_failure(mode, text, fail(text), reason)
 
   # -- startup ----------------------------------------------------------------
 
@@ -123,7 +142,7 @@ defmodule SwarmCodeCLI.Release.Headless do
 
     if approval in ["auto", "full_access"] and not trusted?(session.project) do
       IO.puts(:stderr, "ncode: " <> @untrusted_approval)
-      json_failure(mode, @untrusted_approval, 3)
+      json_failure(mode, @untrusted_approval, 3, Reasons.get(:untrusted_approval))
     else
       start_session(session, mode, approval, options)
     end
@@ -179,7 +198,11 @@ defmodule SwarmCodeCLI.Release.Headless do
         )
       else
         _ ->
-          fail_json(mode, "The saved session could not start its service.")
+          fail_json(
+            mode,
+            "The saved session could not start its service.",
+            Reasons.get(:session_unavailable)
+          )
       end
     after
       if Process.alive?(supervisor), do: Supervisor.stop(supervisor, :normal, 15_000)
@@ -214,7 +237,10 @@ defmodule SwarmCodeCLI.Release.Headless do
         conversation_id: conversation,
         prompt: prompt,
         format: format,
-        progress: tty?(:stderr)
+        progress: tty?(:stderr),
+        # A finished workflow starts its continuation before its process ends,
+        # and may hand it to a task that waits for a compaction.
+        launch_pending?: &RunProcesses.pending?/1
       ] ++ extra
     )
   end

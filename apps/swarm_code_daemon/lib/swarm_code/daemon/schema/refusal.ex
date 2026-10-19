@@ -57,8 +57,10 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
   @doc """
   The database file (or one of its `-wal`/`-shm` sidecars) is owned by this
   user but its mode is not 0600 (cli020 fix S4). The sentence is the same for
-  every path, so the launcher recognises it by its message; the path travels in
-  the action, with the one command that fixes it.
+  every path and the path travels in the action, with the one command that
+  fixes it. The five refusals share one code, so the error carries
+  `cause: :database_mode`: that, never the sentence, is what tells this one
+  apart (the `-p` summary's `reason`).
   """
   @spec database_mode(Path.t()) :: StartupError.t()
   def database_mode(path) when is_binary(path) do
@@ -66,7 +68,8 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
       :schema_incompatible,
       false,
       "Your conversations database file has the wrong permissions.",
-      "Run: chmod 600 " <> shell_word(path) <> " and then run ncode again; nothing was changed."
+      "Run: chmod 600 " <> shell_word(path) <> " and then run ncode again; nothing was changed.",
+      :database_mode
     )
   end
 

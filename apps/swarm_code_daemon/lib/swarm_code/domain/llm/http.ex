@@ -112,7 +112,8 @@ defmodule SwarmCode.Domain.LLM.HTTP do
       call_clock(%{
         started: started,
         idle_ms: deadline_ms,
-        hard: started + hard_cap_ms(deadline_ms, body)
+        hard: started + hard_cap_ms(deadline_ms, body),
+        rl_spent: 0
       })
 
     result =
@@ -163,8 +164,10 @@ defmodule SwarmCode.Domain.LLM.HTTP do
 
   defp call_clock(clock) do
     case Process.get(@call_clock_key) do
-      %{started: started, hard: hard} ->
-        %{clock | started: started, hard: hard}
+      %{started: started, hard: hard} = scope ->
+        clock = %{clock | started: started, hard: hard}
+        clock = Map.put(clock, :rl_spent, Map.get(scope, :rl_spent, 0))
+        if scope[:own_until], do: Map.put(clock, :own_until, scope.own_until), else: clock
 
       :open ->
         Process.put(@call_clock_key, Map.take(clock, [:started, :hard]))
@@ -262,6 +265,51 @@ defmodule SwarmCode.Domain.LLM.HTTP do
          provider_id
        ) do
     Process.delete(@got_chunk_key)
+    cooldown_key = cooldown_key(provider_id, url)
+
+    case await_cooldown(clock, cooldown_key) do
+      {:ok, clock} ->
+        do_send(
+          url,
+          headers,
+          body,
+          name,
+          init_acc,
+          on_chunk,
+          on_retry,
+          retry_if,
+          clock,
+          attempt,
+          provider_id,
+          cooldown_key
+        )
+
+      {:exhausted, clock} ->
+        patience_exhausted(
+          name,
+          "rate limit",
+          "the provider's shared cooldown outlasts the remaining patience",
+          Map.get(clock, :rl_spent, 0),
+          rate_limit_patience_ms(),
+          attempt - 1
+        )
+    end
+  end
+
+  defp do_send(
+         url,
+         headers,
+         body,
+         name,
+         init_acc,
+         on_chunk,
+         on_retry,
+         retry_if,
+         clock,
+         attempt,
+         provider_id,
+         cooldown_key
+       ) do
     %{started: started} = clock
     # pass74 (spec 74) BUGS-49: every attempt gets a full idle window to its
     # first token; a retry is judged against the last progress of the one before.
@@ -283,10 +331,18 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         # into the same "gave up after" error a refused retry gives.
         # pass74 (spec 74) BUGS-49: the deadline is "no progress for
         # `idle_ms`" (or the hard cap), so a healthy stream past 10 min lives.
-        if past_deadline?(clock, now, last_progress(started)) do
-          {:halt, {req, %{resp | private: Map.put(resp.private, :past_deadline, true)}}}
-        else
-          {:cont, {req, resp}}
+        cond do
+          # pass76 fix-m3-sse (M3-R1-002): the provider ended the stream with
+          # an error it owns (an SSE event past its ceiling). Stop reading and
+          # close the socket now; nothing may retry it away.
+          Map.get(acc, :halt?) == true ->
+            {:halt, {req, %{resp | private: Map.put(resp.private, :acc_halt, true)}}}
+
+          past_deadline?(clock, now, last_progress(started)) ->
+            {:halt, {req, %{resp | private: Map.put(resp.private, :past_deadline, true)}}}
+
+          true ->
+            {:cont, {req, resp}}
         end
       else
         # Spec 20 §9.3: drain provider errors without retaining an unbounded body.
@@ -327,11 +383,60 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         clock
       )
 
-    retry = fn reason, message, hint_ms, max_attempts ->
+    next = fn clock, attempt ->
+      do_stream(
+        url,
+        headers,
+        body,
+        name,
+        init_acc,
+        on_chunk,
+        on_retry,
+        retry_if,
+        clock,
+        attempt,
+        provider_id
+      )
+    end
+
+    retry = fn reason, message, hint_ms, max_attempts, patient? ->
       now = System.monotonic_time(:millisecond)
       planned = backoff_ms(attempt, hint_ms)
+      spent = Map.get(clock, :rl_spent, 0)
+      patience = rate_limit_patience_ms()
+      until = now + planned
+
+      if patient? in [:patient, :signal],
+        do: SwarmCode.Domain.LLM.Gate.cool_down(cooldown_key, until)
 
       cond do
+        # pass76 llm-cooldown-patience: a rate limit or an overload is waited
+        # out under the provider's cooldown until the patience budget is
+        # spent, not until attempt 5. The wait extends the call's hard cap
+        # (it is the patience that bounds it, so the L1 clock never kills a
+        # call that is legitimately waiting); the idle window restarts with
+        # every attempt. Every other class keeps its 5 attempts below.
+        patient? == :patient and spent + planned > patience ->
+          patience_exhausted(name, reason, message, spent, patience, attempt)
+
+        patient? == :patient ->
+          left = patience - spent - planned
+          shown = shown_reason(reason, message)
+
+          shown =
+            if attempt + 1 > max_attempts, do: shown <> " · " <> left_text(left), else: shown
+
+          notify(on_retry, attempt + 1, shown, max_attempts)
+          sleep_fun().(planned)
+
+          clock =
+            clock
+            |> extend_hard(planned)
+            |> add_spent(planned)
+            |> put_own_until(until)
+
+          next.(clock, attempt + 1)
+
         attempt >= max_attempts ->
           text = "#{name} request failed after #{max_attempts} attempts: " <> message
           {:error, Error.classify(nil, reason, text), text}
@@ -347,20 +452,7 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         true ->
           notify(on_retry, attempt + 1, shown_reason(reason, message), max_attempts)
           sleep_fun().(planned)
-
-          do_stream(
-            url,
-            headers,
-            body,
-            name,
-            init_acc,
-            on_chunk,
-            on_retry,
-            retry_if,
-            clock,
-            attempt + 1,
-            provider_id
-          )
+          next.(clock, attempt + 1)
       end
     end
 
@@ -372,8 +464,11 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         text = "#{name} response exceeded #{max_bytes} bytes"
         {:error, Error.classify(nil, nil, text), text}
 
+      {:ok, %Req.Response{status: 200, private: %{acc_halt: true, acc: acc}}} ->
+        {:ok, acc}
+
       {:ok, %Req.Response{status: 200, private: %{past_deadline: true}} = resp} ->
-        retry.("deadline", "the stream made no progress", retry_after_ms(resp), attempts())
+        retry.("deadline", "the stream made no progress", retry_after_ms(resp), attempts(), false)
 
       {:ok, %Req.Response{status: 200} = resp} ->
         acc = Map.get(resp.private, :acc, init_acc)
@@ -386,14 +481,32 @@ defmodule SwarmCode.Domain.LLM.HTTP do
           # through the same retry as a 529 — the on_retry closure already
           # resets the half-streamed text.
           {:retry, reason} ->
-            retry.(reason, "in-band " <> reason, retry_after_ms(resp), attempts())
+            retry.(
+              reason,
+              "in-band " <> reason,
+              retry_after_ms(resp),
+              attempts(),
+              patient?(reason, nil, acc)
+            )
         end
 
       {:ok, %Req.Response{status: status} = resp} when status in @retry_statuses ->
-        retry.(reason_for(status), "HTTP #{status}", retry_after_ms(resp), attempts())
+        retry.(
+          reason_for(status),
+          "HTTP #{status}",
+          retry_after_ms(resp),
+          attempts(),
+          patient?(nil, status, resp)
+        )
 
       {:ok, %Req.Response{status: status} = resp} when status >= 500 ->
-        retry.("server", "HTTP #{status}", retry_after_ms(resp), attempts())
+        retry.(
+          "server",
+          "HTTP #{status}",
+          retry_after_ms(resp),
+          attempts(),
+          patient?(nil, status, resp)
+        )
 
       {:ok, %Req.Response{status: status} = resp} ->
         body = Map.get(resp.private, :err_body, "")
@@ -403,9 +516,160 @@ defmodule SwarmCode.Domain.LLM.HTTP do
         {:error, Error.classify(status, nil, text <> " " <> to_string(body)), text}
 
       {:error, exception} ->
-        retry.(transport_reason(exception), Exception.message(exception), nil, max_for(exception))
+        retry.(
+          transport_reason(exception),
+          Exception.message(exception),
+          nil,
+          max_for(exception),
+          false
+        )
     end
   end
+
+  # pass76 llm-cooldown-patience: which failures are waited out. A 429, a 529
+  # and the in-band `rate_limit_error` / `overloaded_error` are; a 500 is not
+  # (it keeps its 5 attempts), and a 429 whose body names a quota or credit
+  # balance is a usage limit that waiting does not cure. A one-shot probe
+  # (`no_retry_key`) never waits.
+  #
+  # pass76 fix-m3-rate-limit (M3-R1-006): `:signal` is a rate-limit/overload
+  # answer this caller will not wait out (a one-shot probe); it still tells
+  # the other callers of the provider to hold back.
+  defp patient?(reason, status, source) do
+    cond do
+      not patient_failure?(reason, status, source) -> false
+      Process.get(@no_retry_key) == true -> :signal
+      true -> :patient
+    end
+  end
+
+  defp patient_failure?(nil, status, %Req.Response{} = resp) when status in [429, 529],
+    do: Error.classify(status, nil, Map.get(resp.private, :err_body, "")) != :usage_limit
+
+  defp patient_failure?("rate limit", nil, _acc), do: true
+  defp patient_failure?(_reason, nil, %{error_type: "overloaded_error"}), do: true
+  # pass76 fix-m3-rate-limit (M3-R1-008): an OpenAI-compatible in-band
+  # `{"error": {"code": 529}}` is the same overload an Anthropic
+  # `overloaded_error` is; a plain 5xx code keeps its 5 attempts.
+  defp patient_failure?(_reason, nil, %{error_code: 529}), do: true
+  defp patient_failure?(_reason, _status, _source), do: false
+
+  defp rate_limit_patience_ms do
+    case Application.get_env(:swarm_code_daemon, :llm_rate_limit_patience_ms, 1_800_000) do
+      ms when is_integer(ms) and ms >= 0 -> ms
+      _ -> 1_800_000
+    end
+  end
+
+  # One provider (a provider id, else the URL origin — the same key the
+  # concurrency gate uses) shares one cooldown.
+  defp cooldown_key(id, _url) when is_binary(id), do: id
+
+  defp cooldown_key(_id, url) do
+    case URI.parse(url) do
+      %URI{scheme: s, host: h, port: p} when is_binary(h) -> {s, h, p}
+      _ -> url
+    end
+  end
+
+  # Waits for the key's cooldown before a request. The wait is this process's
+  # own `sleep_fun` call, so killing the op task ends it at once. A wait for
+  # a cooldown another call raised counts against the patience and extends
+  # the hard cap, like our own backoff. `own_until` is the cooldown this call
+  # already slept through, so it is not waited out twice.
+  #
+  # pass76 fix-m3-rate-limit (M3-R1-005): every wait, and every extension a
+  # sibling adds while this call sleeps, must fit in the call's remaining
+  # patience; one that does not ends the call before it sleeps or sends.
+  defp await_cooldown(clock, key) do
+    {result, clock, waited} = cooldown_wait(clock, key, Map.get(clock, :own_until), 0)
+    if waited > 0, do: notice_wait(nil)
+    {result, clock}
+  end
+
+  defp cooldown_wait(clock, key, slept_until, waited) do
+    now = System.monotonic_time(:millisecond)
+    until = SwarmCode.Domain.LLM.Gate.cooldown_until(key)
+
+    cond do
+      is_nil(until) or until <= now or (slept_until != nil and until <= slept_until) ->
+        {:ok, clock, waited}
+
+      until - now > rate_limit_patience_ms() - Map.get(clock, :rl_spent, 0) ->
+        {:exhausted, clock, waited}
+
+      true ->
+        remaining = until - now
+        notice_wait("rate limited · retrying at " <> wall_time(remaining))
+        sleep_fun().(remaining)
+        clock = clock |> extend_hard(remaining) |> add_spent(remaining)
+        cooldown_wait(clock, key, until, waited + remaining)
+    end
+  end
+
+  # The patience spent is per provider call: with a call clock open it lives
+  # in the clock, so a capability re-attempt (its own `stream_post/10`)
+  # continues the budget instead of restarting it.
+  defp add_spent(clock, ms) do
+    clock = Map.update(clock, :rl_spent, ms, &(&1 + ms))
+    carry_call_scope(%{rl_spent: clock.rl_spent})
+    clock
+  end
+
+  defp put_own_until(clock, until) do
+    carry_call_scope(%{own_until: until})
+    Map.put(clock, :own_until, until)
+  end
+
+  defp carry_call_scope(fields) do
+    case Process.get(@call_clock_key) do
+      %{} = scope -> Process.put(@call_clock_key, Map.merge(scope, fields))
+      _ -> :ok
+    end
+  end
+
+  defp patience_exhausted(name, reason, message, spent, patience, attempt) do
+    text =
+      "#{name} is still rate limited after #{format_span(spent)} (patience " <>
+        "#{format_span(patience)} spent, #{attempt} attempts): " <> message
+
+    {:error, Error.classify(nil, reason, text), text}
+  end
+
+  defp wall_time(remaining_ms) do
+    :calendar.local_time()
+    |> NaiveDateTime.from_erl!()
+    |> NaiveDateTime.add(div(remaining_ms + 999, 1000))
+    |> Calendar.strftime("%H:%M:%S")
+  end
+
+  @wait_notice_key :swarm_code_llm_wait_notice
+
+  @doc false
+  def wait_notice_key, do: @wait_notice_key
+
+  # `LLM.stream/2` stores a 1-arity fun here for the call: a detail string
+  # while waiting, nil when the wait is over.
+  defp notice_wait(detail) do
+    case Process.get(@wait_notice_key) do
+      fun when is_function(fun, 1) -> fun.(detail)
+      _ -> :ok
+    end
+  end
+
+  defp extend_hard(clock, ms) do
+    if is_map(Process.get(@call_clock_key)) do
+      Process.put(@call_clock_key, Map.update!(Process.get(@call_clock_key), :hard, &(&1 + ms)))
+    end
+
+    %{clock | hard: clock.hard + ms}
+  end
+
+  defp format_span(ms) when ms >= 60_000, do: "#{div(ms, 60_000)} min"
+  defp format_span(ms), do: "#{div(ms, 1000)} s"
+
+  defp left_text(ms) when ms >= 60_000, do: "#{div(ms, 60_000)}m left"
+  defp left_text(ms), do: "#{max(div(ms, 1000), 0)}s left"
 
   # cli020 L2: the byte ceiling holds while a response is read (an
   # unterminated SSE event or an error body included), not after it is all in

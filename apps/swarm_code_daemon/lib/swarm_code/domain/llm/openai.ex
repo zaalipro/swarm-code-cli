@@ -99,7 +99,13 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
     ]
 
     init = %{
-      sse: "",
+      sse: SSE.new_pending(),
+      # pass76 fix-m3-sse (M3-R1-002): set when the stream must end now; the
+      # transport closes the request and does not retry.
+      halt?: false,
+      # pass76 fix-m3-sse (M3-R1-001): the exact key, redacted from in-band
+      # error text before the heuristic masks can cut it.
+      secret: key(r.provider),
       text: Chunks.new(),
       reasoning: Chunks.new(),
       # pass74 (spec 74) BUGS-77: the reasoning came as `reasoning_content` —
@@ -615,11 +621,21 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
   end
 
   defp handle_chunk(data, acc, on_event, name) do
-    {events, rest} = SSE.parse(acc.sse, data)
+    case SSE.push(acc.sse, data) do
+      {:ok, events, rest} ->
+        Enum.reduce(events, %{acc | sse: rest}, fn event, acc ->
+          handle_event(event.data, acc, on_event, name)
+        end)
 
-    Enum.reduce(events, %{acc | sse: rest}, fn event, acc ->
-      handle_event(event.data, acc, on_event, name)
-    end)
+      {:overflow, events, limit} ->
+        acc =
+          Enum.reduce(events, %{acc | sse: SSE.new_pending()}, fn event, acc ->
+            handle_event(event.data, acc, on_event, name)
+          end)
+
+        acc = put_error(acc, "SSE event exceeded #{limit} bytes without ending", name)
+        %{acc | halt?: true}
+    end
   end
 
   # spec 55 T13 (55a A1): the terminal marker; only after it is the 200 an answer.
@@ -646,7 +662,7 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
   defp put_error(%{error: existing} = acc, _error, _name) when is_binary(existing), do: acc
 
   defp put_error(acc, error, name),
-    do: %{acc | error: stream_error(error, name), error_code: error_code(error)}
+    do: %{acc | error: stream_error(error, name, acc.secret), error_code: error_code(error)}
 
   defp error_code(%{"code" => code}) when is_integer(code), do: code
   defp error_code(%{"status" => status}) when is_integer(status), do: status
@@ -660,7 +676,7 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
 
   defp error_code(_error), do: nil
 
-  defp stream_error(error, name) do
+  defp stream_error(error, name, secret) do
     message =
       case error do
         %{"message" => message} when is_binary(message) -> message
@@ -668,7 +684,7 @@ defmodule SwarmCode.Domain.LLM.OpenAI do
         other -> inspect(other)
       end
 
-    "#{name} stream error: " <> HTTP.redact(message)
+    "#{name} stream error: " <> HTTP.redact_key(message, [secret])
   end
 
   defp apply_chunk(chunk, acc, on_event) do

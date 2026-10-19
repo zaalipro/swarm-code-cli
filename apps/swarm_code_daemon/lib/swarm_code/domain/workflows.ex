@@ -125,12 +125,22 @@ defmodule SwarmCode.Domain.Workflows do
         files
         |> Enum.filter(&String.ends_with?(&1, ".exs"))
         |> Enum.sort()
-        |> Enum.map(fn file ->
+        |> Enum.flat_map(fn file ->
           path = Path.join(dir, file)
 
-          case parse(File.read!(path), scope, path) do
-            {:ok, definition} -> definition
-            {:error, problems} -> broken(path, scope, problems)
+          case File.read(path) do
+            {:ok, source} ->
+              case parse(source, scope, path) do
+                {:ok, definition} -> [definition]
+                {:error, problems} -> [broken(path, scope, source, problems)]
+              end
+
+            {:error, reason} ->
+              Logger.warning(
+                "workflows: skipping unreadable #{path}: #{:file.format_error(reason)}"
+              )
+
+              []
           end
         end)
 
@@ -139,12 +149,12 @@ defmodule SwarmCode.Domain.Workflows do
     end
   end
 
-  defp broken(path, scope, problems) do
+  defp broken(path, scope, source, problems) do
     %Definition{
       name: Path.basename(path, ".exs"),
       scope: scope,
       path: path,
-      source: File.read!(path),
+      source: source,
       meta: %{name: Path.basename(path, ".exs"), description: "(does not parse)"},
       problems: problems
     }
@@ -301,10 +311,12 @@ defmodule SwarmCode.Domain.Workflows do
 
   defp validate_args(nil), do: []
 
-  defp validate_args(args) when is_map(args) do
+  # pass76 fix-m2-workflow-admission: a forged `__struct__` map would dispatch
+  # Enumerable/Access on e.g. File.Stream while parsing, before Smoke's guard.
+  defp validate_args(args) when is_map(args) and not is_map_key(args, :__struct__) do
     Enum.flat_map(args, fn {key, spec} ->
       cond do
-        not is_map(spec) ->
+        not is_map(spec) or is_map_key(spec, :__struct__) ->
           ["meta.args.#{key} must be a map"]
 
         spec[:type] && spec[:type] not in @arg_types ->
@@ -576,6 +588,33 @@ defmodule SwarmCode.Domain.Workflows do
     Repo.all(query)
   end
 
+  @doc "How many workflow runs are interrupted (a count; no rows are loaded)."
+  @spec count_interrupted() :: non_neg_integer()
+  def count_interrupted do
+    Repo.aggregate(
+      from(w in Run,
+        join: r in Conversations.Run,
+        on: r.id == w.run_id,
+        where: r.status == "interrupted"
+      ),
+      :count
+    )
+  end
+
+  @doc "The ids of the interrupted workflow runs, newest first (ids only)."
+  @spec interrupted_run_ids() :: [String.t()]
+  def interrupted_run_ids do
+    Repo.all(
+      from(w in Run,
+        join: r in Conversations.Run,
+        on: r.id == w.run_id,
+        where: r.status == "interrupted",
+        order_by: [desc: r.started_at, desc: r.id],
+        select: r.id
+      )
+    )
+  end
+
   @doc """
   Spec 51 §5.9 (f): the runs parked on an unreachable provider — the one
   query the watchdog needs, instead of every waiting row with its logs.
@@ -692,7 +731,7 @@ defmodule SwarmCode.Domain.Workflows do
       # create both rows in one transaction.
       with :ok <- validate_limits(budget, max_live),
            {:ok, {run, wf}} <-
-             create_rows(conversation, prompt, model, %{
+             create_rows(conversation, prompt, model, attrs[:launched_by_run_id], %{
                run_id: nil,
                conversation_id: conversation.id,
                definition_name: definition.name,
@@ -766,12 +805,15 @@ defmodule SwarmCode.Domain.Workflows do
 
   # Both rows or neither — and the `{:run_created, …}` broadcast only once the
   # transaction has committed, so the sidebar never sees a run that is gone.
-  defp create_rows(conversation, prompt, model, wf_attrs) do
+  defp create_rows(conversation, prompt, model, launched_by_run_id, wf_attrs) do
     result =
       Repo.transaction(fn ->
         {:ok, run} =
           Conversations.insert_run_row(%{
             conversation_id: conversation.id,
+            # CLI: the run whose tool launched this workflow, so `ncode -p`
+            # follows it like a swarm (`StartSwarm` records the same link).
+            launched_by_run_id: launched_by_run_id,
             kind: "workflow",
             prompt: String.trim(prompt),
             model: model && model.model,
@@ -1089,6 +1131,86 @@ defmodule SwarmCode.Domain.Workflows do
       true ->
         do_resume(wf, run, opts)
     end
+  end
+
+  @doc """
+  Automatic resume of a run parked on an unreachable provider. Unlike
+  `control(run_id, :resume, _)` it only takes a run that is still paused with
+  `pause_kind: "infrastructure"`; the claim is one conditional UPDATE, so a
+  stop that landed first (status `stopped`) always wins.
+  """
+  @spec resume_parked_infrastructure(String.t()) :: :ok | {:error, term()}
+  def resume_parked_infrastructure(run_id) do
+    parked =
+      from(w in Run,
+        where: w.run_id == ^run_id and w.pause_kind == "infrastructure",
+        select: w.run_id
+      )
+
+    {claimed, _} =
+      Repo.update_all(
+        from(r in Conversations.Run,
+          where: r.id == ^run_id and r.status == "paused" and r.id in subquery(parked)
+        ),
+        set: [status: "running"]
+      )
+
+    if claimed == 1 do
+      # pass76 fix-m3-resume-claim: the claim already committed "running", so a
+      # failure before the runner exists must hand the row back, or nothing
+      # (discovery, manual Resume) would ever touch it again.
+      result =
+        try do
+          with %Run{} = wf <- get_run(run_id),
+               %{} = run <- Conversations.get_run(run_id) do
+            do_resume(wf, %{run | status: "paused"}, [])
+          else
+            _ -> {:error, :not_found}
+          end
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+
+      with {:error, _} <- result, do: release_resume_claim(run_id)
+      result
+    else
+      {:error, :not_paused}
+    end
+  end
+
+  # Conditional on the status this claim set, so a Stop that landed since is
+  # never overwritten (and a settled start failure, already "paused", is left
+  # alone). If even "paused" cannot be written, "interrupted" is the fallback
+  # that manual Resume and startup recovery both accept.
+  defp release_resume_claim(run_id) do
+    still_claimed = from(r in Conversations.Run, where: r.id == ^run_id and r.status == "running")
+
+    try do
+      Repo.update_all(
+        from(w in Run,
+          where:
+            w.run_id == ^run_id and is_nil(w.pause_kind) and
+              w.run_id in subquery(from(r in still_claimed, select: r.id))
+        ),
+        set: [
+          pause_kind: "infrastructure",
+          pause_message: "could not resume this run automatically; retrying"
+        ]
+      )
+
+      Repo.update_all(still_claimed, set: [status: "paused"])
+    catch
+      _, _ ->
+        try do
+          Repo.update_all(still_claimed, set: [status: "interrupted"])
+        catch
+          _, reason ->
+            require Logger
+            Logger.error("could not release resume claim of #{run_id}: #{inspect(reason)}")
+        end
+    end
+
+    :ok
   end
 
   defp do_resume(wf, run, opts) do

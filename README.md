@@ -127,7 +127,8 @@ the composer (under 120 columns also through the pages), and Esc returns to the
 chat at the same scroll with the same draft. The approval letters and `o [ ]`
 act only while the overlay's composer is empty.
 
-An approval or a question opens over the conversation by itself; for a moment
+An approval or a question opens over the conversation by itself and waits for you
+(an approval never expires, a question only with a timeout the agent set); for a moment
 after it opens, keys keep typing into the draft, so a sentence is never
 answered by accident. Only the letters of the decisions the card offers answer
 it, and only while the draft is empty, also on a card you brought up with
@@ -145,9 +146,14 @@ still wins at the next launch), `/mouse [on|off]`, `/trust`, `/queue <text>`, `/
 and `/quit`; `/panel`, `/diff`, `/theme` and `/mouse` are kept in `cli.json`.
 Typing `/` lists every command above the composer. The project's approval mode is the desktop's and is always on
 the status line: a new project is read-only until `/trust`; in `auto`, edits and
-safe commands (`ls`, `git status`) run by themselves and other commands ask.
-Quitting stops the session's runs and prints a short summary that lists the runs
-it stopped and a `ncode --resume <id>` hint for the conversation. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
+safe commands (`ls`, `git status`) run by themselves and other commands ask (an
+unquoted `~` or glob character also asks). A request that waits in another
+conversation of the session rings or notifies while the terminal is unfocused,
+naming the conversation.
+Quitting stops the runs of every conversation of the session (the confirmation counts them
+all and says how many are in other conversations) and prints a short summary that lists the
+runs it stopped, naming the conversation of those from other conversations, and a
+`ncode --resume <id>` hint for the conversation. Logs go to `~/Library/Logs/SwarmCode/cli.log`, never
 to the terminal; a session that closes on "the daemon connection closed" says why there. A second `ncode` on the same database exits with status 3
 and one sentence naming the first one's process; a Ctrl-C outside the full-screen
 view (while it starts, during `-p`, after the summary) simply ends the program.
@@ -203,21 +209,95 @@ ncode [DIR] [--new | --continue | --resume ID] [--model M]
   continue one) without the full-screen view and prints the answer
   as it streams (`-p -` reads the prompt from stdin). The project's approval mode
   applies; anything that would still need a person is denied, and a line on
-  stderr says what (and, in full access, that nothing asks). A question stops the run. `--json` prints one object at the
-  end instead: `conversation_id`, `run_id`, `state`, `text`, `error`, `denied`,
-  `exit_code`.
+  stderr says what (and, in full access, that nothing asks). A question stops the run. A swarm or workflow the
+  run launches (a workflow's own continuation too) is followed to its end and named on stderr; a paused
+  workflow ends the wait with a line that says `ncode --resume ID`, then `/resume-run`. `--json` prints one object at the
+  end instead: `conversation_id`, `run_id`, `state`, `reason`, `text`, `error`,
+  `question`, `denied`, `runs` (every run followed: `id`, `kind`, `state`, `title`, `parent_run_id`,
+  `launched`, `error`), `exit_code`; `state` is that of the first run that did not finish.
 - `--plain` is the line presenter for pipes, CI and SSH (one command per line,
   `help` lists them); it is chosen by itself when stdin or stdout is not a
   terminal. `--ndjson` prints one JSON record per line.
-- Exit codes: `0` done, `1` the run failed or was stopped, `2` usage, `3`
-  startup refused (another instance holds the database, no provider, an
-  incompatible schema: one line says which).
+- Exit codes: `0` done, `1` the run (or one it launched) failed or was stopped,
+  or a workflow is paused, `2` usage, `3` startup refused (another instance holds
+  the database, no provider, an incompatible schema: one line says which), `129`
+  and `143` closed by SIGHUP or SIGTERM (the live runs are stopped and the session
+  closes first; a second signal a second or more later halts at once).
 
 ```sh
 ncode -p "summarise the open TODOs in lib/" > todos.md
 ncode -p "run the tests and fix what fails" --json | jq .state
 ncode -p - --model anthropic/claude-sonnet < review-request.md
+ncode -p "..." --json | jq -r '.reason // "ok"'
 ```
+
+With `--json` (or `--output-format stream-json`, whose last record is the same
+summary) a non-zero exit names its cause in `reason`, a snake_case word that
+scripts can branch on without reading the sentence. `reason` is `null` when the
+exit code is `0`. A refusal before any run began has `state: "not_started"`.
+The words below never change meaning; new ones may be added, so treat an
+unknown word like `startup_failed` (exit 3) or `run_failed` (exit 1).
+
+<!-- reasons:start -->
+
+Exit `3`, startup refused (nothing ran; the exit code and the sentence on stderr are unchanged):
+
+| Reason | Meaning |
+| --- | --- |
+| `data_lease_held` | Another `ncode` session holds your conversations database. |
+| `desktop_open` | The ncode app is open, and only one of them can use the database. |
+| `schema_incompatible` | The database comes from another ncode version, is not a database, or is damaged. |
+| `database_mode` | The database file's permissions are not `0600`. |
+| `data_folder_unsafe` | The private data folder is missing, not yours, or not mode `0700`. |
+| `desktop_check_failed` | `ncode` could not check whether the ncode app is running. |
+| `backup_failed` | The verified backup before a database upgrade could not be made. |
+| `migration_failed` | The database upgrade failed or timed out; the database was left as it was. |
+| `database_unavailable` | The conversations database could not be opened. |
+| `no_provider` | No model provider is set up. |
+| `no_endpoint` | `NCODE_BASE_URL` is missing. |
+| `no_model` | `NCODE_MODEL` is missing. |
+| `untrusted_approval` | `--approval auto` or `full` in a project that is not trusted. |
+| `startup_failed` | Any other startup failure (also the fallback). |
+
+Exit `2`, usage:
+
+| Reason | Meaning |
+| --- | --- |
+| `usage` | A bad flag, a missing value or an empty prompt on stdin. |
+| `unknown_model` | `--model` names a model no provider has. |
+| `conversation_not_found` | `--resume` names no conversation of this project. |
+| `conversation_ambiguous` | `--resume` matches several conversations. |
+| `invalid_project` | The project directory cannot be opened. |
+
+Exit `1`, the session or the run failed:
+
+| Reason | Meaning |
+| --- | --- |
+| `unexpected_error` | `ncode` stopped on an error it did not expect. |
+| `session_unavailable` | The saved session or the conversation could not be opened. |
+| `session_closed` | The session closed before the run finished. |
+| `prompt_not_sent` | The prompt was refused (for example `/settings` needs the full-screen view). |
+| `conversation_busy` | The conversation still has a turn running; use `--new`. |
+| `run_not_started` | The prompt started no run. |
+| `run_failed` | A run, or one it launched, failed. |
+| `run_stopped` | A run was stopped by someone else. |
+| `run_interrupted` | A run was interrupted. |
+| `run_paused` | A run is paused; `-p` does not resume it. |
+| `paused_workflow` | A workflow is paused (provider down or paused by hand); `ncode --resume ID`, then `/resume-run`. |
+| `max_turns` | `--max-turns` stopped the run. |
+| `max_budget` | `--max-budget-usd` stopped the run. |
+| `denied` | `--fail-on-denied` and a tool call was denied, or eight approvals were denied. |
+| `approval_required` | An approval nobody could give stopped the run. |
+| `question_asked` | The run asked a question and nobody could answer; `question` holds it. |
+
+Exit `129` and `143`, closed by a signal:
+
+| Reason | Meaning |
+| --- | --- |
+| `sighup` | The terminal closed (SIGHUP). |
+| `sigterm` | SIGTERM; the live runs were stopped. |
+
+<!-- reasons:end -->
 
 `ncode` loads provider settings from `~/.secrets` (or `NCODE_ENV_FILE`) when
 no key is exported, exactly like the development launchers, but always opens
@@ -408,8 +488,9 @@ Its current schema contract describes all 58 migrations at desktop `4c7c577`
 0.1.0 (57) is backed up and migrated through the contract's `forward_compatible`
 allowlist, and any other pending or unknown migration is refused with one sentence
 (a newer desktop's database names the CLI version to replace). The domain itself
-is re-derived with `mix swarm_code.provenance.sync` (see AGENTS.md), since CLI 0.2.1
-from desktop `a93d6d8` (desktop pass 74, which adds no migration).
+is re-derived with `mix swarm_code.provenance.sync` (see AGENTS.md), now from desktop
+`68bc97cd` (desktop pass 76, which adds no migration; CLI 0.2.1 and 0.2.2 shipped
+from `a93d6d8`).
 
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)
@@ -450,8 +531,9 @@ and [draw wire contract](docs/implementation/terminal-port-wire-v1.md).
 
 The 2026-09-01 source authorization, MIT license, and NOTICE terms are recorded in
 [`SOURCE_AUTHORIZATION.md`](SOURCE_AUTHORIZATION.md), [`LICENSE`](LICENSE), and [`NOTICE`](NOTICE).
-The current desktop does not honor the shared lease, so concurrent desktop/CLI operation is not
-supported; follow the shutdown order in the safety note.
+The current desktop does not take the shared lease. Since its pass 76 it refuses to start
+while a live CLI session owns the data (it only reads `instance_owner.json`), but concurrent
+desktop/CLI operation is still not supported; follow the shutdown order in the safety note.
 
 
 The live runtime component is `SwarmCode.Daemon.Runtime.Run` in the daemon app.

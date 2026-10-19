@@ -1070,6 +1070,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DaemonTest do
       :ok -> :ok
       {:error, :closed} -> :ok
       {:error, :epipe} -> :ok
+      # The client may already have hung up when a queued frame is written.
+      {:error, :enotconn} -> :ok
     end
   end
 

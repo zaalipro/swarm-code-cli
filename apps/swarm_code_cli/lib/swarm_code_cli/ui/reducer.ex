@@ -2060,10 +2060,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp open_destination(state, {kind, id}), do: Watch.open(state, :workspace, kind, id)
 
   # A quit the user asked for confirms unsent work and live runs: the release
-  # stops every run it owns on the way out. A terminal that failed or is
-  # closing only confirms unsent work, as before.
+  # stops every run it owns on the way out, in every conversation (counted from
+  # the daemon's `elsewhere` fact, not from the cached run rows). A terminal
+  # that failed or is closing only confirms unsent work, as before.
   defp exit_requested(state, kind, count_live? \\ true) do
     live = if count_live?, do: live_run_count(state), else: 0
+    elsewhere = if count_live?, do: live_elsewhere_count(state), else: 0
 
     if State.dirty?(state) or live > 0 do
       layer = {:unsent_changes, kind}
@@ -2076,6 +2078,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
          state
          | exit_pending: kind,
            quit_live_runs: live,
+           quit_live_elsewhere: elsewhere,
            layers: layers,
            hidden_focus: state.focus,
            focus: "cancel"
@@ -2085,10 +2088,28 @@ defmodule SwarmCodeCLI.UI.Reducer do
     end
   end
 
-  @doc "The runs a quit would stop: every run in view that has not finished."
+  @doc """
+  The runs a quit would stop: every live run of the session. Once the daemon
+  has told the shell watch (`elsewhere.total`, read from its run registry) that
+  is the whole answer, because the read model's run rows are a cache: they
+  keep a closed inspector's rows of another conversation and hold the newest
+  200 runs only. Before any fact is held, the runs in view that have not
+  finished.
+  """
   @spec live_run_count(State.t()) :: non_neg_integer()
+  def live_run_count(%{read_model: %{elsewhere: %{total: total}}}) when is_integer(total),
+    do: total
+
   def live_run_count(state),
     do: Enum.count(state.read_model.runs, fn {_, run} -> run.state in @live_states end)
+
+  @doc "How many of `live_run_count/1` run in conversations other than the one shown."
+  @spec live_elsewhere_count(State.t()) :: non_neg_integer()
+  def live_elsewhere_count(%{read_model: %{elsewhere: %{total: total, live: live}}})
+      when is_integer(total) and is_integer(live),
+      do: live
+
+  def live_elsewhere_count(_state), do: 0
 
   defp repair_switcher(old, %{layers: [{kind, _} = layer | _]} = next)
        when kind in [:switcher, :action_menu, :region_filter] do

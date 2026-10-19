@@ -29,6 +29,9 @@ defmodule SwarmCode.Domain.Conversations.Message do
     # spec 74 EFFICIENCY-33: set by `Conversations.list_transcript/1`, which
     # leaves `reasoning` unloaded (nil) and says here whether there is any.
     field(:has_reasoning, :boolean, virtual: true)
+    # Set by `Conversations.goal_board_messages/4` on a row whose `content` is
+    # only the first characters of the stored text.
+    field(:clipped, :boolean, virtual: true)
 
     belongs_to(:conversation, SwarmCode.Domain.Conversations.Conversation)
 

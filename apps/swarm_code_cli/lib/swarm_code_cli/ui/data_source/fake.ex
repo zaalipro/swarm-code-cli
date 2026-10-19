@@ -562,7 +562,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake do
               :settings_update,
               :settings_task,
               :desktop_running,
-              :vitals
+              :vitals,
+              :elsewhere
             ],
        do: slot == :shell
 

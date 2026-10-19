@@ -117,7 +117,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :scheduled_effort_default,
       :local_zone
     ],
-    DTO.ShellSnapshot => [:rate_limits, :vitals],
+    DTO.ShellSnapshot => [:rate_limits, :vitals, :elsewhere],
     # cli020 C8/C9/C18: structured command answers.
     DTO.Feedback => [:subject, :rows],
     DTO.Approval => [
@@ -427,7 +427,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
               :settings_update,
               :settings_task,
               :desktop_running,
-              :vitals
+              :vitals,
+              :elsewhere
             ],
        do: true
 

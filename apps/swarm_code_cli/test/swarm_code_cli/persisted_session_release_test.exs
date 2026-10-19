@@ -72,6 +72,95 @@ defmodule SwarmCodeCLI.Release.PersistedSessionTest do
              "1 live run\n" <> pad <> "· One"
   end
 
+  # pass76 cli-quit-attention: the quit stops the runs of every conversation,
+  # so the summary lists them all and names where the other ones ran.
+  describe "the exit summary across conversations" do
+    @shown "11111111-1111-4111-8111-111111111111"
+    @pad String.duplicate(" ", 16)
+
+    defp stopped_runs do
+      [
+        %{
+          id: "a",
+          kind: "chat",
+          title: "Fix the login test",
+          conversation_id: @shown,
+          conversation: "Login work"
+        },
+        %{
+          id: "b",
+          kind: "swarm",
+          title: "Research caching",
+          conversation_id: "22222222-2222-4222-8222-222222222222",
+          conversation: "Caching\nnotes"
+        },
+        %{
+          id: "c",
+          kind: "chat",
+          title: "Triage",
+          conversation_id: "33333333-3333-4333-8333-333333333333",
+          conversation: nil
+        }
+      ]
+    end
+
+    test "each run of another conversation names it and the count says how many" do
+      assert PersistedSession.stopped_lines(stopped_runs(), @shown) ==
+               "3 live runs (2 in other conversations)\n" <>
+                 @pad <>
+                 "· Fix the login test\n" <>
+                 @pad <>
+                 "· Research caching · swarm · in Caching\n" <>
+                 @pad <> "· Triage · in another conversation"
+
+      [one | _] = stopped_runs()
+      other = %{one | id: "d", conversation_id: "22222222-2222-4222-8222-222222222222"}
+
+      assert PersistedSession.stopped_lines([one, other], @shown) ==
+               "2 live runs (1 in another conversation)\n" <>
+                 @pad <>
+                 "· Fix the login test\n" <> @pad <> "· Fix the login test · in Login work"
+    end
+
+    test "runs of the shown conversation, or of an unknown one, read as before" do
+      [one | _] = stopped_runs()
+
+      assert PersistedSession.stopped_lines([one], @shown) ==
+               "1 live run\n" <> @pad <> "· Fix the login test"
+
+      assert PersistedSession.stopped_lines([one, hd(tl(stopped_runs()))], nil) ==
+               "2 live runs\n" <>
+                 @pad <> "· Fix the login test\n" <> @pad <> "· Research caching · swarm"
+
+      assert PersistedSession.stopped_lines([%{id: "x", kind: nil, title: nil}], @shown) ==
+               "1 live run\n" <> @pad <> "· Untitled run"
+    end
+
+    test "the block lists them under Stopped, with the resume hint of the shown conversation" do
+      text =
+        PersistedSession.summary_text(%{
+          title: "Login work",
+          conversation: @shown,
+          root: System.get_env("PWD"),
+          stopped: stopped_runs()
+        })
+
+      assert text =~ "  Stopped       3 live runs (2 in other conversations)\n"
+      assert text =~ @pad <> "· Research caching · swarm · in Caching\n"
+      assert text =~ "ncode --resume " <> @shown
+
+      quiet =
+        PersistedSession.summary_text(%{
+          title: "Login work",
+          conversation: @shown,
+          root: System.get_env("PWD"),
+          stopped: []
+        })
+
+      refute quiet =~ "Stopped"
+    end
+  end
+
   test "the private log lives in the platform's state directory" do
     path = PersistedSession.log_path()
     assert Path.basename(path) == "cli.log"

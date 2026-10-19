@@ -10,51 +10,77 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
     :ok
   end
 
+  # pass76 test-flake-audit: a bound on waiting for a message, so a real
+  # failure still ends the test. It is never a timing assertion.
+  @wait 10_000
+  # A caller deadline that does not fire on its own during a test. A deadline
+  # of 100-200 ms raced the test's own setup under load (the call expired before
+  # the state it was meant to be in was observed), so a test that needs an
+  # expired caller moves that call's deadline into the past and delivers the
+  # `{:call_deadline, ref}` its timer would send, once the state under test is
+  # reached (`expire/2`). The real timer is covered by "a queued caller's own
+  # deadline timer expires it".
+  @idle 60_000
+
   for transport <- [:http, :stdio] do
     test "#{transport} handshake queues own dead, expired and live callers" do
       {client, release} = fixture(unquote(transport), :handshake)
-      dead = caller(client, "dead", 2_000)
-      expired = caller(client, "expired", 100)
-      live = caller(client, "live", 2_000)
+      dead = caller(client, "dead", @idle)
+      expired = caller(client, "expired", @idle)
+      live = caller(client, "live", @idle)
       calls = queued(client, :waiting, 3)
       assert_owners(calls)
       Process.exit(dead, :kill)
-      assert_receive {:reply, ^expired, {:error, "timed out waiting for a response"}}, 1_000
+      expire(client, Enum.find(calls, &(&1.pid == expired)))
+      assert_receive {:reply, ^expired, {:error, "timed out waiting for a response"}}, @wait
       eventually(fn -> map_size(:sys.get_state(client).calls) == 1 end)
       release.()
 
       assert_receive {:wire, barrier,
-                      %{"method" => "tools/call", "params" => %{"name" => "live"}}}
+                      %{"method" => "tools/call", "params" => %{"name" => "live"}}},
+                     @wait
 
       assert assert_dispatch_owner(client, live) == Enum.find(calls, &(&1.pid == live))
       if unquote(transport) == :http, do: send(barrier, :release), else: release.()
-      assert_receive {:reply, ^live, {:ok, "live", []}}
+      assert_receive {:reply, ^live, {:ok, "live", []}}, @wait
       refute_receive {:wire, _, %{"method" => "tools/call"}}, 50
       assert_clean(client, calls)
     end
   end
 
+  test "a queued caller's own deadline timer expires it" do
+    {client, _release} = fixture(:http, :handshake)
+    pid = caller(client, "timer", 150)
+    assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}, @wait
+    assert_clean(client, [])
+  end
+
   test "HTTP session establishment queue retains one owner and original deadline" do
     {client, _release} = fixture(:http, :establish)
     eventually(fn -> GenServer.call(client, :status) == :ready end)
-    first = caller(client, "hold", 2_000)
-    assert_receive {:wire, barrier, %{"method" => "tools/call", "params" => %{"name" => "hold"}}}
-    dead = caller(client, "dead", 2_000)
-    expired = caller(client, "expired", 100)
-    live = caller(client, "live", 2_000)
+    first = caller(client, "hold", @idle)
+
+    assert_receive {:wire, barrier, %{"method" => "tools/call", "params" => %{"name" => "hold"}}},
+                   @wait
+
+    dead = caller(client, "dead", @idle)
+    expired = caller(client, "expired", @idle)
+    live = caller(client, "live", @idle)
     calls = queued(client, :http_queue, 3)
     assert_owners(calls)
     Process.exit(dead, :kill)
-    assert_receive {:reply, ^expired, {:error, "timed out waiting for a response"}}, 1_000
+    expire(client, Enum.find(calls, &(&1.pid == expired)))
+    assert_receive {:reply, ^expired, {:error, "timed out waiting for a response"}}, @wait
     send(barrier, :release)
-    assert_receive {:reply, ^first, {:ok, "hold", []}}
+    assert_receive {:reply, ^first, {:ok, "hold", []}}, @wait
 
     assert_receive {:wire, live_barrier,
-                    %{"method" => "tools/call", "params" => %{"name" => "live"}}}
+                    %{"method" => "tools/call", "params" => %{"name" => "live"}}},
+                   @wait
 
     assert assert_dispatch_owner(client, live) == Enum.find(calls, &(&1.pid == live))
     send(live_barrier, :release)
-    assert_receive {:reply, ^live, {:ok, "live", []}}
+    assert_receive {:reply, ^live, {:ok, "live", []}}, @wait
     refute_receive {:wire, _, %{"method" => "tools/call"}}, 50
     assert_clean(client, calls)
   end
@@ -62,25 +88,25 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
   test "session-expired retry keeps the admission monitor, timer and signed deadline" do
     {client, _release} = fixture(:http, :retry)
     eventually(fn -> GenServer.call(client, :status) == :ready end)
-    pid = caller(client, "retry", 2_000)
-    assert_receive {:wire, barrier, %{"method" => "tools/call"}}
+    pid = caller(client, "retry", @idle)
+    assert_receive {:wire, barrier, %{"method" => "tools/call"}}, @wait
     state = :sys.get_state(client)
     [original] = Map.values(state.calls)
     assert_owners([original])
     send(barrier, :release)
-    assert_receive {:wire, handshake, %{"method" => "initialize"}}
+    assert_receive {:wire, handshake, %{"method" => "initialize"}}, @wait
     eventually(fn -> :sys.get_state(client).handshake.then != nil end)
     state = :sys.get_state(client)
     assert state.handshake.then == {:retry_call, original.ref, {:error, "HTTP 404: "}}
     assert Map.fetch!(state.calls, original.ref) == %{original | retry?: false}
     send(handshake, :release)
-    assert_receive {:wire, retry, %{"method" => "tools/call"}}
+    assert_receive {:wire, retry, %{"method" => "tools/call"}}, @wait
     state = :sys.get_state(client)
     assert Map.fetch!(state.calls, original.ref) == %{original | retry?: false}
     assert Process.alive?(original.pid)
     assert original.deadline_ms - System.monotonic_time(:millisecond) > 0
     send(retry, :release)
-    assert_receive {:reply, ^pid, {:ok, "retry", []}}
+    assert_receive {:reply, ^pid, {:ok, "retry", []}}, @wait
     assert_clean(client, [original])
     send(client, {:call_deadline, original.ref})
     send(client, {make_ref(), {:mcp_http, 0, {:ok, "stale"}, nil, :ok}})
@@ -91,19 +117,19 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
   for transport <- [:http, :stdio] do
     test "#{transport} reconnect and stop settle handshake admissions once" do
       {client, release} = fixture(unquote(transport), :handshake)
-      pid = caller(client, "reconnect", 2_000)
+      pid = caller(client, "reconnect", @idle)
       calls = queued(client, :waiting, 1)
       SwarmCode.Domain.MCP.reconnect(:sys.get_state(client).server.id)
-      assert_receive {:reply, ^pid, {:error, "reconnecting"}}
+      assert_receive {:reply, ^pid, {:error, "reconnecting"}}, @wait
       assert_clean(client, calls)
       if unquote(transport) == :http, do: release.()
-      assert_receive {:wire, barrier, %{"method" => "initialize"}}
-      stopped = caller(client, "stopped", 2_000)
+      assert_receive {:wire, barrier, %{"method" => "initialize"}}, @wait
+      stopped = caller(client, "stopped", @idle)
       calls = queued(client, :waiting, 1)
       port = :sys.get_state(client).port
       os_pid = if port, do: SwarmCode.Domain.OSProcess.port_pid(port)
       GenServer.stop(client)
-      assert_receive {:reply, ^stopped, {:error, message}}
+      assert_receive {:reply, ^stopped, {:error, message}}, @wait
       assert message =~ "stopped"
       for call <- calls, do: assert(Process.read_timer(call.timer) == false)
       if os_pid, do: assert_process_gone(os_pid)
@@ -115,8 +141,7 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
   for abandoned <- [:dead, :expired] do
     test "ready result ahead of #{abandoned} notification cannot dispatch" do
       {client, release} = fixture(:http, :handshake)
-      timeout = if unquote(abandoned) == :expired, do: 200, else: 2_000
-      pid = caller(client, "abandoned", timeout)
+      pid = caller(client, "abandoned", @idle)
       [call] = queued(client, :waiting, 1)
       :ok = :sys.suspend(client)
       on_exit(fn -> if Process.alive?(client), do: :sys.resume(client) end)
@@ -131,15 +156,17 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
       if unquote(abandoned) == :dead do
         monitor = Process.monitor(pid)
         Process.exit(pid, :kill)
-        assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}
+        assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}, @wait
       else
-        eventually(fn -> Process.read_timer(call.timer) == false end)
+        # The ready result is already in the mailbox, so the deadline queues
+        # behind it exactly as an expiry that fired just after it would.
+        expire(client, call)
       end
 
       :ok = :sys.resume(client)
 
       if unquote(abandoned) == :expired do
-        assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}
+        assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}, @wait
       end
 
       assert_clean(client, [call])
@@ -150,17 +177,17 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
     test "#{abandoned} caller during session recovery never retries" do
       {client, _release} = fixture(:http, :retry)
       eventually(fn -> GenServer.call(client, :status) == :ready end)
-      timeout = if unquote(abandoned) == :expired, do: 200, else: 2_000
-      pid = caller(client, "abandoned", timeout)
-      assert_receive {:wire, attempt, %{"method" => "tools/call"}}
+      pid = caller(client, "abandoned", @idle)
+      assert_receive {:wire, attempt, %{"method" => "tools/call"}}, @wait
       [call] = Map.values(:sys.get_state(client).calls)
       send(attempt, :release)
-      assert_receive {:wire, recovery, %{"method" => "initialize"}}
+      assert_receive {:wire, recovery, %{"method" => "initialize"}}, @wait
 
       if unquote(abandoned) == :dead do
         Process.exit(pid, :kill)
       else
-        assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}, 1_000
+        expire(client, call)
+        assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}, @wait
       end
 
       eventually(fn -> :sys.get_state(client).calls == %{} end)
@@ -176,23 +203,24 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
   test "HTTP task crash settles once and releases the session establishment queue" do
     {client, _release} = fixture(:http, :establish)
     eventually(fn -> GenServer.call(client, :status) == :ready end)
-    first = caller(client, "hold", 2_000)
-    assert_receive {:wire, barrier, %{"method" => "tools/call"}}
-    live = caller(client, "live", 2_000)
+    first = caller(client, "hold", @idle)
+    assert_receive {:wire, barrier, %{"method" => "tools/call"}}, @wait
+    live = caller(client, "live", @idle)
     queued = queued(client, :http_queue, 1)
     state = :sys.get_state(client)
     [entry] = Map.values(state.http_tasks)
     [original] = Enum.reject(Map.values(state.calls), &(&1.pid == live))
     Process.exit(entry.task.pid, :kill)
-    assert_receive {:reply, ^first, {:error, "request failed: :killed"}}
+    assert_receive {:reply, ^first, {:error, "request failed: :killed"}}, @wait
     send(barrier, :release)
 
     assert_receive {:wire, live_barrier,
-                    %{"method" => "tools/call", "params" => %{"name" => "live"}}}
+                    %{"method" => "tools/call", "params" => %{"name" => "live"}}},
+                   @wait
 
     assert assert_dispatch_owner(client, live) == hd(queued)
     send(live_barrier, :release)
-    assert_receive {:reply, ^live, {:ok, "live", []}}
+    assert_receive {:reply, ^live, {:ok, "live", []}}, @wait
     assert_clean(client, [original | queued])
     send(client, {entry.task.ref, {:mcp_http, 0, {:ok, "late"}, nil, :ok}})
     refute_receive {:reply, ^first, _}, 50
@@ -201,13 +229,15 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
   test "active HTTP deadline stops its owned task and replies once" do
     {client, _release} = fixture(:http, :establish)
     eventually(fn -> GenServer.call(client, :status) == :ready end)
-    pid = caller(client, "hold", 150)
-    assert_receive {:wire, barrier, %{"method" => "tools/call"}}
+    pid = caller(client, "hold", @idle)
+    assert_receive {:wire, barrier, %{"method" => "tools/call"}}, @wait
     state = :sys.get_state(client)
     [call] = Map.values(state.calls)
     [entry] = Map.values(state.http_tasks)
-    assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}, 1_000
-    refute Process.alive?(entry.task.pid)
+    task_down = Process.monitor(entry.task.pid)
+    expire(client, call)
+    assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}, @wait
+    assert_receive {:DOWN, ^task_down, :process, _pid, _reason}, @wait
     send(barrier, :release)
     assert_clean(client, [call])
     refute_receive {:reply, ^pid, _}, 50
@@ -218,25 +248,28 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
       {client, release} = fixture(:stdio, :handshake)
       release.()
       eventually(fn -> GenServer.call(client, :status) == :ready end)
-      timeout = if unquote(abandoned) == :expired, do: 150, else: 2_000
-      pid = caller(client, "hold", timeout)
-      assert_receive {:wire, _, %{"method" => "tools/call"}}
+      pid = caller(client, "hold", @idle)
+      assert_receive {:wire, _, %{"method" => "tools/call"}}, @wait
       [call] = Map.values(:sys.get_state(client).calls)
 
       if unquote(abandoned) == :dead do
         Process.exit(pid, :kill)
       else
-        assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}, 1_000
+        expire(client, call)
+        assert_receive {:reply, ^pid, {:error, "timed out waiting for a response"}}, @wait
       end
 
       eventually(fn -> :sys.get_state(client).calls == %{} end)
       release.()
-      assert_receive {:wire, _, %{"method" => "notifications/cancelled"}}
-      live = caller(client, "live", 2_000)
-      assert_receive {:wire, _, %{"method" => "tools/call", "params" => %{"name" => "live"}}}
+      assert_receive {:wire, _, %{"method" => "notifications/cancelled"}}, @wait
+      live = caller(client, "live", @idle)
+
+      assert_receive {:wire, _, %{"method" => "tools/call", "params" => %{"name" => "live"}}},
+                     @wait
+
       assert_dispatch_owner(client, live)
       release.()
-      assert_receive {:reply, ^live, {:ok, "live", []}}
+      assert_receive {:reply, ^live, {:ok, "live", []}}, @wait
       assert_clean(client, [call])
       refute_receive {:reply, ^pid, _}, 50
     end
@@ -244,11 +277,11 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
 
   test "stdio disconnect settles queued callers once and reaps the local server" do
     {client, release} = fixture(:stdio, :disconnect)
-    pid = caller(client, "disconnected", 2_000)
+    pid = caller(client, "disconnected", @idle)
     calls = queued(client, :waiting, 1)
     os_pid = SwarmCode.Domain.OSProcess.port_pid(:sys.get_state(client).port)
     release.()
-    assert_receive {:reply, ^pid, {:error, "process exited with status 7"}}, 1_000
+    assert_receive {:reply, ^pid, {:error, "process exited with status 7"}}, @wait
     assert_clean(client, calls)
     assert_process_gone(os_pid)
     refute_receive {:wire, _, %{"method" => "tools/call"}}, 50
@@ -259,9 +292,38 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
     owner = self()
 
     spawn(fn ->
-      result = GenServer.call(client, {:call_tool, name, %{}, timeout}, 5_000)
+      result = GenServer.call(client, {:call_tool, name, %{}, timeout}, timeout + @wait)
       send(owner, {:reply, self(), result})
     end)
+  end
+
+  # The state a call is in once its deadline has passed and the timer's message
+  # was sent: the signed deadline is in the past (a dispatch checks it) and the
+  # `{:call_deadline, ref}` follows. `:sys.replace_state/2` is also handled by a
+  # suspended client, so the message queues behind whatever is already in its
+  # mailbox, exactly as a timer that fired a moment later would.
+  defp expire(client, call) do
+    assert is_integer(Process.read_timer(call.timer))
+    past = System.monotonic_time(:millisecond) - 1
+
+    :sys.replace_state(client, fn state ->
+      %{state | calls: Map.update!(state.calls, call.ref, &%{&1 | deadline_ms: past})}
+    end)
+
+    send(client, {:call_deadline, call.ref})
+  end
+
+  defp eventually(fun, tries \\ 2_000)
+  defp eventually(fun, 0), do: assert(fun.())
+
+  defp eventually(fun, tries) do
+    if fun.(),
+      do: :ok,
+      else:
+        (
+          Process.sleep(5)
+          eventually(fun, tries - 1)
+        )
   end
 
   defp queued(client, queue, count) do
@@ -317,19 +379,6 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
     assert :sys.get_state(client).calls == %{}
   end
 
-  defp eventually(fun, tries \\ 200)
-  defp eventually(fun, 0), do: assert(fun.())
-
-  defp eventually(fun, tries) do
-    if fun.(),
-      do: :ok,
-      else:
-        (
-          Process.sleep(5)
-          eventually(fun, tries - 1)
-        )
-  end
-
   defp fixture(:http, mode) do
     owner = self()
 
@@ -352,7 +401,7 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
             receive do
               :release -> :ok
             after
-              5_000 -> raise "MCP fixture barrier timed out"
+              30_000 -> raise "MCP fixture barrier timed out"
             end
           end
 
@@ -392,7 +441,7 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
 
     on_exit(fn -> HTTP.stop(fixture) end)
     client = start_client(%Server{transport: "http", url: fixture.url})
-    assert_receive {:wire, barrier, %{"method" => "initialize"}}
+    assert_receive {:wire, barrier, %{"method" => "initialize"}}, @wait
     {client, fn -> send(barrier, :release) end}
   end
 
@@ -452,8 +501,8 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
         args: [script, Integer.to_string(port)]
       })
 
-    assert_receive {:control, socket}
-    assert_receive {:wire, _, %{"method" => "initialize"}}
+    assert_receive {:control, socket}, @wait
+    assert_receive {:wire, _, %{"method" => "initialize"}}, @wait
     {client, fn -> :gen_tcp.send(socket, if(mode == :disconnect, do: "q", else: "x")) end}
   end
 
@@ -467,7 +516,7 @@ defmodule SwarmCode.Daemon.Hardening.MCPQueueTest do
   end
 
   defp read_stdio(socket, owner) do
-    case :gen_tcp.recv(socket, 0, 5_000) do
+    case :gen_tcp.recv(socket, 0, 30_000) do
       {:ok, line} ->
         send(owner, {:wire, self(), Jason.decode!(line)})
         read_stdio(socket, owner)

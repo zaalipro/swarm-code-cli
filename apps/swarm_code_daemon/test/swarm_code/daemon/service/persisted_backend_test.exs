@@ -523,8 +523,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
   end
 
   # pass75 interview (task 207): one ask of three questions is three wire rows
-  # of one node and revision, with the ask's clock; three indexed answers
-  # complete it in any order.
+  # of one node and revision (no clock: an ask without an explicit timeout never
+  # expires); three indexed answers complete it in any order.
   test "a three-question ask is one ask on the wire and completes after three answers", c do
     three_question_ask(c, [0, 1, 2])
   end
@@ -644,7 +644,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
 
     for row <- upserts do
       assert row["question"]["total"] == 3
-      assert abs(row["deadline"] - (row["question"]["requested_at"] + 1_800_000)) <= 1_000
+      assert row["deadline"] == 0
       assert {:ok, _} = SwarmCodeCLI.UI.DataSource.DTO.PendingInteraction.decode(row)
     end
 

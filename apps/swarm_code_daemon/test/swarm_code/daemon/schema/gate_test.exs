@@ -511,6 +511,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
              %{SwarmCode.Daemon.Schema.Refusal.database_mode(database) | action: ""}
 
     assert error.code == :schema_incompatible
+    assert error.cause == :database_mode
     assert error.action =~ ~r{\Arun: chmod 600 \S+/fixture\.db and then}i
     assert Bitwise.band(File.lstat!(database).mode, 0o7777) == 0o644
   end
@@ -522,6 +523,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
     assert {:error, error} = Gate.check(database, manifest, "0.1.0")
     assert error.message == SwarmCode.Daemon.Schema.Refusal.database_mode("").message
+    assert error.cause == :database_mode
     assert error.action =~ ~r{chmod 600 \S+/fixture\.db-wal and then}
   end
 
@@ -530,6 +532,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
 
     assert {:error, error} = Gate.check_bound(database, manifest, "0.1.0", uid: 0)
     refute error.action =~ "chmod 600"
+    assert error.cause == nil
   end
 
   test "post-probe replacement cannot produce a ready decision", %{manifest: manifest} do

@@ -131,7 +131,8 @@ json_failure() {
   [[ $json_requested -eq 2 ]] && type='"type":"summary",'
 
   text=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-  printf '{'"$type"'"state":"not_started","conversation_id":null,"run_id":null,"text":"","error":"%s","question":null,"denied":[],"exit_code":%s}\n' \
+  # Every launcher failure is a usage error; the reason word is fixed.
+  printf '{'"$type"'"state":"not_started","reason":"usage","conversation_id":null,"run_id":null,"text":"","error":"%s","question":null,"denied":[],"exit_code":%s}\n' \
     "$text" "$2"
 }
 

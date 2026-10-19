@@ -482,6 +482,7 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
              "conversation_id" => @conversation,
              "run_id" => @run,
              "state" => "done",
+             "reason" => nil,
              "text" => "Hello",
              "exit_code" => 0,
              "denied" => []

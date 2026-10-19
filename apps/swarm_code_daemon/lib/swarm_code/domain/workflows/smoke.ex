@@ -128,6 +128,9 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
   # as atoms is not — the atom table never shrinks.
   @atom_forming [{String, :to_atom}, {List, :to_atom}]
 
+  # `~w(...)a` interns every word as an atom.
+  @atom_sigils [:sigil_w, :sigil_W]
+
   # Everything `Runner.eval/2` imports — the documented workflow DSL. Spec 74
   # ARCHITECTURE-5: read at runtime and memoised, not at compile time — a
   # compile-time `API.__info__/1` made this file recompile on any lib/ edit.
@@ -430,6 +433,41 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
             acc
         end
 
+      {sigil, _, context} when sigil in @atom_sigils and is_atom(context) ->
+        [unsafe_value_problem(line(meta)) | acc]
+
+      _ ->
+        acc
+    end
+  end
+
+  # pass76 fix-m2-workflow-admission: `~w(__struct__ Elixir.File.Stream)a`
+  # builds the forbidden key and module with no atom literal in the AST.
+  # pass76 fix-m2-sigil-forms: every spelling funnels into `call_problem/2`,
+  # which owns the rule. A piped sigil call is checked once, normalised, by its
+  # `|>` parent.
+  defp context_problem({sigil, _meta, args} = node, parents, acc)
+       when sigil in @atom_sigils and is_list(args) do
+    case parents do
+      [{:|>, _, [_left, ^node]} | _] -> acc
+      _ -> call_problem(node, acc)
+    end
+  end
+
+  # `for ..., into: target` dispatches `Collectable` exactly like `Enum.into/2`.
+  defp context_problem({:for, meta, [_ | _] = args}, _parents, acc) do
+    case List.last(args) do
+      options when is_list(options) ->
+        case Keyword.fetch(options, :into) do
+          {:ok, target} ->
+            if literal_collectable?(target) or target == "",
+              do: acc,
+              else: [unsafe_value_problem(line(meta)) | acc]
+
+          :error ->
+            acc
+        end
+
       _ ->
         acc
     end
@@ -470,6 +508,9 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
            do: acc,
            else: [json_problem(line(meta)) | acc]
 
+      module == Kernel and name in @atom_sigils ->
+        atom_sigil_problem(args, meta, acc)
+
       module in [String, List] and name in [:to_atom, :to_existing_atom] ->
         [unsafe_value_problem(line(meta)) | acc]
 
@@ -478,26 +519,49 @@ defmodule SwarmCode.Domain.Workflows.Smoke do
     end
   end
 
+  defp call_problem({sigil, meta, args}, acc) when sigil in @atom_sigils and is_list(args),
+    do: atom_sigil_problem(args, meta, acc)
+
   defp call_problem(_call, acc), do: acc
+
+  # Only a literal modifier list/string without `a` is provably atom-free; a
+  # missing, computed or malformed modifier argument is refused.
+  defp atom_sigil_problem([_string, modifiers], meta, acc) do
+    safe? =
+      cond do
+        is_list(modifiers) -> Enum.all?(modifiers, &is_integer/1) and ?a not in modifiers
+        is_binary(modifiers) -> not String.contains?(modifiers, "a")
+        true -> false
+      end
+
+    if safe?, do: acc, else: [unsafe_value_problem(line(meta)) | acc]
+  end
+
+  defp atom_sigil_problem(_args, meta, acc), do: [unsafe_value_problem(line(meta)) | acc]
 
   defp literal_collectable?([]), do: true
 
   defp literal_collectable?({:%{}, _, pairs}) do
     Enum.all?(pairs, fn
       {key, _value} when key in [:__struct__, "__struct__"] -> false
-      {_key, _value} -> true
+      {key, _value} -> literal_key?(key)
       _ -> false
     end)
   end
 
   defp literal_collectable?(_value), do: false
 
+  # pass76 fix-m2-workflow-admission: a computed key could evaluate to
+  # `:__struct__`, turning the collectable into a forged struct.
+  defp literal_key?(key), do: is_atom(key) or is_binary(key) or is_number(key)
+
   defp parent_line([{_name, meta, _args} | _]) when is_list(meta), do: line(meta)
   defp parent_line([_parent | parents]), do: parent_line(parents)
   defp parent_line([]), do: 0
 
   defp admission_sensitive_call?({{:., _, [module, name]}, _, _args}) do
-    module_name(module) == Enum and name == :into
+    (module_name(module) == Enum and name == :into) or
+      (module_name(module) == Kernel and name in @atom_sigils)
   end
 
   defp admission_sensitive_call?(_call), do: false

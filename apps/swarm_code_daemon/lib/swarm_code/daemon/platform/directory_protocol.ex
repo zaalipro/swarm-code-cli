@@ -349,7 +349,14 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   defp decode_struct("startup_error", pairs) do
     with {:ok, fields} <- decode_map(pairs),
          true <-
-           Enum.sort(Map.keys(fields)) == [:__exception__, :action, :code, :message, :retryable],
+           Enum.sort(Map.keys(fields)) == [
+             :__exception__,
+             :action,
+             :cause,
+             :code,
+             :message,
+             :retryable
+           ],
          {:ok, error} <- safe_startup_error(fields) do
       {:ok, error}
     else
@@ -423,10 +430,12 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
       :sqlite_version,
       :__exception__,
       :action,
+      :cause,
       :code,
       :message,
       :retryable
-    ] or value in @error_atoms or value in [:schema_incompatible, :backup_failed]
+    ] or value in @error_atoms or value in [:schema_incompatible, :backup_failed] or
+      value in StartupError.causes()
   end
 
   defp decode_atom("ok"), do: {:ok, :ok}
@@ -476,12 +485,14 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
   defp decode_atom("sqlite_version"), do: {:ok, :sqlite_version}
   defp decode_atom("__exception__"), do: {:ok, :__exception__}
   defp decode_atom("action"), do: {:ok, :action}
+  defp decode_atom("cause"), do: {:ok, :cause}
   defp decode_atom("code"), do: {:ok, :code}
   defp decode_atom("message"), do: {:ok, :message}
   defp decode_atom("retryable"), do: {:ok, :retryable}
 
   defp decode_atom("schema_incompatible"), do: {:ok, :schema_incompatible}
   defp decode_atom("backup_failed"), do: {:ok, :backup_failed}
+  defp decode_atom("database_mode"), do: {:ok, :database_mode}
 
   defp decode_atom(value), do: decode_error_atom(value)
 
@@ -830,9 +841,10 @@ defmodule SwarmCode.Daemon.Platform.DirectoryProtocol do
 
   defp startup_error?(%StartupError{} = error) do
     Map.keys(error) |> Enum.sort() ==
-      [:__exception__, :__struct__, :action, :code, :message, :retryable] and
+      [:__exception__, :__struct__, :action, :cause, :code, :message, :retryable] and
       error.__exception__ == true and
       error.code in [:backup_failed, :schema_incompatible, :cleanup_pending] and
+      (is_nil(error.cause) or error.cause in StartupError.causes()) and
       is_boolean(error.retryable) and bounded_text?(error.message, 4_096) and
       bounded_text?(error.action, 4_096)
   end

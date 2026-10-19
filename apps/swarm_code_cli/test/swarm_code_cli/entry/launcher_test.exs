@@ -152,8 +152,13 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
             cd: context.project
           )
 
-        assert %{"exit_code" => 2, "state" => "not_started", "error" => ^sentence, "denied" => []} =
-                 Jason.decode!(stdout)
+        assert %{
+                 "exit_code" => 2,
+                 "state" => "not_started",
+                 "reason" => "usage",
+                 "error" => ^sentence,
+                 "denied" => []
+               } = Jason.decode!(stdout)
       end
 
       refute File.exists?(context.log)
@@ -340,8 +345,12 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
           cd: context.project
         )
 
-      assert %{"exit_code" => 2, "state" => "not_started", "type" => "summary"} =
-               Jason.decode!(stdout)
+      assert %{
+               "exit_code" => 2,
+               "state" => "not_started",
+               "reason" => "usage",
+               "type" => "summary"
+             } = Jason.decode!(stdout)
     end
 
     test "the run's exit code is the command's", context do

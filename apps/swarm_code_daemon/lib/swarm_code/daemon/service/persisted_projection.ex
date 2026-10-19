@@ -485,14 +485,17 @@ defmodule SwarmCode.Daemon.Service.PersistedProjection do
     |> Map.new()
   end
 
-  @doc "pass72 S: `%{run_id => %{phases, phase}}` for the workflow runs among `ids`."
+  @doc """
+  pass72 S: `%{run_id => %{phases, phase, pause_message}}` for the workflow
+  runs among `ids` (`pause_message` is why a paused run was parked).
+  """
   def workflow_phases([]), do: %{}
 
   def workflow_phases(ids) do
     Repo.all(
       from(w in SwarmCode.Domain.Workflows.Run,
         where: w.run_id in ^ids,
-        select: {w.run_id, %{phases: w.phases, phase: w.phase}}
+        select: {w.run_id, %{phases: w.phases, phase: w.phase, pause_message: w.pause_message}}
       )
     )
     |> Map.new()

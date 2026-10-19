@@ -49,7 +49,7 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | Real unsaved session | `scripts/dev/run_live_session.sh` |
 | Headless session, one command per line on stdin | `scripts/dev/run_plain_session.sh [--ndjson]` |
 | Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `ncode` |
-| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9) |
+| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9); `-p --json` and stream-json name the cause of a non-zero exit in `reason` (`Release.Reasons`, pass 76) |
 | Settings (pass 74) | `ncode settings [QUERY]` opens the layer (`/settings`, F2); `ncode config help` lists the headless commands (`list/get/set/reset/keys/path/records/record/secret --stdin/search/mcp/export/import/doctor`) |
 | Re-derive the desktop domain | `mise exec -- mix swarm_code.provenance.sync --ref <desktop sha>` (read-only `git` on `~/dev/swarm-code` or `$SWARM_CODE_UPSTREAM`); `--check` verifies (in precommit) |
 | Re-pin a hand-edited ledger file outside the sync mappings | `mise exec -- mix swarm_code.provenance.repin <path> …` |
@@ -111,22 +111,27 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `a93d6d8e` (desktop pass
-  74, CLI 0.2.1 and 0.2.2; before it `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `68bc97cd` (desktop pass
+  76, branch `pass76-reliability`, CLI pass 76; merge it into desktop `main` without squashing, the CLI pins this sha; before it `2552de92`, `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
+  `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
   conversations, `Engine` with run/agent supervisors, LLM adapters, tools, workflows, research,
   scheduler, MCP, settings). `SwarmCode.Daemon.*` wraps it: `FoundationGate` (canonical paths,
   process identity, private directories, signed macOS desktop detector, `CrossAppLease`, audited
   `Schema.Contract` probe, verified backup gate), `RepoLauncher`, and `Service.*` (owner-only Unix
-  socket `Connection`, `RequestRouter`, `CommandDispatcher`, durable `CommandLedger`,
+  socket `Connection`, `RequestRouter`, `CommandDispatcher`, durable `CommandLedger`
+  (`PersistedBackend` prunes it at start and then every hour on its own timer, 5,000 rows a
+  pass, as owned work; `terminate/2` cancels the timer),
   `PersistedBackend` for saved sessions vs `LiveBackend` for unsaved ones, projections).
   `Daemon.Boot` is the desktop's `Bootstrap` (interrupted runs, seeded providers, MCP, research
   sweep, attachment prune, delayed isolation sweep; never the Scheduler, which the desktop
   owns) and `Daemon.Shutdown` its `Quit` (stop runs, kill background commands, wait for the
-  flush, stop run/research/MCP/LSP subtrees): quitting a session stops its runs.
+  flush, stop run/research/MCP/LSP subtrees): quitting a session stops the runs of every
+  conversation, not only the one on screen.
   `domain/runtime.ex` starts the domain's children, including `Tools.BackgroundProcs`,
-  `Hooks.TaskSupervisor` (every tool call's post-hook needs it) and `LSP.Supervisor`.
+  `Hooks.TaskSupervisor` (every tool call's post-hook needs it), the `OSProcess.Guards` registry
+  (hook guardians; without it a hook tree runs untracked) and `LSP.Supervisor`.
   `Daemon.Runtime.Run` is the transient in-memory runtime the live launcher uses; saved sessions go
   through `Domain.Engine` and the guarded Repo. The socket listener never starts with the
   application; launchers own it. A custom Mix compiler (`:schema_snapshot`, top of
@@ -170,7 +175,8 @@ Invariants that the code base defends and tests pin:
 - The canonical database is never reset, recreated or repaired. An unknown schema fails closed
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
   (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
-  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration); its schema contract is
+  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `68bc97cd` (desktop pass 76, no
+  migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
   `20261016000002`, `20261017000004` and `20261018000001` itself after the verified backup.
@@ -231,7 +237,8 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   turn or closes the top layer and never moves focus; Ctrl-C closes a layer, else clears the
   draft (Ctrl-Z restores it), else stops the turn (also the turn Enter just sent, before it
   shows), and none of those arms the quit; two idle Ctrl-C presses within 1.5 s quit (pass71
-  R1, asking "Stop N live runs and quit?" when runs are live); Enter before the conversation
+  R1, asking "Stop N live runs and quit?" when runs are live in any conversation of the
+  session, and saying how many are in other conversations); Enter before the conversation
   has loaded is kept and sent once it has (R2); `q` closes or quits only in select
   mode (Ctrl-T), dialogs and pickers. Ctrl-J (the port decodes a bare LF as Ctrl-J) and Ctrl-O insert a
   newline; Ctrl-X edits the draft in `$VISUAL`/`$EDITOR`. An approval card opens over the
@@ -364,13 +371,27 @@ Provenance and domain (lane A):
 - The CLI keeps its own Ultra (workflow + swarm tools, the CLI `@ultra` text): two recorded
   patches in `domain/tools.ex` and `domain/engine/prompts.ex`; keep them on every sync until the
   missions pass.
+- Desktop pass 76 carries what used to be CLI patches (command safety, workflow admission and
+  `Host` reads, the MCP queue, background-process reapers, the `start_swarm`/workflow approval
+  inheritance, the in-flight note, `launched_by_run_id` on workflow-launched runs and their
+  continuation, the owned LLM transport), so those patches are gone. What stays recorded:
+  the `umask_prefix/0` hunk in `tools/run_command.ex` and `hooks.ex`, the `clientInfo` comment in
+  `mcp/client.ex` and `lsp/client.ex`, the two Ultra patches, `repo.ex`, `storage.ex`,
+  `tools/spawn_agent.ex` (`title`), `engine/run_server.ex` (`answer_question/5`,
+  `pending_interactions/1`, the `start_agent` title) and four test patches.
+- Approvals never expire (desktop pass 76): an approval waits until answered or the run stops, and
+  an `ask_user` without an explicit timeout has no clock. `PendingInteractions` rows carry
+  `deadline_at` only for an ask with its own explicit timer. `SwarmCode.Domain.LLM.Gate` (the
+  per-provider stream limit and shared rate-limit cooldown) is a child of `Domain.Runtime` before
+  `RunSupervisor`; without it every LLM call fails with "the LLM concurrency gate is not running".
+  The guarded Repo's pool `timeout` (60 s) stays above its `busy_timeout` (15 s).
 - The live runtime (`Daemon.Runtime.Run`, unsaved sessions) streams through the synced
   `SwarmCode.Domain.LLM` adapters (cli020 fix L, A5), chosen by the live kind in `Run`
   (`openai` → `OpenAI`, `anthropic` → `Anthropic`; no `:llm_providers` registry needed);
   `SwarmCode.Providers.Provider` stays its database-free configuration and becomes a synced
   provider row in `Run`. The frozen `lib/swarm_code/llm/**` copies are gone. Their CLI
-  behaviours are recorded patches on `domain/llm/{http,anthropic,openai}.ex`, kept on every
-  sync: the owned transport (the no-progress deadline and the hard cap are exact on a silent
+  behaviours were recorded patches on `domain/llm/{http,anthropic,openai}.ex`; since desktop pass 76
+  they are the desktop's own code and the patches are gone: the owned transport (the no-progress deadline and the hard cap are exact on a silent
   socket), `HTTP.with_call_clock/1` (one hard cap per provider call), the
   `:llm_max_response_bytes` ceiling (16 MiB) while reading, `HTTP.redact_key/2` (the request's
   key at any length, before the snippet is cut), no redirect URL or host in the logs, and a
@@ -394,8 +415,57 @@ Headless and release (lane B):
   (`SWARM_STDIN_PIPED=1`, set only by the launcher); `-p -` reads the prompt from stdin.
   `--json`/`--output-format json` print one object even on failure (`state: not_started`);
   `--output-format stream-json` prints the `--plain --ndjson` records and ends with
-  `{"type":"summary",…}`. `--max-turns`/`--max-budget-usd` stop the owned run (exit 1);
-  `--fail-on-denied` fails a done run that had denials. Denials are said in one stderr line.
+  `{"type":"summary",…}`. Both objects carry a stable snake_case `reason` (pass 76): `null` when
+  `exit_code` is 0, else why (`data_lease_held`, `desktop_open`, `no_provider`,
+  `untrusted_approval`, `schema_incompatible`, `database_mode`, `run_failed`, `max_turns`,
+  `paused_workflow`, … the README's reason tables list every word; `Release.Reasons.all/0`
+  is the source and `entry/reasons_test.exs` pins the two together). A word is mapped from a
+  `StartupError` code, a session failure's `:reason` atom, a run's state or a stop kind the
+  one-shot names (`Reasons.for_failure/1`, `for_run/2`, `get/1`), never from a sentence, and
+  never creates an atom; an unlisted code is `startup_failed` (`usage` for exit 2, `run_failed`
+  for a run). Adding a word means a table row in `Reasons`, one in the README table and a test;
+  renaming or repurposing one breaks scripts. The launcher's own usage errors print
+  `"reason":"usage"` (`json_failure` in `rel/overlays/bin/ncode`). The five schema refusals
+  share the code `:schema_incompatible`, so the mode refusal carries a typed
+  `StartupError.cause` (`:database_mode`, a closed set that `Daemon.Platform.DirectoryProtocol`
+  also validates: a new cause needs the protocol's allowed atoms, its exact field set and
+  `StartupError.causes/0`), which `PersistedSession.startup_failure` puts on the failure as
+  `:cause` and `Reasons.for_failure/1` reads; the sentence is never compared.
+  `--max-turns`/`--max-budget-usd` stop the owned run and every run it launched (exit 1; the
+  turn limit applies to each run's lead, the budget to their total cost); `--fail-on-denied` fails a done run that had denials. A limit that fired stays fired:
+  a run first heard of after it (its update can arrive after the one that crossed the limit)
+  is asked to stop too, once. Denials are said in one stderr
+  line. `-p` follows the runs its runs launch (`parent_run_id`, transitively: a swarm or
+  workflow a tool started), with no cap on how many, waits until each has ended, names each
+  on stderr, lists them as `runs` in the JSON summary (`state` is the first run that did not
+  finish; `error` is the sentence of the first run that did not finish, whatever launched
+  runs finished before it) and exits 1 if any failed. A finished workflow's default
+  continuation (`workflow_run` `continue`, `mission_start`: `RunServer.continue_assistant/2`
+  starts a chat turn with `store_user: false`) is one of those runs: desktop pass 76 (synced
+  code, no CLI patch in `engine.ex` or `run_server.ex` for it) stores the
+  workflow as its `launched_by_run_id`. When the conversation asked for an automatic
+  compaction (`compact_due`), `Engine.compact_then_turn` starts a compaction run and a chain
+  task (`{:chain, conversation_id, compaction_run_id}` in the domain registry) that starts the
+  turn when it ends: the same upstream code stores the workflow as the compaction run's
+  `launched_by_run_id` (`start_compact` takes `launched_by_run_id:`) and as the chain's registry
+  value (the eventual turn already carries it through `opts`). A turn that cannot start at all
+  (no provider, the project gone) leaves no row after a `store_user: false` launch, with or
+  without a compaction (`continue_assistant/2` drops the result and `end_chain/5` needs the
+  stored user message), so `-p` cannot report that case. The workflow's row reads `done`
+  before its process has started that turn (a trusted `user_prompt_submit` hook runs first, up
+  to its timeout, before any row exists) or handed it to the chain, so `-p` does not conclude
+  while a workflow it follows has a launch pending:
+  `Daemon.Service.RunProcesses.pending?/1` (the run's server lives, or a chain task carries the
+  run's id as its value), passed as `launch_pending?` and asked every `recheck_ms` (25 ms). It
+  is a fact of the processes' own lifecycle, so there is **no time limit** on it: a server
+  stops right after `continue_assistant/2` returns (`{:stop, :normal, finish_workflow(…)}`), a
+  chain task ends when its turn's row is written (it waits at most 60 s for the compaction,
+  `@auto_compact_wait_ms`), and a hook is cut at 60 s (`Hooks.run_supervised`). Running out of a
+  budget was once taken for "launched nothing" (a 10 s cap that reported success); never
+  reintroduce one that does. A signal still ends the wait with its own code, and a limit still
+  stops a turn that appears. A `paused` run (a workflow parked by the provider being down or by hand; the
+  CLI has no Watchdog) ends the wait with a stderr sentence that says why and how to continue
+  (`ncode --resume <conversation id>`, then `/resume-run`) and exit 1.
   `--approval MODE` (`SWARM_HEADLESS_APPROVAL`) is a `PersistedBackend` start option passed to
   the runs it starts (plain prompts, prompts and slash commands drained from the queue, the
   dispatcher's chat/swarm launches and `retry_run`'s swarm; cli020 fix S1), and workflow launches
@@ -403,7 +473,18 @@ Headless and release (lane B):
   `auto`/`full` in an untrusted project before it writes the message, in the launcher's
   words); `/compact` has no tools, so no approval to carry.
 - **Exit codes:** 0 done, 1 failed, 2 usage, 3 refused, 4 changed elsewhere (`ncode config`),
-  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`).
+  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`). Exit 3 covers a held
+  lease, the open desktop, an untrusted `--approval`, no provider and every schema refusal; in
+  `-p --json` the `reason` field says which, the exit code and the sentence stay as they are.
+  A signal hands the session its normal close and waits for it up to `Signals.deadline_ms/0`
+  (pass 76: `Daemon.Shutdown.budget_ms/0`, the sum of that shutdown's own phase deadlines plus a
+  margin, and 20 s for the stops around it; it was a fixed 10 s, which cut the shutdown short with
+  runs still `running`), then halts with the signal's code. A second signal halts at once, unless
+  it comes less than a second after the first (a closing terminal reaches the process through the
+  kernel and the shell both). `install/2` also removes OTP's SIGTERM answer (`init:stop/0` would
+  stop every application and exit 0 under the close) and keeps its SIGQUIT and SIGUSR1 halts.
+  `Shutdown.budget_ms/0` and `Signals.deadline_ms/0` move with the phase constants: do not
+  restate a number for them.
 - `--resume` takes an exact title or a 6+ character id prefix (`SessionSelection.resolve/2`);
   bare `--resume` opens the picker (`SWARM_RESUME_PICKER=1`, TUI only).
 - The TUI exit summary (`PersistedSession.summary_text/1`) starts with `\r\e[2K` (it erases
@@ -436,9 +517,10 @@ Keys and terminal (lane D):
   failed or stopped run; Enter/`o` on a tool row open its full output. Large pastes collapse to
   `[Pasted text #N · L lines]` and are expanded on send (`Draft.Pastes`). A `/search` with hits
   opens the palette on its `?` rows (`State.search_results`).
-- Attention (D3): while the terminal reports focus lost, a new approval/question or the end of a
-  run this session started rings once per 2 s as BEL, OSC 9 or an OS notification
-  (`terminal.notify`), and the window title says `ncode · <project>` [`· working`, `· needs
+- Attention (D3): while the terminal reports focus lost, a new approval/question (in any
+  conversation of the session; the words name another conversation: `ncode: <project> needs you
+  (approval in <title>)`) or the end of a run this session started rings once per 2 s as BEL, OSC 9
+  or an OS notification (`terminal.notify`), and the window title says `ncode · <project>` [`· working`, `· needs
   you`, `· done`] (`terminal.title`); the port saves and restores the terminal's own title.
 - Copy (D4): `y` uses `/usr/bin/pbcopy` on macOS outside SSH, otherwise OSC 52 (tmux
   passthrough when `TMUX` is set); the notice says which.
@@ -491,6 +573,8 @@ The pass's brief is `docs/superpowers/plans/2026-10-08-cli-0.2.1/00_brief.md` (r
 0.2.0 contract), its lane notes are in `notes/{K,B,C,U}.md`, the outcome is the "CLI 0.2.1"
 section of `docs/research/2026-10-07-cli020-outcome.md`.
 
+- Domain (pass 76): synced to desktop `68bc97cd` (see the lineage above); the K7 notes below
+  describe the earlier pin.
 - Domain (K7): synced to desktop `a93d6d8e` (desktop pass 74 = desktop 0.2.2's engine, no
   migration). Every model without a configured `context_window` has a 1,000,000-token window
   (`Engine.Context.default_window/0`, `effective_window/2`), the trim budget stays 75 %
@@ -554,6 +638,28 @@ of `docs/research/2026-10-07-cli020-outcome.md`. No desktop change, no sync, no 
   workspace's `local_zone` (`Next.local_zone/0`, read once per daemon) and, left blank, is
   filled by the daemon's changeset with the same function. `Library.schedule_form/2` applies
   this to new and daemon-supplied forms.
+- Other conversations (pass 76): the read model is a normalized cache of what the watches
+  loaded, not the shown conversation alone: a closed inspector keeps its coverage, so its run
+  rows (another conversation's too) stay after a switch, and the workspace's runs are the
+  newest 200 only. A quit stops every run of the session and a request can wait in any
+  conversation, so run rows are never a count of what is live. The shell watch carries
+  `DTO.Elsewhere` (`ShellSnapshot.elsewhere` and the `elsewhere` delta, `ReadModel.elsewhere`):
+  `total` live runs of the whole session (the run registry, what `Shutdown` stops), `live`
+  outside the shown conversation, and the newest 32 `waiting` approvals/questions there, each
+  with its conversation's title and `since` (unix µs). `Daemon.Service.Elsewhere` reads the run
+  registry and the waits table; `PersistedBackend` recomputes it 250 ms after a run status
+  event of any conversation or a waits change, once more 2 s later and then every 2 s while
+  any run lives (one owned timer, only while a client watches the shell). The reducer reads it
+  purely: `Reducer.live_run_count/1` is `total` once a fact is held (the quit confirmation:
+  `quit_live_runs`, and `quit_live_elsewhere` = `live` for the dialog's "N are in other
+  conversations"); before any fact it counts the runs in view, as before. Exact session
+  liveness comes from this fact, never from `read_model.runs`. `Reducer.Attention` rings (same
+  2 s throttle, `terminal.notify`, focus rules) for a wait newer than `state.elsewhere_mark`,
+  the newest `{since, run_id, id}` seen (one value, so a wait that leaves the newest 32 and
+  comes back is not news; it resets when no wait is left; the first fact held is a baseline),
+  naming at most two conversations and counting the rest ("approval in A and B", "approval in
+  A, B +2 more"). `Shutdown.run/1`'s `stopped_runs` carry `conversation_id` and
+  `conversation`, so the exit summary names where the runs of other conversations ran.
 - Quit summary (F5): `Files changed` is the net change of the session (`net_changed/3` in
   `release/persisted_session.ex`): a path whose file equals the session's first checkpoint of it,
   or was absent before and is absent now, is left out (a rewind or a hand revert).

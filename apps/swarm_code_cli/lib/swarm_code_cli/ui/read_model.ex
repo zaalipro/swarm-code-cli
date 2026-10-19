@@ -24,6 +24,10 @@ defmodule SwarmCodeCLI.UI.ReadModel do
             # cli021 C2: the side panel's vitals (`DTO.Vitals`) of the shown
             # conversation: model speeds and memory, nil before the first.
             vitals: nil,
+            # pass76: the live runs and waits of the session's other
+            # conversations (`DTO.Elsewhere`, from the shell watch), nil
+            # before the first.
+            elsewhere: nil,
             order: %{},
             coverage: %{},
             chunks: %ChunkDeque{}
@@ -329,6 +333,10 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     end
   end
 
+  # pass76: the daemon sends the whole fact whenever it changes, in order.
+  def delta(model, _slot, %Delta{kind: :elsewhere, body: %DTO.Elsewhere{} = body}),
+    do: {:ok, %{model | elsewhere: body}, [], []}
+
   # Metadata only ever describes the workspace's conversation; anywhere else
   # there is nothing it could update.
   def delta(model, _slot, %Delta{kind: :workspace_metadata}), do: {:ok, model, [], []}
@@ -386,6 +394,12 @@ defmodule SwarmCodeCLI.UI.ReadModel do
     model =
       case Map.get(body, :vitals) do
         %DTO.Vitals{} = vitals when slot == :shell -> %{model | vitals: vitals}
+        _ -> model
+      end
+
+    model =
+      case Map.get(body, :elsewhere) do
+        %DTO.Elsewhere{} = elsewhere when slot == :shell -> %{model | elsewhere: elsewhere}
         _ -> model
       end
 

@@ -3,7 +3,9 @@ defmodule SwarmCodeCLI.ReleaseTest do
   Pass 70 E4: the release's own command line, the grammar the launcher shares,
   and the exit codes a real VM halts with.
   """
-  use ExUnit.Case, async: true
+  # Not async: `run/1`'s exact-stderr assertion captures the one named stderr
+  # device, which an async test writing to it meanwhile would add to.
+  use ExUnit.Case, async: false
   import ExUnit.CaptureIO
 
   alias SwarmCodeCLI.Release

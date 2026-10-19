@@ -29,6 +29,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   alias SwarmCode.Domain.Projects.Workspace
 
   @flush_ms 100
+  @terminate_flush_attempts 5
+  @terminate_flush_backoff_ms 200
+  @empty_sig {0, :erlang.phash2("")}
   # spec 72 C1: per-agent mailbox cap — sender gets a tool error, never a silent drop.
   @mailbox_cap 100
   # The one-line preview a node carries. It is pushed to every open LiveView on
@@ -58,8 +61,6 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # `CLOCK_UPTIME_RAW`): every deadline here and in `run_command`/`program` is
   # monotonic and pauses while the machine sleeps; every timestamp is wall-clock
   # and jumps at wake. Keep it that way; do not add `+C no_time_warp`.
-  @approval_timeout_ms SwarmCode.Domain.Engine.Questions.deadline_ms(:approval)
-  @question_timeout_ms SwarmCode.Domain.Engine.Questions.deadline_ms(:question)
   @finished ~w(done failed stopped)
 
   # ------------------------------------------------------------------ client API
@@ -76,12 +77,27 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   def via(run_id), do: {:via, Registry, {SwarmCode.Domain.Registry, {:run, run_id}}}
   def via(run_id, value), do: {:via, Registry, {SwarmCode.Domain.Registry, {:run, run_id}, value}}
 
+  @background_slice_ms 250
+
   @doc "Registers a node; `attrs` must contain `:kind`. id/position/started_at are assigned here."
-  @spec register_node(String.t(), map()) :: {:ok, Node.t()}
+  @spec register_node(String.t(), map()) :: {:ok, Node.t()} | {:error, :not_running}
   # Spec 13 §11 A-5: the default 5 s call timed out on a slow repo (the server
   # runs `git worktree add` inside it) and took the whole workflow down with it.
+  #
+  # pass76 eng-patient-calls: no deadline either. The node INSERT retries a busy
+  # database for minutes in the worst case; a 30 s limit crashed the agent (and
+  # the run, for the root). The caller's monitor ends the wait when the server
+  # dies, so a stalled server is waited for and a gone one is an exit.
   def register_node(run_id, attrs),
-    do: GenServer.call(via(run_id), {:register_node, attrs}, 30_000)
+    do: patient_call(run_id, {:register_node, attrs})
+
+  # pass76 fix-m1-agent-waits (M1-R3-001): settles what a dead op task left
+  # parked in the server — its approval/question (keyed by the op id) and its
+  # `wait_for_message` waiter (keyed by the agent id, matched by the op's pid).
+  # Sibling ops' waits are untouched.
+  @spec cancel_op_waits(String.t(), String.t(), String.t(), pid()) :: :ok | {:error, :not_running}
+  def cancel_op_waits(run_id, agent_id, op_id, op_pid),
+    do: patient_call(run_id, {:cancel_op_waits, agent_id, op_id, op_pid})
 
   @spec update_node(String.t(), String.t(), map()) :: :ok
   def update_node(run_id, node_id, attrs),
@@ -189,7 +205,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           atom(),
           String.t() | nil
         ) ::
-          :approved | :denied | :timeout
+          :approved | :denied
   def request_approval(run_id, node_id, permission, safety, mode),
     do:
       GenServer.call(
@@ -204,12 +220,12 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           :read | :write | :execute | :private_network,
           atom()
         ) ::
-          :approved | :denied | :timeout
+          :approved | :denied
   def request_approval(run_id, node_id, permission, safety),
     do: request_approval(run_id, node_id, permission, safety, nil)
 
   @spec request_approval(String.t(), String.t(), :read | :write | :execute | :private_network) ::
-          :approved | :denied | :timeout
+          :approved | :denied
   def request_approval(run_id, node_id, permission),
     do: request_approval(run_id, node_id, permission, :normal)
 
@@ -225,14 +241,15 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   @doc """
   Interview mode (spec 10 §1): blocks the calling tool until the user answers
-  the questions (or the run stops / 30 minutes pass).
+  the questions or the run stops. Without an explicit `:timeout` option there
+  is no clock (pass76 eng-no-expiry).
   """
   @spec ask_user(String.t(), String.t(), [map()]) :: {:ok, [map()]} | {:error, String.t()}
   def ask_user(run_id, node_id, questions, opts \\ []),
     do:
       GenServer.call(
         via(run_id),
-        {:ask_user, node_id, questions, opts[:timeout] || @question_timeout_ms},
+        {:ask_user, node_id, questions, opts[:timeout] || :infinity},
         :infinity
       )
 
@@ -385,12 +402,16 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     do: GenServer.cast(via(run_id), {:consensus_round_done, entry})
 
   @spec stop_agent(String.t(), String.t()) :: :ok | {:error, :not_running}
-  def stop_agent(run_id, node_id), do: safe_call(run_id, {:stop_agent, node_id})
+  def stop_agent(run_id, node_id), do: patient_call(run_id, {:stop_agent, node_id})
+
+  @doc "`stop_agent/2` for the LiveView: bounded, it never blocks the socket."
+  @spec stop_agent_bounded(String.t(), String.t()) :: :ok | {:error, :not_running}
+  def stop_agent_bounded(run_id, node_id), do: safe_call(run_id, {:stop_agent, node_id})
 
   # spec 72 B7: a timed-out sub-agent gets :spawn_timeout, not :user_stopped.
   @spec stop_agent_timeout(String.t(), String.t()) :: :ok | {:error, :not_running}
   def stop_agent_timeout(run_id, node_id),
-    do: safe_call(run_id, {:stop_agent_timeout, node_id})
+    do: patient_call(run_id, {:stop_agent_timeout, node_id})
 
   # spec 72 R7: the stop reason as the state owner has it. The row is written
   # up to a flush later, so a parent that reads the DB the moment
@@ -402,11 +423,17 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # once the tools were routed through these.
   @doc "`[{node_id, name}]` of every agent of the run that has not settled, `{:error, :not_running}` when the run is gone."
   @spec live_agent_names(String.t()) :: [{String.t(), String.t()}] | {:error, :not_running}
-  def live_agent_names(run_id), do: safe_call(run_id, :live_agent_names)
+  def live_agent_names(run_id), do: patient_call(run_id, :live_agent_names)
+
+  # pass76 eng-no-expiry: whether the node or anything below it waits for the
+  # user's approval or answer (the sub-agent watchdog pauses while it does).
+  @spec waiting_in_subtree?(String.t(), String.t()) :: boolean() | {:error, :not_running}
+  def waiting_in_subtree?(run_id, node_id),
+    do: patient_call(run_id, {:waiting_in_subtree, node_id})
 
   @spec node_error_kind(String.t(), String.t()) :: String.t() | nil
   def node_error_kind(run_id, node_id) do
-    case safe_call(run_id, {:node_error_kind, node_id}) do
+    case patient_call(run_id, {:node_error_kind, node_id}) do
       kind when is_binary(kind) -> kind
       _none -> nil
     end
@@ -421,19 +448,19 @@ defmodule SwarmCode.Domain.Engine.RunServer do
           | :running
           | :unknown
           | {:error, :not_running}
-  def agent_result(run_id, node_id), do: safe_call(run_id, {:agent_result, node_id})
+  def agent_result(run_id, node_id), do: patient_call(run_id, {:agent_result, node_id})
 
   # spec 73 T100: one field of one node, for the tools that read a branch or
   # a name — `get_state/1` copied every node of the run to read one entry.
   @spec node_field(String.t(), String.t(), atom()) :: term() | {:error, :not_running}
   def node_field(run_id, node_id, field) when is_atom(field),
-    do: safe_call(run_id, {:node_field, node_id, field})
+    do: patient_call(run_id, {:node_field, node_id, field})
 
   # spec 70 C6: register a background agent so its result is injected into the
   # parent's message queue when it finishes.
   @spec register_background(String.t(), String.t(), String.t() | nil) :: :ok | {:error, term()}
   def register_background(run_id, agent_node_id, parent_node_id),
-    do: safe_call(run_id, {:register_background, agent_node_id, parent_node_id})
+    do: patient_call(run_id, {:register_background, agent_node_id, parent_node_id})
 
   @spec get_state(String.t()) :: map() | {:error, :not_running}
   def get_state(run_id), do: safe_call(run_id, :get_state)
@@ -445,36 +472,44 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   `{:error, :not_running}` once the run has stopped.
   """
   @spec finish_totals(String.t()) :: map() | {:error, :not_running}
-  def finish_totals(run_id), do: safe_call(run_id, :finish_totals)
+  def finish_totals(run_id), do: patient_call(run_id, :finish_totals)
 
   # spec 72 C1: deliver a message to an agent's mailbox.
   @spec deliver_message(String.t(), String.t(), String.t(), String.t()) ::
           :ok | {:error, term()}
   def deliver_message(run_id, from_node_id, to_node_id, text),
-    do: safe_call(run_id, {:deliver_message, from_node_id, to_node_id, text})
+    do: patient_call(run_id, {:deliver_message, from_node_id, to_node_id, text})
 
   # spec 72 C1: drain all pending messages from an agent's mailbox.
   @spec drain_inbox(String.t(), String.t()) :: [map()]
   def drain_inbox(run_id, node_id),
-    do: safe_call(run_id, {:drain_inbox, node_id})
+    do: patient_call(run_id, {:drain_inbox, node_id})
 
   # spec 72 C2: block until a message arrives in the agent's mailbox, with timeout.
   @spec wait_for_message(String.t(), String.t(), pos_integer(), String.t() | nil) ::
           {:ok, map()} | {:error, :timeout}
   def wait_for_message(run_id, node_id, timeout_ms, awaiting \\ nil) do
-    safe_call(run_id, {:wait_for_message, node_id, timeout_ms, awaiting},
-      timeout: timeout_ms + 5_000
-    )
+    # The server's own waiter timer answers `{:error, :timeout}`; a call
+    # deadline on top of it only fired when the server was stalled.
+    patient_call(run_id, {:wait_for_message, node_id, timeout_ms, awaiting})
   end
 
   # spec 72 C3: broadcast a message to all live agents in the run except the sender.
   @spec broadcast(String.t(), String.t(), String.t()) :: :ok
   def broadcast(run_id, from_node_id, text),
-    do: safe_call(run_id, {:broadcast, from_node_id, text})
+    do: patient_call(run_id, {:broadcast, from_node_id, text})
 
-  defp safe_call(run_id, msg, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 5_000)
-    GenServer.call(via(run_id), msg, timeout)
+  # pass76 eng-patient-calls: for agents, ops and tools talking to their own
+  # server. A stalled RunServer (busy database) is waited for; only a server
+  # that is gone is `:not_running`. UI-facing calls stay on `safe_call/2`.
+  defp patient_call(run_id, msg) do
+    GenServer.call(via(run_id), msg, :infinity)
+  catch
+    :exit, _ -> {:error, :not_running}
+  end
+
+  defp safe_call(run_id, msg) do
+    GenServer.call(via(run_id), msg, 5_000)
   catch
     :exit, _ -> {:error, :not_running}
   end
@@ -506,8 +541,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         :ok
     end)
 
-    Enum.each(state.approvals, fn {_node_id, %{from: from, timer: timer}} ->
-      Process.cancel_timer(timer)
+    Enum.each(state.approvals, fn {_node_id, %{from: from}} ->
       GenServer.reply(from, :denied)
     end)
 
@@ -522,25 +556,28 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end)
 
     SwarmCode.Domain.Engine.Questions.delete_run(state.run.id)
+    state = cancel_checkpoint_timer(state)
     # Spec 54 §1.1: the columns of the last 100 ms are still in `unsaved` —
     # write them before the terminal row, so a crashed or quit run leaves the
     # node statuses the boot sweep would otherwise have to guess.
-    state =
-      try do
-        flush_writes(state)
-      rescue
-        _ -> state
-      catch
-        _, _ -> state
-      end
+    started = System.monotonic_time(:millisecond)
+    state = flush_for_terminate(state, 1, started + terminal_flush_ms())
 
     # spec 55 T11: the terminal row is written even when the flush could not be.
-    try do
-      write_terminal(reason, state)
-    rescue
-      _ -> :ok
-    catch
-      _, _ -> :ok
+    # pass76 fix-m5-engine (M5-DB-001): bounded inside the supervisor's budget too, so this process
+    # ends by itself instead of being killed while a SQLite busy wait holds it.
+    case bounded(fn -> write_terminal(reason, state) end, started + terminal_write_ms()) do
+      {:raised, error} ->
+        log_terminate_failure(state, "terminal write", error)
+
+      :timeout ->
+        Logger.error(
+          "swarm_code: run #{state.run.id} terminal write did not finish within " <>
+            "#{terminal_write_ms()} ms of the shutdown budget; the boot sweep settles the row"
+        )
+
+      {:ok, _} ->
+        :ok
     end
 
     # spec 70 E2: close the run telemetry span.
@@ -556,6 +593,114 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     _ -> :ok
   catch
     _, _ -> :ok
+  end
+
+  # pass76 db-writer-stall (M4-UT-002): `flush_writes/1` swallows a refused flush (the columns stay
+  # in `unsaved`, a timer would retry), but a terminating run has no next timer. Retry in place so a
+  # lock that lifts within the budget still lands the final node columns; whatever is still owed is
+  # logged at error level with its ids, never dropped quietly.
+  # pass76 fix-m5-engine (M5-DB-001): one attempt can sit on `busy_timeout` (15 s) and `Repo.retry`
+  # repeats it, so every attempt runs in a monitored process that is abandoned at `deadline`. The
+  # deadline is a third of the supervisor's shutdown budget: the rest is for the terminal row and
+  # the identified final log, which must be written before the supervisor kills this process.
+  defp flush_for_terminate(state, attempt, deadline) do
+    {outcome, state} =
+      case bounded(fn -> flush_writes(state, true) end, deadline) do
+        {:ok, flushed} -> {:ok, flushed}
+        other -> {other, state}
+      end
+
+    case outcome do
+      {:raised, error} -> log_terminate_failure(state, "node flush", error)
+      _ -> :ok
+    end
+
+    now = System.monotonic_time(:millisecond)
+    backoff = @terminate_flush_backoff_ms * attempt
+
+    cond do
+      not flush_owed?(state) ->
+        state
+
+      attempt < @terminate_flush_attempts and now + backoff < deadline ->
+        Process.sleep(backoff)
+        flush_for_terminate(state, attempt + 1, deadline)
+
+      true ->
+        ids = state.persist_pending |> MapSet.union(state.uninserted) |> MapSet.to_list()
+
+        Logger.error(
+          "swarm_code: run #{state.run.id} terminated with unsaved node columns after " <>
+            "#{attempt} flush attempts (nodes #{Enum.join(ids, ", ")}; " <>
+            "totals pending: #{pending_totals(state) != nil}; " <>
+            "#{if outcome == :timeout, do: "last attempt timed out at", else: "terminal flush budget"} " <>
+            "#{terminal_flush_ms()} ms)"
+        )
+
+        state
+    end
+  end
+
+  defp terminal_flush_ms, do: div(SwarmCode.Domain.Engine.RunSup.run_server_shutdown_ms(), 3)
+
+  defp terminal_write_ms, do: div(SwarmCode.Domain.Engine.RunSup.run_server_shutdown_ms() * 5, 6)
+
+  # `{:ok, value} | {:raised, error} | :timeout`: `fun` runs in a monitored process that is
+  # abandoned at `deadline`.
+  defp bounded(fun, deadline) do
+    parent = self()
+    callers = [parent | Process.get(:"$callers", [])]
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Process.put(:"$callers", callers)
+
+        result =
+          try do
+            {:ok, fun.()}
+          rescue
+            error -> {:raised, error}
+          catch
+            kind, error -> {:raised, {kind, error}}
+          end
+
+        send(parent, {:bounded_result, self(), result})
+      end)
+
+    receive do
+      {:bounded_result, ^pid, result} ->
+        Process.demonitor(ref, [:flush])
+        result
+
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        {:raised, {:exit, reason}}
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) ->
+        # A process inside a SQLite busy wait dies only when the NIF returns, so it is not awaited.
+        Process.exit(pid, :kill)
+        Process.demonitor(ref, [:flush])
+        :timeout
+    end
+  end
+
+  defp flush_owed?(state) do
+    MapSet.size(state.persist_pending) > 0 or MapSet.size(state.uninserted) > 0 or
+      pending_totals(state) != nil
+  end
+
+  # pass76 fix-m1-answer-lifecycle (M1-R3-004): never raises, never prints the
+  # answer itself — only the stage, the run and a redacted reason.
+  defp log_terminate_failure(state, stage, error) do
+    reason =
+      try do
+        error |> inspect(limit: 20, printable_limit: 200) |> SwarmCode.Domain.LLM.HTTP.redact()
+      rescue
+        _ -> "unprintable"
+      end
+
+    Logger.error("swarm_code: run #{state.run.id} #{stage} failed during terminate: #{reason}")
+  rescue
+    _ -> :ok
   end
 
   # Spec 51 §4.3: an abnormal end writes the row the boot sweep would have
@@ -588,6 +733,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
       opts =
         [create_messages: creates] ++
+          partial_answer_update(state) ++
           case goal_settlement(state.run, status) do
             nil -> []
             pair -> [goal: pair]
@@ -595,13 +741,52 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
       state =
         case SwarmCode.Domain.Conversations.Writes.finish_turn(state.run, attrs, opts) do
-          {:ok, %{run: run}} -> %{state | run: run, run_dirty: true}
-          {:error, _} -> update_run(state, attrs)
+          {:ok, %{run: run}} ->
+            %{state | run: run, run_dirty: true}
+
+          {:error, error} ->
+            log_answer_write_failure(state, opts, error)
+            update_run(state, attrs)
         end
 
+      if status == "failed", do: notify_run_end(state, state.run)
       announce_run(state)
     end
   end
+
+  defp log_answer_write_failure(state, opts, error) do
+    bytes =
+      case opts[:update_message] do
+        {_message, %{content: content}} when is_binary(content) -> byte_size(content)
+        _ -> 0
+      end
+
+    reason =
+      case error do
+        %Ecto.Changeset{errors: errors} -> inspect(errors, limit: 20, printable_limit: 200)
+        other -> inspect(other, limit: 20, printable_limit: 200)
+      end
+
+    Logger.error(
+      "swarm_code: run #{state.run.id} terminal answer write failed (#{SwarmCode.Domain.LLM.HTTP.redact(reason)}); " <>
+        "#{bytes} answer bytes were not stored, only the run row was updated"
+    )
+  end
+
+  # pass76 eng-answer-persist: the streamed text lives only in memory until
+  # `finish_run`; an abnormal end writes what was accumulated, byte for byte
+  # (no suffix), into the reserved assistant row in the same transaction.
+  defp partial_answer_update(%{run: %{kind: kind}, assistant_message: message} = state)
+       when kind in ["chat", "compact"] and not is_nil(message) do
+    # pass76 fix-m1-answer-lifecycle (M1-R3-003): byte-authoritative, blank and
+    # reset-to-empty included. `message` tracks what the row holds (see
+    # `answer_checkpoint/1`), so an unchanged answer is a no-op changeset.
+    text = Chunks.to_string(state.assistant_text)
+    reasoning = nil_if_blank(Chunks.to_string(state.assistant_reasoning))
+    [update_message: {message, %{content: text, reasoning: reasoning}}]
+  end
+
+  defp partial_answer_update(_state), do: []
 
   # Spec 51 §5.4: a gate question has no timer.
   defp cancel_timer(timer) when is_reference(timer), do: Process.cancel_timer(timer)
@@ -659,6 +844,17 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         # flush — `:all` for a register or any column outside `Node.patch_cols/0`.
         dirty_cols: %{},
         flush_ref: nil,
+        # pass76 fix-db-flush-backoff: current re-arm delay after raised flushes; 0 = healthy.
+        flush_backoff: 0,
+        # pass76 fix-m5-engine (M5-DB-002): monotonic ms before which no non-terminal flush
+        # attempts while a failure series is active, and before which no further failure is logged.
+        flush_next_at: nil,
+        flush_log_until: nil,
+        # pass76 eng-answer-checkpoint: `{monotonic ms of the last attempt,
+        # signature of the text last written | nil}`; nil until text streams.
+        answer_checkpoint: nil,
+        checkpoint_ref: nil,
+        checkpoint_timer: nil,
         assistant_text: Chunks.new(),
         pending_delta: Chunks.new(),
         assistant_reasoning: Chunks.new(),
@@ -1021,6 +1217,22 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     {:reply, {:ok, node}, state}
   end
 
+  def handle_call({:cancel_op_waits, agent_id, op_id, op_pid}, _from, state) do
+    state = settle_pending_interactions(state, [op_id])
+
+    {dead, kept} =
+      Enum.split_with(state.message_waiters, fn %{node_id: id, from: {pid, _tag}} ->
+        id == agent_id and pid == op_pid
+      end)
+
+    Enum.each(dead, fn waiter ->
+      release_waiter(waiter)
+      GenServer.reply(waiter.from, {:error, :timeout})
+    end)
+
+    {:reply, :ok, %{state | message_waiters: kept}}
+  end
+
   def handle_call({:request_approval, node_id, permission, safety}, from, state),
     do: handle_call({:request_approval, node_id, permission, safety, nil}, from, state)
 
@@ -1043,13 +1255,10 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         {:reply, :approved, state}
 
       true ->
-        timer = Process.send_after(self(), {:approval_timeout, node_id}, @approval_timeout_ms)
-
         state =
           state
           |> put_in([:approvals, node_id], %{
             from: from,
-            timer: timer,
             permission: permission,
             safety: safety,
             mode: mode,
@@ -1417,8 +1626,14 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
     case state.agents[agent_id] do
       %{result: nil} = agent ->
-        timer = arm_background_timeout(state, agent_id)
-        {:reply, :ok, put_agent(state, agent_id, %{agent | background_timer: timer})}
+        {timer, remaining} = arm_background_timeout(state, agent_id)
+
+        {:reply, :ok,
+         put_agent(state, agent_id, %{
+           agent
+           | background_timer: timer,
+             background_remaining_ms: remaining
+         })}
 
       %{result: result} ->
         {:reply, :ok, inject_background_result(state, agent_id, result)}
@@ -1490,6 +1705,10 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   # spec 73 T100
+  def handle_call({:waiting_in_subtree, node_id}, _from, state) do
+    {:reply, subtree_waiting?(state, node_id), state}
+  end
+
   def handle_call({:node_field, node_id, field}, _from, state),
     do: {:reply, get_in(state.nodes, [node_id, Access.key(field)]), state}
 
@@ -1521,6 +1740,12 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       not owner_live?(state, node_id) ->
         {:reply, {:error, :timeout}, state}
 
+      # pass76 fix-m1-residual-races (M1-R3-001): a call queued by an op that
+      # died meanwhile must not pop a message (the reply would go nowhere) nor
+      # park a waiter nobody cleans up.
+      not caller_alive?(from) ->
+        {:reply, {:error, :timeout}, state}
+
       mailbox != [] ->
         # Immediate: return the first message, leave the rest
         [message | rest] = mailbox
@@ -1540,7 +1765,17 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         # message. Every waiter owns a timer; a wake cancels it.
         ref = make_ref()
         timer = Process.send_after(self(), {:message_wait_timeout, ref}, timeout_ms)
-        waiter = %{ref: ref, timer: timer, from: from, node_id: node_id, awaiting: awaiting}
+        {caller, _tag} = from
+        mon = Process.monitor(caller)
+
+        waiter = %{
+          ref: ref,
+          timer: timer,
+          mon: mon,
+          from: from,
+          node_id: node_id,
+          awaiting: awaiting
+        }
 
         state = %{state | message_waiters: [waiter | state.message_waiters]}
         {:noreply, state}
@@ -1770,9 +2005,22 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # (`progress: 100`, `stopped`) — it would put the bar back to 37 % and write
   # it with the next flush. A settled node keeps what settled it.
   def handle_cast({:update_node, node_id, attrs}, state) do
-    if progress_only?(attrs) and match?(%{status: s} when s in @finished, state.nodes[node_id]),
-      do: {:noreply, state},
-      else: {:noreply, put_node(state, node_id, attrs)}
+    node = state.nodes[node_id]
+
+    cond do
+      progress_only?(attrs) and match?(%{status: s} when s in @finished, node) ->
+        {:noreply, state}
+
+      # pass76 fix-m3-rate-limit (M3-R1-004): a gate-wait / retry event queued
+      # before a stop reaches this mailbox after it. It would put a settled op
+      # back to retrying/running with no owner left to settle it again.
+      Map.get(attrs, :status) in ["running", "retrying"] and
+          (node == nil or node.status in ~w(done failed stopped interrupted)) ->
+        {:noreply, state}
+
+      true ->
+        {:noreply, put_node(state, node_id, attrs)}
+    end
   end
 
   def handle_cast({:reasoning_delta, node_id, text}, state) do
@@ -1823,6 +2071,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
                 last_text_node: node_id
             }
             |> count_assistant(node_id, :a_text, delta)
+            |> arm_checkpoint()
           else
             state
           end
@@ -1887,7 +2136,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       )
     end
 
-    {:noreply, %{state | assistant_text: Chunks.new(kept), pending_delta: Chunks.new()}}
+    {:noreply,
+     arm_checkpoint(%{state | assistant_text: Chunks.new(kept), pending_delta: Chunks.new()})}
   end
 
   def handle_cast({:reasoning_reset, node_id}, state) do
@@ -1927,9 +2177,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       {nil, _} ->
         {:noreply, state}
 
-      {%{from: from, timer: timer, permission: permission} = approval, approvals} ->
-        Process.cancel_timer(timer)
-
+      {%{from: from, permission: permission} = approval, approvals} ->
         # pass 72 F1: a read-only approval is answered once. "Always" and a
         # family pill (a stale card, a crafted event) approve this call only.
         # pass 72 F10: so is a call a permission rule asks about (`:rule`).
@@ -2050,10 +2298,18 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   @impl true
   def handle_info(:flush, state), do: {:noreply, flush(%{state | flush_ref: nil})}
 
+  def handle_info({:answer_checkpoint, tag}, %{checkpoint_ref: tag} = state) do
+    state = flush(%{state | checkpoint_ref: nil, checkpoint_timer: nil})
+    {:noreply, if(answer_unsaved?(state), do: arm_checkpoint(state), else: state)}
+  end
+
+  def handle_info({:answer_checkpoint, _stale}, state), do: {:noreply, state}
+
   # spec 72 R6: a wait_for_message waiter's own deadline.
   def handle_info({:message_wait_timeout, ref}, state) do
     case Enum.split_with(state.message_waiters, &(&1.ref == ref)) do
       {[waiter], rest} ->
+        release_waiter(waiter)
         GenServer.reply(waiter.from, {:error, :timeout})
         {:noreply, %{state | message_waiters: rest}}
 
@@ -2095,6 +2351,35 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
+  # pass76 fix-m1-agent-waits (M1-R3-005): one slice of the background clock.
+  # A slice during which the worker or a descendant waits for the user is not
+  # charged; the budget left rides on the agent entry until it is spent.
+  def handle_info({:background_tick, node_id}, state) do
+    case state.agents[node_id] do
+      %{result: nil, background_remaining_ms: remaining} = agent when is_integer(remaining) ->
+        left =
+          if subtree_waiting?(state, node_id),
+            do: remaining,
+            else: remaining - min(@background_slice_ms, remaining)
+
+        if left > 0 do
+          timer = arm_background_slice(node_id, left)
+
+          {:noreply,
+           put_agent(state, node_id, %{
+             agent
+             | background_timer: timer,
+               background_remaining_ms: left
+           })}
+        else
+          handle_info({:background_timeout, node_id}, state)
+        end
+
+      _settled_or_unarmed ->
+        {:noreply, state}
+    end
+  end
+
   # spec 73 T8, spec 74 UI-SPEED-13
   def handle_info(
         {ref, {:prepared, generation, context, hook}},
@@ -2132,17 +2417,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     end
   end
 
-  def handle_info({:approval_timeout, node_id}, state) do
-    case Map.pop(state.approvals, node_id) do
-      {nil, _} ->
-        {:noreply, state}
-
-      {%{from: from}, approvals} ->
-        GenServer.reply(from, :timeout)
-        SwarmCode.Domain.Engine.Questions.delete(state.run.id, node_id)
-        {:noreply, %{state | approvals: approvals}}
-    end
-  end
+  # pass76 eng-no-expiry: approvals never expire; a stray message from an
+  # older timer changes nothing.
+  def handle_info({:approval_timeout, _node_id}, state), do: {:noreply, state}
 
   def handle_info({:question_timeout, node_id}, state) do
     case Map.pop(state.questions, node_id) do
@@ -2181,6 +2458,25 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case Enum.split_with(state.message_waiters, &(&1.mon == ref)) do
+      {[waiter], rest} ->
+        Process.cancel_timer(waiter.timer)
+        {:noreply, %{state | message_waiters: rest}}
+
+      {[], _all} ->
+        handle_task_down(ref, reason, state)
+    end
+  end
+
+  # Spec 51 §4.3: an exit signal from anything but the parent (which GenServer
+  # answers itself) still ends the run — through `terminate/2`, which writes the
+  # row — instead of being swallowed as a message.
+  def handle_info({:EXIT, _from, reason}, state) when reason != :normal,
+    do: {:stop, reason, state}
+
+  def handle_info(_other, state), do: {:noreply, state}
+
+  defp handle_task_down(ref, reason, state) do
     case pending_task(state.pending_isolation, ref) do
       {node_id, %{generation: generation}} ->
         state = %{state | pending_isolation: Map.delete(state.pending_isolation, node_id)}
@@ -2195,14 +2491,6 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         handle_non_isolation_down(ref, reason, state)
     end
   end
-
-  # Spec 51 §4.3: an exit signal from anything but the parent (which GenServer
-  # answers itself) still ends the run — through `terminate/2`, which writes the
-  # row — instead of being swallowed as a message.
-  def handle_info({:EXIT, _from, reason}, state) when reason != :normal,
-    do: {:stop, reason, state}
-
-  def handle_info(_other, state), do: {:noreply, state}
 
   # spec 73 T8: a crashed prepare task never blocks the turn. spec 74
   # UI-SPEED-13: without its context the root cannot start — the run fails
@@ -2806,7 +3094,21 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # `{:error, :database_busy}` nothing was written and nothing is dropped: the
   # columns stay in `unsaved` and the next flush tries again. The run never dies
   # for a contended write.
-  defp flush_writes(state) do
+  defp flush_writes(state, force? \\ false)
+
+  # pass76 fix-m5-engine (M5-DB-002): while a failure series is active, an immediate caller
+  # (resync, question, answer checkpoint) attempts at most once per backoff interval. Only the
+  # database write waits; the broadcasts of `flush/1` go out regardless.
+  defp flush_writes(%{flush_backoff: backoff, flush_next_at: next_at} = state, false)
+       when backoff > 0 and is_integer(next_at) do
+    now = System.monotonic_time(:millisecond)
+
+    if now < next_at,
+      do: rearm_flush(state, next_at - now),
+      else: flush_writes(state, true)
+  end
+
+  defp flush_writes(state, _force?) do
     # spec 55 T12 (55a A8)
     {inserts, updates} = SwarmCode.Domain.Engine.RunServer.Nodes.pending_writes(state)
 
@@ -2816,17 +3118,37 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         {run, attrs, triple} -> {{run, attrs}, triple}
       end
 
-    if updates == [] and inserts == [] and totals == nil do
+    {state, checkpoint} = answer_checkpoint(state)
+
+    if updates == [] and inserts == [] and totals == nil and checkpoint == nil do
       state
     else
       try do
-        case Conversations.flush_run_writes(inserts, updates, totals) do
+        opts = if checkpoint, do: [answer_checkpoint: elem(checkpoint, 0)], else: []
+
+        case Conversations.flush_run_writes(inserts, updates, totals, opts) do
           {:ok, run} ->
             state = if run, do: %{state | run: run, totals_written: triple}, else: state
 
+            state =
+              case checkpoint do
+                {{_id, text}, sig} ->
+                  %{
+                    state
+                    | answer_checkpoint: {System.monotonic_time(:millisecond), sig},
+                      assistant_message: %{state.assistant_message | content: text}
+                  }
+
+                nil ->
+                  state
+              end
+
             %{
               state
-              | unsaved: Map.drop(state.unsaved, MapSet.to_list(state.persist_pending)),
+              | flush_backoff: 0,
+                flush_next_at: nil,
+                flush_log_until: nil,
+                unsaved: Map.drop(state.unsaved, MapSet.to_list(state.persist_pending)),
                 persist_pending: MapSet.new(),
                 uninserted: MapSet.new()
             }
@@ -2844,20 +3166,177 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       rescue
         # spec 55 T11 (55a A4): no write error may end the run's sole state owner.
         error ->
-          Logger.error("swarm_code: flush raised #{Exception.message(error)}")
-          warn_busy(state, "flush raised")
+          # pass76 fix-db-flush-backoff: a persistent non-busy error (one bad node row) must not
+          # re-arm every 100 ms and log every time. Back off exponentially up to a cap; log the
+          # first failure and then only the attempts that run at the cap.
+          previous = state.flush_backoff
+          delay = if previous == 0, do: @flush_ms, else: min(previous * 2, flush_backoff_cap())
+
+          now = System.monotonic_time(:millisecond)
+
+          state =
+            if state.flush_log_until == nil or now >= state.flush_log_until do
+              Logger.error(
+                "swarm_code: run #{state.run.id} flush raised #{Exception.message(error)}; " <>
+                  "nodes #{Enum.join(MapSet.union(state.persist_pending, state.uninserted), ", ")} stay " <>
+                  "unsaved and the flush is re-armed in #{delay} ms"
+              )
+
+              %{state | flush_log_until: now + flush_backoff_cap()}
+            else
+              state
+            end
+
+          state = %{state | flush_next_at: now + delay}
+
+          # pass76 db-writer-stall: re-arm the flush itself, not only the checkpoint — a raised
+          # flush left the columns in `unsaved` with nothing scheduled to write them.
+          rearm_flush(%{state | flush_backoff: delay}, delay)
       end
     end
   end
 
-  # spec 60 T7: a busy flush re-arms itself; `mark_dirty/3` only arms on new events.
-  defp rearm_flush(%{flush_ref: nil} = state) do
-    if MapSet.size(state.persist_pending) > 0 or MapSet.size(state.uninserted) > 0,
-      do: %{state | flush_ref: Process.send_after(self(), :flush, @flush_ms)},
-      else: state
+  # pass76 eng-answer-checkpoint: a brutal kill runs no `terminate/2`, so the
+  # streamed answer is also written into the reserved assistant row, riding on
+  # a flush at most once per interval and only when the text changed. The
+  # first sighting of text starts the interval instead of writing. A failed
+  # attempt backs off a whole interval (the sig is kept, so it is retried).
+  defp answer_checkpoint(
+         %{run: %{kind: kind} = run, assistant_message: %{id: id}, assistant_text: chunks} = state
+       )
+       when kind in ["chat", "compact"] do
+    if state.answer_checkpoint == :retired or terminal?(run) do
+      {state, nil}
+    else
+      now = System.monotonic_time(:millisecond)
+      interval = checkpoint_interval()
+
+      case state.answer_checkpoint do
+        nil ->
+          if Chunks.empty?(chunks),
+            do: {state, nil},
+            else: {%{state | answer_checkpoint: {now, nil}}, nil}
+
+        {at, sig} when now - at >= interval ->
+          text = Chunks.to_string(chunks)
+          new_sig = {byte_size(text), :erlang.phash2(text)}
+
+          # `nil` = the row still holds its launch content, the empty string.
+          if new_sig == (sig || @empty_sig),
+            do: {%{state | answer_checkpoint: {now, sig}}, nil},
+            else: {%{state | answer_checkpoint: {now, sig}}, {{id, text}, new_sig}}
+
+        _within_interval ->
+          {state, nil}
+      end
+    end
   end
 
-  defp rearm_flush(state), do: state
+  defp answer_checkpoint(state), do: {state, nil}
+
+  defp checkpoint_interval,
+    do: Application.get_env(:swarm_code_daemon, :answer_checkpoint_ms, 10_000)
+
+  # pass76 fix-m1-answer-lifecycle (M1-R3-010): changed text owes a checkpoint
+  # even if nothing else ever happens (provider stall, tool/user wait, busy
+  # database). Invariant (M1-R3-010 residual): while changed text is unsaved and
+  # the run is not finalized, exactly one timer is armed and it is due no later
+  # than the current deadline. A flush may push the deadline forward under a
+  # pending timer, so a timer that fires early re-arms for the remaining time
+  # (`answer_unsaved?/1`); each timer carries a tag, and a stale one is ignored.
+  defp arm_checkpoint(%{run: %{kind: kind} = run} = state) when kind in ["chat", "compact"] do
+    if state.assistant_message == nil or state.answer_checkpoint == :retired or terminal?(run) do
+      state
+    else
+      now = System.monotonic_time(:millisecond)
+      interval = checkpoint_interval()
+
+      {state, deadline} =
+        case state.answer_checkpoint do
+          nil -> {%{state | answer_checkpoint: {now, nil}}, now + interval}
+          {at, _sig} -> {state, at + interval}
+        end
+
+      # pass76 fix-m5-r2-async-flush: the flush gate would refuse an earlier wake-up and the
+      # unchanged expired timestamp would rearm it at zero delay, spinning until the gate opens.
+      deadline =
+        case state do
+          %{flush_backoff: backoff, flush_next_at: next_at}
+          when backoff > 0 and is_integer(next_at) ->
+            max(deadline, next_at)
+
+          _ ->
+            deadline
+        end
+
+      case state.checkpoint_timer do
+        {_timer, due} when due <= deadline ->
+          state
+
+        _none_or_too_late ->
+          tag = make_ref()
+          timer = Process.send_after(self(), {:answer_checkpoint, tag}, max(deadline - now, 0))
+
+          %{
+            cancel_checkpoint_timer(state)
+            | checkpoint_ref: tag,
+              checkpoint_timer: {timer, deadline}
+          }
+      end
+    end
+  end
+
+  defp arm_checkpoint(state), do: state
+
+  defp cancel_checkpoint_timer(%{checkpoint_timer: {timer, _due}} = state) do
+    Process.cancel_timer(timer)
+    %{state | checkpoint_ref: nil, checkpoint_timer: nil}
+  end
+
+  defp cancel_checkpoint_timer(state), do: %{state | checkpoint_ref: nil}
+
+  defp answer_unsaved?(
+         %{run: %{kind: kind} = run, assistant_message: %{}, assistant_text: chunks} = state
+       )
+       when kind in ["chat", "compact"] do
+    if state.answer_checkpoint == :retired or terminal?(run) do
+      false
+    else
+      text = Chunks.to_string(chunks)
+
+      saved =
+        case state.answer_checkpoint do
+          {_at, sig} when sig != nil -> sig
+          _row_still_empty -> @empty_sig
+        end
+
+      {byte_size(text), :erlang.phash2(text)} != saved
+    end
+  end
+
+  defp answer_unsaved?(_state), do: false
+
+  # pass76 fix-m1-answer-lifecycle (M1-R3-011): after the final write nothing may
+  # checkpoint over it, not even `terminate(:normal)`'s last flush.
+  defp retire_checkpoint(state),
+    do: %{cancel_checkpoint_timer(state) | answer_checkpoint: :retired}
+
+  # spec 60 T7: a busy flush re-arms itself; `mark_dirty/3` only arms on new events.
+  defp rearm_flush(state, delay \\ @flush_ms)
+
+  defp rearm_flush(%{flush_ref: nil} = state, delay) do
+    state =
+      if MapSet.size(state.persist_pending) > 0 or MapSet.size(state.uninserted) > 0,
+        do: %{state | flush_ref: Process.send_after(self(), :flush, delay)},
+        else: state
+
+    arm_checkpoint(state)
+  end
+
+  defp rearm_flush(state, _delay), do: arm_checkpoint(state)
+
+  defp flush_backoff_cap,
+    do: Application.get_env(:swarm_code_daemon, :flush_backoff_cap_ms, 30_000)
 
   # `{run as the row has it, the token attrs, the triple that will be written}`
   # — or nil when the totals have not moved since the last flush.
@@ -3045,7 +3524,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       waiting: [],
       result: nil,
       # spec 73 T56: the background watchdog, when this agent has one.
-      background_timer: nil
+      background_timer: nil,
+      background_remaining_ms: nil
     }
 
   defp put_agent(state, node_id, agent),
@@ -3983,18 +4463,16 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     else
       message = Map.put(message, :at, System.monotonic_time(:millisecond))
 
-      case pop_message_waiter(state.message_waiters, to_id) do
-        {waiter, rest} ->
+      {live_waiter, waiters} = pop_message_waiter(state.message_waiters, to_id)
+      state = %{state | message_waiters: waiters}
+
+      case live_waiter do
+        %{} = waiter ->
           [head | queued] = mailbox ++ [message]
-          Process.cancel_timer(waiter.timer)
+          release_waiter(waiter)
           GenServer.reply(waiter.from, {:ok, head})
 
-          {:ok,
-           %{
-             state
-             | mailboxes: Map.put(state.mailboxes, to_id, queued),
-               message_waiters: rest
-           }}
+          {:ok, %{state | mailboxes: Map.put(state.mailboxes, to_id, queued)}}
 
         nil ->
           # spec 73 T9 (F6): the recipient learns there is something to drain
@@ -4017,11 +4495,34 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   # spec 72 C2: find and remove the first waiter for a given node_id.
-  defp pop_message_waiter(waiters, node_id) do
-    case Enum.split_while(waiters, &(&1.node_id != node_id)) do
-      {_before, []} -> nil
-      {before, [waiter | after_]} -> {waiter, before ++ after_}
+  #
+  # pass76 fix-m1-residual-races (M1-R3-001): a waiter whose caller already died
+  # (its DOWN may still be queued behind this very call) is dropped, never
+  # handed the message — that would reply to nobody and lose it. Returns
+  # `{live waiter | nil, remaining waiters}`.
+  defp pop_message_waiter(waiters, node_id), do: pop_message_waiter(waiters, node_id, [])
+
+  defp pop_message_waiter([], _node_id, acc), do: {nil, Enum.reverse(acc)}
+
+  defp pop_message_waiter([%{node_id: node_id} = waiter | rest], node_id, acc) do
+    if caller_alive?(waiter.from) do
+      {waiter, Enum.reverse(acc, rest)}
+    else
+      release_waiter(waiter)
+      pop_message_waiter(rest, node_id, acc)
     end
+  end
+
+  defp pop_message_waiter([waiter | rest], node_id, acc),
+    do: pop_message_waiter(rest, node_id, [waiter | acc])
+
+  defp caller_alive?({pid, _tag}) when is_pid(pid), do: Process.alive?(pid)
+  defp caller_alive?(_from), do: true
+
+  defp release_waiter(waiter) do
+    Process.cancel_timer(waiter.timer)
+    Process.demonitor(waiter.mon, [:flush])
+    :ok
   end
 
   defp start_queued(%{queue: []} = state), do: state
@@ -4048,22 +4549,36 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         do: server
   end
 
+  defp subtree_waiting?(state, node_id) do
+    state
+    |> subtree(node_id)
+    |> Enum.any?(&(Map.has_key?(state.approvals, &1) or Map.has_key?(state.questions, &1)))
+  end
+
   # spec 73 T56
+  # pass76 fix-m1-agent-waits (M1-R3-005): like the foreground watchdog, only
+  # time not spent waiting for the user is charged; the timer ticks in slices
+  # and the remaining budget rides on the agent entry.
   defp arm_background_timeout(state, node_id) do
     case Map.get(state.settings, :sub_agent_timeout_s) do
-      n when is_integer(n) and n > 0 ->
-        Process.send_after(self(), {:background_timeout, node_id}, n * 1_000)
-
-      _none_or_zero ->
-        nil
+      n when is_integer(n) and n > 0 -> {arm_background_slice(node_id, n * 1_000), n * 1_000}
+      _none_or_zero -> {nil, nil}
     end
+  end
+
+  defp arm_background_slice(node_id, remaining_ms) do
+    Process.send_after(
+      self(),
+      {:background_tick, node_id},
+      min(@background_slice_ms, remaining_ms)
+    )
   end
 
   defp cancel_background_timer(state, node_id) do
     case state.agents[node_id] do
       %{background_timer: timer} = agent when is_reference(timer) ->
         Process.cancel_timer(timer)
-        put_agent(state, node_id, %{agent | background_timer: nil})
+        put_agent(state, node_id, %{agent | background_timer: nil, background_remaining_ms: nil})
 
       _none ->
         state
@@ -4371,8 +4886,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     ids = Enum.to_list(ids)
     {approvals, kept_approvals} = Map.split(state.approvals, ids)
 
-    Enum.each(approvals, fn {node_id, %{from: from, timer: timer}} ->
-      Process.cancel_timer(timer)
+    Enum.each(approvals, fn {node_id, %{from: from}} ->
       GenServer.reply(from, :denied)
       SwarmCode.Domain.Engine.Questions.delete(state.run.id, node_id)
     end)
@@ -4394,7 +4908,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     {waiters, kept_waiters} = Enum.split_with(state.message_waiters, &(&1.node_id in stopped))
 
     Enum.each(waiters, fn waiter ->
-      Process.cancel_timer(waiter.timer)
+      release_waiter(waiter)
       GenServer.reply(waiter.from, {:error, :timeout})
     end)
 
@@ -4463,6 +4977,52 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fun)
     :ok
   end
+
+  # pass76 att-notice-parity: one place that turns a finished or failed run of
+  # any kind into the OS notice plus the typed in-app notice.
+  defp notify_end(state, run_id, status, name, detail, extra \\ %{}) do
+    verb = if status == "done", do: "finished", else: "failed"
+    text = if detail in [nil, ""], do: "#{name} #{verb}", else: "#{name} #{verb}: #{detail}"
+
+    notify_async(fn -> SwarmCode.Domain.Notifications.notify_finished(text) end)
+
+    SwarmCode.Domain.Engine.Events.ui_broadcast(
+      {:run_notice,
+       Map.merge(
+         %{
+           conversation_id: state.conversation.id,
+           run_id: run_id,
+           status: if(status == "done", do: :done, else: :failed),
+           title: state.conversation.title
+         },
+         extra
+       )}
+    )
+
+    :ok
+  end
+
+  # pass76 att-run-notices: chat and swarm runs announce a finish or a failure; a
+  # run the user stopped says nothing. The OS notice goes out off the run
+  # process; the typed event lets the web layer toast a conversation that is
+  # not on screen.
+  defp notify_run_end(state, %{kind: kind, status: status} = written)
+       when kind in ["chat", "swarm"] and status in ["done", "failed"] do
+    if written.error_kind != "user_stopped" do
+      prompt = String.slice(to_string(state.prompt), 0, 60)
+
+      name =
+        if kind == "swarm",
+          do: "Swarm",
+          else: SwarmCode.Domain.Conversations.Run.display_name(written)
+
+      notify_end(state, written.id, status, name, prompt)
+    end
+
+    :ok
+  end
+
+  defp notify_run_end(_state, _written), do: :ok
 
   # ------------------------------------------------------------------ completion
 
@@ -4592,16 +5152,11 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       {:ok, %{run: written}} ->
         state =
           %{state | run: written, run_dirty: true, finish_pending: nil}
+          |> retire_checkpoint()
           |> note_totals_written(run_attrs)
           |> cleanup_worktrees()
 
-        if run.kind == "swarm" and status in ["done", "failed"] do
-          prompt = String.slice(state.prompt, 0, 60)
-
-          notify_async(fn ->
-            SwarmCode.Domain.Notifications.notify_finished("Swarm finished: " <> prompt)
-          end)
-        end
+        notify_run_end(state, written)
 
         stop_hook(state, written.status)
         announce_run(state)
@@ -4629,6 +5184,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
             run_id: run.id
           })
 
+          # pass76 fix-m4-r2-stop-interrupted (M4-R2-004): the row falls back to
+          # `failed`, but a stop the user asked for stays silent.
+          if status != "stopped", do: notify_run_end(state, state.run)
           stop_hook(state, "failed")
           announce_run(%{state | finish_pending: nil})
         else
@@ -4776,9 +5334,7 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     state = flush(state)
 
     if status in ["done", "failed"] do
-      notify_async(fn ->
-        SwarmCode.Domain.Notifications.notify_finished("Workflow #{wf.display_name} finished")
-      end)
+      notify_end(state, state.run.id, status, "Workflow #{wf.display_name}", nil)
     end
 
     if status == "done" and wf.auto_continue, do: continue_assistant(state, wf)
@@ -4827,9 +5383,11 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     if status in ["done", "failed"] do
       prompt = String.slice(to_string(state.run.prompt), 0, 60)
 
-      notify_async(fn ->
-        SwarmCode.Domain.Notifications.notify_finished("Deep research finished: " <> prompt)
-      end)
+      # A research owns a hidden conversation, so the toast opens its page instead.
+      notify_end(state, state.run.id, status, "Deep research", prompt, %{
+        title: "Deep research",
+        path: "/research/#{state.research.id}"
+      })
     end
 
     state
@@ -4933,7 +5491,13 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
     if SwarmCode.Domain.Engine.chat_run_ids(conversation.id) == [] do
       text = "[workflow #{wf.display_name} finished]\n" <> workflow_summary(wf)
-      SwarmCode.Domain.Engine.start_chat_turn(conversation, text, [], store_user: false)
+
+      # CLI: the turn records the workflow as its launcher, as `start_swarm`
+      # does for a swarm, so a headless `-p` follows it.
+      SwarmCode.Domain.Engine.start_chat_turn(conversation, text, [],
+        store_user: false,
+        launched_by_run_id: state.run.id
+      )
     end
   end
 

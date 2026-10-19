@@ -77,6 +77,7 @@ defmodule SwarmCode.Daemon.Hardening.BackgroundReaperTest do
 
     :ok = BackgroundProcs.kill_async(run_id, os_pid)
     assert_receive {:stop_requested, ^janitor}
+    admitted!()
     assert BackgroundProcs.list(run_id) == []
 
     killer = Task.async(fn -> BackgroundProcs.kill(run_id, os_pid) end)
@@ -99,6 +100,7 @@ defmodule SwarmCode.Daemon.Hardening.BackgroundReaperTest do
 
     killer = Task.async(fn -> BackgroundProcs.kill(run_id, os_pid) end)
     assert_receive {:stop_requested, ^janitor}, 5_000
+    admitted!()
     assert BackgroundProcs.list(run_id) == []
 
     assert :ok = BackgroundProcs.kill_async(run_id, os_pid)
@@ -237,6 +239,11 @@ defmodule SwarmCode.Daemon.Hardening.BackgroundReaperTest do
   defp run_id, do: "reaper-test-#{System.unique_integer([:positive])}"
 
   defp reapers, do: :sys.get_state(BackgroundProcs).reapers
+
+  # The janitor is asked to stop while the server is still inside the :reap
+  # call that then deletes the row and books the reaper; a state round trip
+  # returns only after that call has completed.
+  defp admitted!, do: :sys.get_state(BackgroundProcs)
 
   # A janitor that answers `:stop` with no targets, but only once released.
   defp fake_janitor do

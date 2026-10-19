@@ -11,7 +11,7 @@ defmodule SwarmCodeCLI.Release do
   Exit codes: 0 done, 1 the run failed, 2 usage, 3 startup refused.
   """
 
-  alias SwarmCodeCLI.Release.Headless
+  alias SwarmCodeCLI.Release.{Headless, Reasons}
 
   @compile {:no_warn_undefined, [SwarmCode.Domain.Paths]}
 
@@ -45,8 +45,9 @@ defmodule SwarmCodeCLI.Release do
     --fail-on-denied  with -p or --plain: exit 1 when a tool call was denied
     --output-format F with -p: text (the default), json (= --json) or stream-json
                       (one JSON record per line, the last {"type":"summary",...})
-    --max-turns N     with -p: stop the run after N turns of its lead (1-200)
-    --max-budget-usd X  with -p: stop the run once it costs more than $X
+    --max-turns N     with -p: stop the run after N turns of its lead (1-200);
+                      a swarm or workflow it launched counts the same way
+    --max-budget-usd X  with -p: stop the run once it and what it launched cost more than $X
     --approval MODE   with -p: read-only, auto or full for this run only
     --plain           line-by-line presenter for pipes, CI and SSH (type `help`)
     --ndjson          with --plain: one JSON record per line
@@ -182,7 +183,7 @@ defmodule SwarmCodeCLI.Release do
         else
           {:error, message} ->
             IO.puts(:stderr, "ncode: " <> message)
-            Headless.json_failure(options.format, message, 2)
+            Headless.json_failure(options.format, message, 2, Reasons.get(:usage))
         end
     end
   end

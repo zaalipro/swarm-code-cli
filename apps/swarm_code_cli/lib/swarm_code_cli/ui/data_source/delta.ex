@@ -26,6 +26,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
     desktop_running: DTO.DesktopPresence,
     # cli021 C2: the side panel's vitals (model speed, memory), shell watch.
     vitals: DTO.Vitals,
+    # pass76: the live runs and waits of the session's other conversations (shell).
+    elsewhere: DTO.Elsewhere,
     # cli020 C15: a `!` shell command of the conversation (workspace watch).
     shell_upsert: DTO.ShellItem
   }
@@ -81,6 +83,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
           | :settings_task
           | :desktop_running
           | :vitals
+          | :elsewhere
           | :shell_upsert
           | :shell_remove
   @type t :: %__MODULE__{
@@ -109,6 +112,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
             | DTO.SettingsTask.t()
             | DTO.DesktopPresence.t()
             | DTO.Vitals.t()
+            | DTO.Elsewhere.t()
             | nil,
           sequence: non_neg_integer(),
           revision: non_neg_integer()
@@ -222,6 +226,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
       is_nil(delta.entity_id) and is_nil(delta.run_id) and is_nil(delta.attempt_id) and
         delta.conversation_id in [nil, body.conversation_id]
 
+  # pass76: about the session's other conversations, not a run; the envelope
+  # may name the conversation the daemon shows.
+  defp correlated_body?(%{kind: :elsewhere, body: %DTO.Elsewhere{}} = delta),
+    do: is_nil(delta.entity_id) and is_nil(delta.run_id) and is_nil(delta.attempt_id)
+
   defp correlated_body?(%{kind: kind} = delta)
        when kind in [:counts_update, :connection, :snapshot_required],
        do:
@@ -293,6 +302,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Delta do
         :settings_task -> DTO.SettingsTask
         :desktop_running -> DTO.DesktopPresence
         :vitals -> DTO.Vitals
+        :elsewhere -> DTO.Elsewhere
         :shell_upsert -> DTO.ShellItem
         _ -> nil
       end

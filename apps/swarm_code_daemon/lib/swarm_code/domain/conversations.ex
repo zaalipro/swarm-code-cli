@@ -18,6 +18,8 @@ defmodule SwarmCode.Domain.Conversations do
   defdelegate broadcast(conversation_id, event), to: Engine.Events
 
   @runs_topic "runs"
+  @interruptions_topic "interruptions"
+  @run_lifecycle_topic "run_lifecycle"
   # Spec 41 §3.4 (browser check 2): three tries, 100 ms apart.
   # Spec 54 §1.1 (54a A1): five tries, 20–150 ms apart and jittered. Under the
   # eight-lane load the writers arrived in convoys, so three fixed 100 ms
@@ -52,6 +54,7 @@ defmodule SwarmCode.Domain.Conversations do
   # 26–28 ms against 20 ms for the one query, and one query is what every
   # sidebar below the cliff runs today.
   @id_chunk 30_000
+  @title_scan_page 1_000
 
   @history_fields ~w(id conversation_id role content run_id reply_to_run_id position attachments research_ids superseded_at inserted_at updated_at)a
 
@@ -87,7 +90,25 @@ defmodule SwarmCode.Domain.Conversations do
   """
   def subscribe_runs, do: SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, @runs_topic)
 
+  @doc "Subscribes to `{:interrupted_changed, conversation_id}` only."
+  def subscribe_interruptions,
+    do: SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, @interruptions_topic)
+
+  @doc """
+  `{:run_lifecycle, conversation_id, status}` for every run start and status
+  change, for the pages that only show the sidebar's markers (they do not take
+  the workspace's richer `subscribe_runs/0` stream).
+  """
+  def subscribe_run_lifecycle,
+    do: SwarmCode.Domain.PubSub.subscribe(SwarmCode.Domain.PubSub, @run_lifecycle_topic)
+
   defp broadcast_run(%Run{} = run) do
+    SwarmCode.Domain.PubSub.broadcast(
+      SwarmCode.Domain.PubSub,
+      @run_lifecycle_topic,
+      {:run_lifecycle, run.conversation_id, run.status}
+    )
+
     SwarmCode.Domain.PubSub.broadcast(
       SwarmCode.Domain.PubSub,
       @runs_topic,
@@ -121,6 +142,238 @@ defmodule SwarmCode.Domain.Conversations do
         select: struct(c, ^@sidebar_row_fields)
       )
     )
+  end
+
+  # pass76 mem-sidebar-uistate: the most rows a project node can draw without a
+  # search ("Show more" is fourteen); everything else of a project is a count.
+  @sidebar_cap 14
+
+  @doc """
+  The sidebar's rows, projected in SQL to what can render (pass 76
+  mem-sidebar-uistate):
+
+    * `by_project` — per listed project the `#{@sidebar_cap}` newest tree rows
+      (not pinned, not a scheduled task's, unless it is `:current`), plus the
+      always-visible rows (a live run, a wait or an interrupted marker, whatever
+      their age) and the `:current` conversation, newest first;
+    * `totals` — per project how many tree rows it has, for the node headers and
+      the "Show more" arithmetic;
+    * `loose` and `pinned` — the sections that render in full;
+    * `statuses`, `unread` and `running_project_ids` — the markers of exactly
+      those rows.
+
+  `projects` are the listed projects (the scratch project's rows are `loose`).
+  """
+  @spec sidebar([struct()], keyword()) :: map()
+  def sidebar(projects, opts \\ []) do
+    project_ids = Enum.map(projects, & &1.id)
+    current = opts[:current]
+    waiting = SwarmCode.Domain.Engine.Questions.kinds() |> Map.keys()
+
+    always =
+      [current]
+      |> Enum.concat(waiting)
+      |> Enum.concat(Engine.running_conversation_ids())
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    {windowed, totals} = sidebar_window(project_ids, current)
+    {loose, pinned, interrupted, always_rows} = sidebar_sections(always, project_ids)
+
+    by_project =
+      (windowed ++ always_rows)
+      |> Enum.uniq_by(& &1.id)
+      |> Enum.sort_by(& &1.updated_at, &newer_or_same?/2)
+      |> Enum.group_by(& &1.project_id)
+
+    by_project = Map.new(project_ids, &{&1, Map.get(by_project, &1, [])})
+
+    all_rows =
+      ((by_project |> Map.values() |> List.flatten()) ++ loose ++ pinned)
+      |> Enum.uniq_by(& &1.id)
+
+    latest = latest_run_rows_for(Enum.map(all_rows, & &1.id))
+
+    %{
+      by_project: by_project,
+      totals: totals,
+      loose: loose,
+      pinned: pinned,
+      statuses: row_statuses(all_rows, latest, interrupted: interrupted),
+      unread: unread_markers(all_rows, latest),
+      running_project_ids: running_project_ids()
+    }
+  end
+
+  # One query for everything outside the per-project window: the sections that
+  # render in full (the scratch project's rows, the pinned ones), the rows that
+  # are always visible (`always`: a live run, a wait, the open conversation, and
+  # every live interrupted marker, flagged by the joined subquery) — returned as
+  # `{loose, pinned, interrupted_ids, tree_rows}`.
+  defp sidebar_sections(always, project_ids) do
+    rows =
+      Repo.all(
+        from(c in Conversation,
+          join: p in assoc(c, :project),
+          left_join:
+            i in subquery(from(r in interrupted_base(), select: %{id: r.conversation_id})),
+          on: i.id == c.id,
+          where:
+            is_nil(c.research_id) and
+              (c.id in ^always or not is_nil(c.pinned_at) or p.scratch == true or
+                 not is_nil(i.id)),
+          preload: [project: p],
+          select: {c, not is_nil(i.id)}
+        )
+      )
+
+    loose =
+      for({c, _} <- rows, c.project.scratch, do: c)
+      |> Enum.sort_by(& &1.updated_at, &newer_or_same?/2)
+
+    pinned =
+      for({c, _} <- rows, c.pinned_at, do: c)
+      |> Enum.sort_by(& &1.pinned_at, &newer_or_same?/2)
+
+    interrupted = for {c, true} <- rows, into: MapSet.new(), do: c.id
+    always = MapSet.new(always)
+
+    tree =
+      for {c, flagged?} <- rows,
+          c.project_id in project_ids,
+          flagged? or MapSet.member?(always, c.id),
+          do:
+            Conversation
+            |> struct(Map.take(c, @sidebar_row_fields))
+            |> Ecto.put_meta(state: :loaded)
+
+    {loose, pinned, interrupted, tree}
+  end
+
+  defp newer_or_same?(nil, _b), do: false
+  defp newer_or_same?(_a, nil), do: true
+  defp newer_or_same?(a, b), do: DateTime.compare(a, b) != :lt
+
+  # One query: the cap newest tree rows of each project, each carrying its
+  # project's whole count (the window function counts before the cap cuts).
+  defp sidebar_window([], _current), do: {[], %{}}
+
+  defp sidebar_window(project_ids, current) do
+    current = current || ""
+
+    ranked =
+      from(c in Conversation,
+        where:
+          c.project_id in ^project_ids and is_nil(c.research_id) and is_nil(c.pinned_at) and
+            (is_nil(c.scheduled_task_id) or c.id == ^current),
+        select: %{
+          id: c.id,
+          rn:
+            fragment(
+              "row_number() OVER (PARTITION BY ? ORDER BY ? DESC)",
+              c.project_id,
+              c.updated_at
+            ),
+          total: fragment("count(*) OVER (PARTITION BY ?)", c.project_id)
+        }
+      )
+
+    rows =
+      Repo.all(
+        from(c in Conversation,
+          join: w in subquery(ranked),
+          on: w.id == c.id,
+          where: w.rn <= @sidebar_cap,
+          order_by: [desc: c.updated_at],
+          select: {struct(c, ^@sidebar_row_fields), w.total}
+        )
+      )
+
+    totals =
+      Map.new(project_ids, &{&1, 0})
+      |> then(fn zero ->
+        Enum.reduce(rows, zero, fn {c, total}, acc -> Map.put(acc, c.project_id, total) end)
+      end)
+
+    {Enum.map(rows, &elem(&1, 0)), totals}
+  end
+
+  @doc "The sidebar's columns of the listed (non-research) conversations among `ids`."
+  @spec rows_by_ids([String.t()]) :: [Conversation.t()]
+  def rows_by_ids([]), do: []
+
+  def rows_by_ids(ids) do
+    ids
+    |> Enum.chunk_every(@id_chunk)
+    |> Enum.flat_map(fn chunk ->
+      Repo.all(
+        from(c in Conversation,
+          where: c.id in ^chunk and is_nil(c.research_id),
+          order_by: [desc: c.updated_at],
+          select: struct(c, ^@sidebar_row_fields)
+        )
+      )
+    end)
+  end
+
+  @doc """
+  Ids of the newest conversations whose title contains the case-folded query,
+  and whether more matched than `limit`. Titles stream from SQLite in
+  `updated_at` order and the scan stops at `limit + 1` matches, so nothing but
+  the matches is kept. The match is `String.downcase/1` + `String.contains?/2`,
+  which SQLite's ASCII-only `LIKE`/`lower()` cannot reproduce for non-ASCII
+  titles, so it runs here. Callers must run this off the LiveView process.
+  """
+  @spec title_matches(String.t(), pos_integer()) :: {[String.t()], boolean()}
+  def title_matches(q, limit \\ 200)
+
+  def title_matches(q, limit) when is_binary(q) and q != "" do
+    ids = scan_titles(q, limit + 1, nil, [])
+    {Enum.take(ids, limit), length(ids) > limit}
+  end
+
+  def title_matches(_q, _limit), do: {[], false}
+
+  # Keyset pages instead of a streaming transaction: a cancelled search must
+  # not die holding a transaction on the connection.
+  defp scan_titles(q, want, cursor, acc) do
+    base =
+      from(c in Conversation,
+        where: is_nil(c.research_id),
+        order_by: [desc: c.updated_at, desc: c.id],
+        limit: @title_scan_page,
+        select: {c.id, c.title, c.updated_at}
+      )
+
+    query =
+      case cursor do
+        nil ->
+          base
+
+        {at, id} ->
+          from(c in base, where: c.updated_at < ^at or (c.updated_at == ^at and c.id < ^id))
+      end
+
+    page = Repo.all(query)
+
+    found =
+      for {id, title, _at} <- page,
+          title |> to_string() |> String.downcase() |> String.contains?(q),
+          do: id
+
+    acc = acc ++ found
+
+    cond do
+      length(acc) >= want ->
+        Enum.take(acc, want)
+
+      length(page) < @title_scan_page ->
+        acc
+
+      true ->
+        {last_id, _title, last_at} = List.last(page)
+        scan_titles(q, want, {last_at, last_id}, acc)
+    end
   end
 
   @doc "Ids of the projects that have a run going right now (panel status dots)."
@@ -163,33 +416,155 @@ defmodule SwarmCode.Domain.Conversations do
     * `:running` — the newest run of the conversation is still going (spinner)
     * `:queued`  — messages are waiting to be sent (amber dot)
     * `:failed`  — the newest run failed (red dot)
+    * `:interrupted` — the newest run was cut short by an app restart and has
+      not been resumed or dismissed
+    * `:approval` / `:question` — a tool approval or an `ask_user` question
+      waits for the user (a pending one wins over every other marker)
 
   Conversations whose newest run is done (or that never ran) are absent, which
   is what "done → nothing" means in the sidebar.
   """
   @spec row_statuses([Conversation.t()]) ::
-          %{String.t() => :running | :queued | :failed | :waiting}
+          %{String.t() => :running | :queued | :failed | :approval | :question}
   def row_statuses(conversations) when is_list(conversations),
     do: row_statuses(conversations, latest_run_rows(conversations))
 
   def row_statuses(_conversations), do: %{}
 
-  def row_statuses(conversations, latest) when is_list(conversations) and is_map(latest) do
-    waiting = SwarmCode.Domain.Engine.Questions.waiting()
+  def row_statuses(conversations, latest, opts \\ [])
 
-    for conversation <- conversations,
-        {status, _finished_at} = Map.get(latest, conversation.id, {nil, nil}),
+  def row_statuses(conversations, latest, opts) when is_list(conversations) and is_map(latest) do
+    waiting = SwarmCode.Domain.Engine.Questions.kinds()
+
+    base =
+      for conversation <- conversations,
+          {status, _finished_at} = Map.get(latest, conversation.id, {nil, nil}),
+          into: %{},
+          do:
+            {conversation.id,
+             Map.get(waiting, conversation.id) || row_status(status, conversation.queued)}
+
+    older_live = older_live_ids(base)
+
+    pending_interrupted =
+      base
+      |> Enum.filter(fn {id, marker} ->
+        marker not in [:running, :approval, :question] and not MapSet.member?(older_live, id)
+      end)
+      |> Enum.map(&elem(&1, 0))
+      |> interrupted_among(opts[:interrupted])
+
+    for {id, marker} <- base,
         marker =
-          if(MapSet.member?(waiting, conversation.id),
-            do: :waiting,
-            else: row_status(status, conversation.queued)
+          merge_marker(
+            marker,
+            MapSet.member?(older_live, id),
+            MapSet.member?(pending_interrupted, id)
           ),
-        marker != nil,
         into: %{},
-        do: {conversation.id, marker}
+        do: {id, marker}
   end
 
-  def row_statuses(_conversations, _latest), do: %{}
+  def row_statuses(_conversations, _latest, _opts), do: %{}
+
+  # `known` is `live_interrupted_ids(:all)` when the caller already asked.
+  defp interrupted_among(ids, nil), do: live_interrupted_ids(ids)
+  defp interrupted_among(ids, %MapSet{} = known), do: MapSet.intersection(MapSet.new(ids), known)
+
+  defp merge_marker(marker, true, _interrupted?), do: live_marker(marker, true)
+
+  defp merge_marker(marker, _live?, _interrupted?)
+       when marker in [:running, :approval, :question],
+       do: marker
+
+  defp merge_marker(_marker, _live?, true), do: :interrupted
+  defp merge_marker(marker, _live?, _interrupted?), do: marker
+
+  @doc """
+  The ids (among `ids`) whose sidebar interrupted marker is live.
+
+  An interruption R keeps its marker until R is resumed or dismissed
+  (`interrupted` cleared, or a run continues it) or a new run starts in the
+  conversation after R was interrupted. A run that continues another
+  interruption (`resumed_from_run_id`) is not a new run, and neither is a
+  queued follow-up, which has no row until it starts. One projected id per
+  conversation comes back, whatever the number of runs.
+  """
+  @spec live_interrupted_ids([String.t()]) :: MapSet.t(String.t())
+  def live_interrupted_ids([]), do: MapSet.new()
+
+  # `:all` asks every conversation in one query (the sidebar's always-visible rows).
+  def live_interrupted_ids(:all), do: live_interrupted_query(nil)
+
+  def live_interrupted_ids(ids) when is_list(ids) do
+    ids
+    |> Enum.chunk_every(@id_chunk)
+    |> Enum.reduce(MapSet.new(), fn chunk, acc ->
+      chunk |> live_interrupted_query() |> MapSet.union(acc)
+    end)
+  end
+
+  defp live_interrupted_query(chunk) do
+    interrupted_base()
+    |> then(fn q ->
+      if chunk == nil, do: q, else: where(q, [r], r.conversation_id in ^chunk)
+    end)
+    |> select([r], r.conversation_id)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  defp interrupted_base do
+    from(r in Run,
+      as: :run,
+      where:
+        r.status in ["stopped", "interrupted"] and
+          r.interrupted == true and
+          not exists(from(c in Run, where: c.resumed_from_run_id == parent_as(:run).id)) and
+          not exists(
+            from(n in Run,
+              where:
+                n.conversation_id == parent_as(:run).conversation_id and
+                  is_nil(n.resumed_from_run_id) and
+                  n.started_at >
+                    coalesce(parent_as(:run).finished_at, parent_as(:run).started_at)
+            )
+          ),
+      distinct: true
+    )
+  end
+
+  # The registry names the conversations with a live run process; the row
+  # confirms it (a process lingers briefly after its run row is terminal), and
+  # only the rows whose newest-run marker is not already live are asked.
+  defp older_live_ids(base) do
+    candidates =
+      Engine.running_conversation_ids()
+      |> Enum.filter(
+        &(Map.has_key?(base, &1) and Map.fetch!(base, &1) in [nil, :queued, :failed])
+      )
+
+    case candidates do
+      [] ->
+        MapSet.new()
+
+      ids ->
+        Repo.all(
+          from(r in Run,
+            where: r.conversation_id in ^ids and r.status == "running",
+            distinct: true,
+            select: r.conversation_id
+          )
+        )
+        |> MapSet.new()
+    end
+  end
+
+  # pass76 fix-m4-sidebar-notices-title (M4-R1-007): a run that is still going
+  # outranks the newest run's terminal marker, so a swarm that outlives a later
+  # chat keeps its conversation on the always-visible list.
+  defp live_marker(marker, true) when marker in [nil, :queued, :failed], do: :running
+  defp live_marker(marker, _live?), do: marker
 
   @doc """
   The unread marker of every conversation in `conversations` (spec 08 §9):
@@ -233,7 +608,14 @@ defmodule SwarmCode.Domain.Conversations do
           # non-aggregated columns come from the row that holds the maximum
           # (spec 51 §1.10) — one row per conversation instead of every run.
           # Not portable; this app has one database.
-          select: {r.conversation_id, r.status, r.finished_at, max(r.started_at)}
+          select:
+            {r.conversation_id,
+             fragment(
+               "CASE WHEN ? = 1 AND ? = 'stopped' THEN 'interrupted' ELSE ? END",
+               r.interrupted,
+               r.status,
+               r.status
+             ), r.finished_at, max(r.started_at)}
         )
       )
       |> Enum.reduce(acc, fn {id, status, finished_at, _started_at}, acc ->
@@ -267,10 +649,68 @@ defmodule SwarmCode.Domain.Conversations do
               c.id
             ),
         where: is_nil(c.research_id),
-        select: {c.id, r.status, r.finished_at}
+        select:
+          {c.id,
+           fragment(
+             "CASE WHEN ? = 1 AND ? = 'stopped' THEN 'interrupted' ELSE ? END",
+             r.interrupted,
+             r.status,
+             r.status
+           ), r.finished_at}
       )
     )
     |> Map.new(fn {id, status, finished_at} -> {id, {status, finished_at}} end)
+  end
+
+  @doc "The ids among `ids` that still name a node row."
+  @spec existing_node_ids([String.t()]) :: MapSet.t(String.t())
+  def existing_node_ids([]), do: MapSet.new()
+
+  def existing_node_ids(ids) when is_list(ids) do
+    ids
+    |> Enum.chunk_every(@id_chunk)
+    |> Enum.flat_map(fn chunk ->
+      Repo.all(from(n in Node, where: n.id in ^chunk, select: n.id))
+    end)
+    |> MapSet.new()
+  end
+
+  @doc """
+  `latest_run_rows_visible/0` for the given conversation ids only: one seek per
+  id, so the sidebar's cost follows the rows it draws, not every conversation.
+  """
+  @spec latest_run_rows_for([String.t()]) :: %{String.t() => {String.t(), DateTime.t() | nil}}
+  def latest_run_rows_for([]), do: %{}
+
+  def latest_run_rows_for(ids) when is_list(ids) do
+    ids
+    |> Enum.uniq()
+    |> Enum.chunk_every(@id_chunk)
+    |> Enum.reduce(%{}, fn chunk, acc ->
+      Repo.all(
+        from(c in Conversation,
+          join: r in Run,
+          on:
+            r.id ==
+              fragment(
+                "(SELECT r2.id FROM runs AS r2 WHERE r2.conversation_id = ? ORDER BY r2.started_at DESC, r2.id DESC LIMIT 1)",
+                c.id
+              ),
+          where: c.id in ^chunk,
+          select:
+            {c.id,
+             fragment(
+               "CASE WHEN ? = 1 AND ? = 'stopped' THEN 'interrupted' ELSE ? END",
+               r.interrupted,
+               r.status,
+               r.status
+             ), r.finished_at}
+        )
+      )
+      |> Enum.reduce(acc, fn {id, status, finished_at}, acc ->
+        Map.put(acc, id, {status, finished_at})
+      end)
+    end)
   end
 
   defp unread?(_seen, nil), do: false
@@ -311,6 +751,7 @@ defmodule SwarmCode.Domain.Conversations do
   def mark_run_seen(_other), do: {:error, :not_found}
 
   defp row_status("running", _queued), do: :running
+  defp row_status("interrupted", _queued), do: :interrupted
   defp row_status(_status, queued) when is_list(queued) and queued != [], do: :queued
   defp row_status("failed", _queued), do: :failed
   defp row_status(_status, _queued), do: nil
@@ -691,6 +1132,475 @@ defmodule SwarmCode.Domain.Conversations do
     )
   end
 
+  @transcript_page 150
+
+  @doc "How many messages the transcript loads per page (pass 76 mem-paging)."
+  @spec transcript_page_size() :: pos_integer()
+  def transcript_page_size, do: @transcript_page
+
+  @doc """
+  One keyset page of the transcript, newest first by `position` (unique per
+  conversation), returned in transcript order with whether older rows remain.
+
+  Options: `before:` (exclusive `position`; none = the newest page), `limit:`
+  (default #{@transcript_page}) and `reasoning?:` (rows keep their reasoning
+  text, as `list_messages/1` does; otherwise as `list_transcript/1`).
+  """
+  @spec transcript_page(String.t(), keyword()) :: {[Message.t()], boolean()}
+  def transcript_page(conversation_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, @transcript_page)
+
+    query =
+      from(m in Message,
+        where: m.conversation_id == ^conversation_id,
+        order_by: [desc: m.position],
+        limit: ^(limit + 1)
+      )
+
+    query =
+      case Keyword.get(opts, :before) do
+        position when is_integer(position) -> from(m in query, where: m.position < ^position)
+        _none -> query
+      end
+
+    {page, rest} = query |> transcript_rows(opts) |> Enum.split(limit)
+    {Enum.reverse(page), rest != []}
+  end
+
+  @doc """
+  Every message from `position` on, in transcript order — what a window that
+  already paged back reloads, so a reload never forgets the pages it holds.
+  """
+  @spec transcript_since(String.t(), integer(), keyword()) :: [Message.t()]
+  def transcript_since(conversation_id, position, opts \\ []) when is_integer(position) do
+    from(m in Message,
+      where: m.conversation_id == ^conversation_id and m.position >= ^position,
+      order_by: [asc: m.position]
+    )
+    |> transcript_rows(opts)
+  end
+
+  defp transcript_rows(query, opts) do
+    if Keyword.get(opts, :reasoning?, false) do
+      Repo.all(query)
+    else
+      Repo.all(
+        from(m in query,
+          select: %{
+            struct(m, ^@transcript_fields)
+            | has_reasoning:
+                type(fragment("coalesce(octet_length(?), 0) > 0", m.reasoning), :boolean)
+          }
+        )
+      )
+    end
+  end
+
+  @doc """
+  The transcript items (a user turn is one) behind `position`: user messages
+  that are not side-chat follow-ups. It labels the "N earlier" bar for rows not
+  loaded yet.
+  """
+  @spec count_earlier_turns(String.t(), integer()) :: non_neg_integer()
+  def count_earlier_turns(conversation_id, position) when is_integer(position) do
+    Repo.one(
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and m.position < ^position and m.role == "user" and
+            is_nil(m.reply_to_run_id),
+        select: count()
+      )
+    ) || 0
+  end
+
+  @doc """
+  The messages the side column needs for one run that is older than the loaded
+  page: the run's own, its follow-ups' (`reply_to_run_id`) and the messages of
+  the runs those follow-ups launched.
+  """
+  @spec run_scope_messages(String.t(), String.t(), keyword()) :: [Message.t()]
+  def run_scope_messages(conversation_id, run_id, opts \\ []) do
+    first =
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and
+            (m.run_id == ^run_id or m.reply_to_run_id == ^run_id),
+        order_by: [asc: m.position]
+      )
+      |> transcript_rows(opts)
+
+    run_ids = first |> Enum.map(& &1.run_id) |> Enum.filter(&is_binary/1) |> Enum.uniq()
+    seen = MapSet.new(first, & &1.id)
+
+    rest =
+      from(m in Message,
+        where: m.conversation_id == ^conversation_id and m.run_id in ^run_ids,
+        order_by: [asc: m.position]
+      )
+      |> transcript_rows(opts)
+      |> Enum.reject(&MapSet.member?(seen, &1.id))
+
+    Enum.sort_by(first ++ rest, & &1.position)
+  end
+
+  @minimap_buckets 120
+  @minimap_text 2_000
+
+  @doc """
+  The minimap of the whole conversation without loading it: one entry per
+  bucket of user prompts (follow-ups excluded, as the loaded computation
+  does), at most #{@minimap_buckets}. Each entry carries the first prompt of
+  its bucket (cut to #{@minimap_text} characters), the reply that follows it
+  (same cut), the bucket's size and its position range. Only ids and
+  positions of the other prompts are read, and they are not kept.
+  """
+  @spec minimap_projection(String.t()) :: [map()]
+  def minimap_projection(conversation_id) do
+    prompts =
+      Repo.all(
+        from(m in Message,
+          where:
+            m.conversation_id == ^conversation_id and m.role == "user" and
+              is_nil(m.reply_to_run_id),
+          order_by: [asc: m.position],
+          select: {m.id, m.position}
+        )
+      )
+
+    size = max(ceil(length(prompts) / @minimap_buckets), 1)
+    buckets = Enum.chunk_every(prompts, size)
+    lead_ids = for [{id, _} | _] <- buckets, do: id
+
+    rows =
+      from(m in Message,
+        where: m.id in ^lead_ids,
+        select: %{
+          id: m.id,
+          content: fragment("substr(?, 1, ?)", m.content, ^@minimap_text),
+          reply:
+            fragment(
+              "(select substr(r.content, 1, ?) from messages r where r.conversation_id = ? and r.position > ? and r.role not in ('user', 'error') and r.reply_to_run_id is null order by r.position limit 1)",
+              ^@minimap_text,
+              m.conversation_id,
+              m.position
+            )
+        }
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.id, &1})
+
+    for [{id, lo} | _] = bucket <- buckets do
+      row = Map.fetch!(rows, id)
+      {_, hi} = List.last(bucket)
+
+      %{
+        id: id,
+        content: row.content,
+        reply: row.reply,
+        count: length(bucket),
+        lo: lo,
+        hi: hi
+      }
+    end
+  end
+
+  @stub_fields [:id, :conversation_id, :role, :run_id, :reply_to_run_id, :position]
+  @stub_text 120
+  @stub_cap 2_000
+  @root_rows 4
+
+  @doc """
+  The messages behind `below` (a `position`) that the runs `run_ids` need to
+  show as they did before paging: their own, their follow-ups'
+  (`reply_to_run_id`) and those of the runs the follow-ups launched.
+
+  With `limit: n` the follow-ups are bounded: the newest `n` come back whole
+  (with the replies of their runs), and the older ones as stubs — identity,
+  position, run/reply links and a #{@stub_text}-character label — which is all
+  the pairing and the "+N turns" chip read. A card that opens loads its full
+  scope (no `limit`).
+  """
+  @spec scope_messages(String.t(), [String.t()], integer(), keyword()) :: [Message.t()]
+  def scope_messages(_conversation_id, [], _below, _opts), do: []
+
+  def scope_messages(conversation_id, run_ids, below, opts) when is_integer(below) do
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) ->
+        bounded_scope(conversation_id, run_ids, below, limit, opts)
+
+      _unbounded ->
+        full_scope(conversation_id, run_ids, below, opts)
+    end
+  end
+
+  defp full_scope(conversation_id, run_ids, below, opts) do
+    first =
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and m.position < ^below and
+            (m.run_id in ^run_ids or m.reply_to_run_id in ^run_ids),
+        order_by: [asc: m.position]
+      )
+      |> transcript_rows(opts)
+
+    more_ids =
+      first |> Enum.map(& &1.run_id) |> Enum.filter(&is_binary/1) |> Enum.uniq()
+
+    seen = MapSet.new(first, & &1.id)
+
+    rest =
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and m.position < ^below and
+            m.run_id in ^more_ids,
+        order_by: [asc: m.position]
+      )
+      |> transcript_rows(opts)
+      |> Enum.reject(&MapSet.member?(seen, &1.id))
+
+    Enum.sort_by(Enum.concat(first, rest), & &1.position)
+  end
+
+  defp bounded_scope(conversation_id, run_ids, below, limit, opts) do
+    base =
+      from(m in Message, where: m.conversation_id == ^conversation_id and m.position < ^below)
+
+    # The roots' own first rows are required (a run in the page nests under
+    # them), so they are numbered per root rather than cut by one shared limit.
+    numbered =
+      from(m in base,
+        where:
+          m.run_id in ^run_ids and (is_nil(m.reply_to_run_id) or m.reply_to_run_id != m.run_id),
+        select: %{id: m.id, n: over(row_number(), partition_by: m.run_id, order_by: m.position)}
+      )
+
+    head =
+      from(m in Message,
+        join: n in subquery(numbered),
+        on: n.id == m.id,
+        where: n.n <= ^@root_rows,
+        order_by: [asc: m.position]
+      )
+      |> transcript_rows(opts)
+
+    linked =
+      from(m in base,
+        where: m.reply_to_run_id in ^run_ids,
+        order_by: [desc: m.position],
+        limit: ^limit
+      )
+      |> transcript_rows(opts)
+
+    more_ids =
+      linked |> Enum.map(& &1.run_id) |> Enum.filter(&is_binary/1) |> Enum.uniq()
+
+    rest =
+      from(m in base,
+        where: m.run_id in ^more_ids,
+        order_by: [desc: m.position],
+        limit: ^(limit * 2)
+      )
+      |> transcript_rows(opts)
+
+    stubs =
+      if length(linked) < limit do
+        []
+      else
+        oldest = linked |> Enum.map(& &1.position) |> Enum.min()
+
+        Repo.all(
+          from(m in base,
+            where: m.reply_to_run_id in ^run_ids and m.role == "user" and m.position < ^oldest,
+            order_by: [desc: m.position],
+            limit: @stub_cap,
+            select: %{
+              struct(m, ^@stub_fields)
+              | content: fragment("substr(?, 1, ?)", m.content, ^@stub_text)
+            }
+          )
+        )
+      end
+
+    [head, linked, rest, stubs]
+    |> Enum.concat()
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.sort_by(& &1.position)
+  end
+
+  @doc """
+  How many follow-up prompts behind `below` point at each of `run_ids`: the
+  exact count a closed card's "+N turns" chip needs when `scope_messages/4`
+  returned fewer stubs than there are follow-ups.
+  """
+  @spec linked_turn_counts(String.t(), [String.t()], integer()) :: %{String.t() => pos_integer()}
+  def linked_turn_counts(_conversation_id, [], _below), do: %{}
+
+  def linked_turn_counts(conversation_id, run_ids, below) when is_integer(below) do
+    Repo.all(
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and m.position < ^below and
+            m.reply_to_run_id in ^run_ids and m.role == "user" and
+            (is_nil(m.run_id) or m.run_id != m.reply_to_run_id),
+        group_by: m.reply_to_run_id,
+        select: {m.reply_to_run_id, count(m.id)}
+      )
+    )
+    |> Map.new()
+  end
+
+  @report_preview 600
+  @report_window @report_preview * 8 + 64
+
+  @doc """
+  What a goal board renders of the turns behind `below`: each turn's first
+  report and the steers of the goal's runs. Ids and positions are read first;
+  only these rows come back whole.
+  """
+  @spec goal_board_messages(String.t(), [String.t()], integer(), keyword()) :: [Message.t()]
+  def goal_board_messages(_conversation_id, [], _below, _opts), do: []
+
+  def goal_board_messages(conversation_id, run_ids, below, opts) when is_integer(below) do
+    first_reports =
+      Repo.all(
+        from(m in Message,
+          where:
+            m.conversation_id == ^conversation_id and m.position < ^below and
+              m.run_id in ^run_ids and m.role in ["assistant", "swarm"],
+          order_by: [asc: m.position],
+          select: {m.run_id, m.id}
+        )
+      )
+      |> Enum.uniq_by(&elem(&1, 0))
+
+    full_runs = opts |> Keyword.get(:full, []) |> MapSet.new()
+    {whole, closed} = Enum.split_with(first_reports, &MapSet.member?(full_runs, elem(&1, 0)))
+    whole_ids = Enum.map(whole, &elem(&1, 1))
+    closed_ids = Enum.map(closed, &elem(&1, 1))
+
+    shown =
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and m.position < ^below and
+            (m.id in ^whole_ids or
+               (m.role == "user" and m.run_id in ^run_ids and m.run_id == m.reply_to_run_id)),
+        order_by: [asc: m.position]
+      )
+      |> transcript_rows(opts)
+
+    Enum.sort_by(Enum.concat(shown, report_previews(closed_ids)), & &1.position)
+  end
+
+  # A closed turn shows its report as a #{@report_preview}-character line, so
+  # that is all that is read; `clipped` says the text goes on. Whitespace-heavy
+  # text whose window does not fill the line is read whole, to keep the line exact.
+  defp report_previews([]), do: []
+
+  defp report_previews(ids) do
+    Repo.all(
+      from(m in Message,
+        where: m.id in ^ids,
+        select: %{
+          struct(m, ^@transcript_fields)
+          | content: fragment("substr(?, 1, ?)", m.content, ^@report_window),
+            clipped: type(fragment("length(?) > ?", m.content, ^@report_window), :boolean),
+            has_reasoning:
+              type(fragment("coalesce(octet_length(?), 0) > 0", m.reasoning), :boolean)
+        }
+      )
+    )
+    |> Enum.map(fn
+      %{clipped: true} = m ->
+        case SwarmCode.Domain.Format.clip_line(m.content, @report_preview, @report_preview) do
+          {_line, true} ->
+            m
+
+          {_line, false} ->
+            %{
+              m
+              | content: Repo.one!(from(r in Message, where: r.id == ^m.id, select: r.content)),
+                clipped: false
+            }
+        end
+
+      m ->
+        m
+    end)
+  end
+
+  @doc "The whole text of message `id`, for a row `goal_board_messages/4` clipped."
+  @spec message_content(String.t()) :: String.t() | nil
+  def message_content(id), do: Repo.one(from(m in Message, where: m.id == ^id, select: m.content))
+
+  @doc "Positions of the user messages that launched `run_ids` or whose ids are `message_ids`."
+  @spec launch_positions(String.t(), [String.t()], [String.t()]) :: [integer()]
+  def launch_positions(_conversation_id, [], []), do: []
+
+  def launch_positions(conversation_id, run_ids, message_ids) do
+    Repo.all(
+      from(m in Message,
+        where:
+          m.conversation_id == ^conversation_id and m.role == "user" and
+            ((m.run_id in ^run_ids and
+                (is_nil(m.reply_to_run_id) or m.reply_to_run_id != m.run_id)) or
+               m.id in ^message_ids),
+        select: m.position
+      )
+    )
+  end
+
+  @doc "The messages `ids` name that sit behind `below` (a `position`), in transcript order."
+  @spec messages_by_ids(String.t(), [String.t()], integer(), keyword()) :: [Message.t()]
+  def messages_by_ids(_conversation_id, [], _below, _opts), do: []
+
+  def messages_by_ids(conversation_id, ids, below, opts) do
+    from(m in Message,
+      where: m.conversation_id == ^conversation_id and m.id in ^ids and m.position < ^below,
+      order_by: [asc: m.position]
+    )
+    |> transcript_rows(opts)
+  end
+
+  @doc """
+  The `position` a transcript has to be loaded down to for `run`'s card to
+  have its launching message: that message (a follow-up's root's), or for a
+  run nobody launched from the composer the newest message before it started.
+  """
+  @spec run_anchor_position(String.t(), map(), non_neg_integer()) :: integer() | nil
+  def run_anchor_position(conversation_id, run, depth \\ 0) do
+    launch =
+      Repo.one(
+        from(m in Message,
+          where:
+            m.conversation_id == ^conversation_id and m.run_id == ^run.id and m.role == "user",
+          order_by: [asc: m.position],
+          limit: 1,
+          select: {m.position, m.reply_to_run_id}
+        )
+      )
+
+    case launch do
+      {position, root_id} when is_binary(root_id) and root_id != run.id and depth < 2 ->
+        case get_run(root_id) do
+          nil -> position
+          root -> run_anchor_position(conversation_id, root, depth + 1) || position
+        end
+
+      {position, _none} ->
+        position
+
+      nil ->
+        if run.started_at do
+          Repo.one(
+            from(m in Message,
+              where: m.conversation_id == ^conversation_id and m.inserted_at <= ^run.started_at,
+              select: max(m.position)
+            )
+          )
+        end
+    end
+  end
+
   @doc "One message's reasoning, or nil (spec 74 EFFICIENCY-33)."
   @spec message_reasoning(String.t()) :: String.t() | nil
   def message_reasoning(id) when is_binary(id),
@@ -960,7 +1870,7 @@ defmodule SwarmCode.Domain.Conversations do
   for a conversation rewind. Every message of the conversation at or after
   `message`'s position, every run one of those user messages launched
   (`launched_run_id/2`: a steer launches nothing), the runs those launched
-  (`launched_by_run_id`) and every message of those runs (`run_id` or
+  (`launched_by_run_id`, however deep) and every message of those runs (`run_id` or
   `reply_to_run_id`, the `supersede_scope/3` rule) are marked superseded in
   one IMMEDIATE transaction. Rows already superseded keep their mark. Nothing
   is deleted. Stopping live runs is the caller's job. Returns the runs marked.
@@ -1016,21 +1926,7 @@ defmodule SwarmCode.Domain.Conversations do
       )
 
     launched = tail |> launched_run_ids(conv_id) |> Enum.uniq()
-
-    run_ids =
-      if launched == [] do
-        []
-      else
-        children =
-          Repo.all(
-            from(r in Run,
-              where: r.conversation_id == ^conv_id and r.launched_by_run_id in ^launched,
-              select: r.id
-            )
-          )
-
-        Enum.uniq(launched ++ children)
-      end
+    run_ids = launched_family(conv_id, launched)
 
     open_run_ids =
       if run_ids == [] do
@@ -1068,6 +1964,33 @@ defmodule SwarmCode.Domain.Conversations do
       end
 
     {message_ids, runs}
+  end
+
+  # pass76 port-workflow-launched-by: `launched` and every run launched by one
+  # of them, however deep. A chat that starts a workflow has the workflow's
+  # continuation turn (and, before it, its compaction) as a grandchild, so one
+  # level would fold the workflow and leave its continuation standing alone.
+  # Each pass reads only the rows launched by the runs the previous pass found,
+  # and a run already seen is never read twice, so the walk ends.
+  defp launched_family(_conv_id, []), do: []
+
+  defp launched_family(conv_id, launched),
+    do: conv_id |> walk_launched(MapSet.new(launched), launched) |> MapSet.to_list()
+
+  defp walk_launched(conv_id, seen, frontier) do
+    fresh =
+      from(r in Run,
+        where: r.conversation_id == ^conv_id and r.launched_by_run_id in ^frontier,
+        select: r.id
+      )
+      |> Repo.all()
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(seen, &1))
+
+    case fresh do
+      [] -> seen
+      _more -> walk_launched(conv_id, Enum.into(fresh, seen), fresh)
+    end
   end
 
   # The runs the user messages of `messages` launched. Only a user message
@@ -1239,23 +2162,43 @@ defmodule SwarmCode.Domain.Conversations do
       not (m.role in ["assistant", "swarm", "shell"] and to_string(m.content) == "")
   end
 
+  @live_run_statuses ~w(running)
+
   @doc """
-  The newest run of `conversation_id` when it was cut short by an app restart,
-  together with the titles of the ops that had already finished.
+  The latest run of `conversation_id` that a restart cut short and nobody has
+  resumed or dismissed (the second element is kept for the banner's assign
+  shape and is always `[]`).
+
+  pass76 att-interrupted: a newer finished run does not hide it. It is hidden
+  once a run continues it (`resumed_from_run_id`) and while a newer run is
+  still live, which a second Resume would race.
   """
   @spec interrupted_run(String.t()) :: {Run.t(), [String.t()]} | nil
   def interrupted_run(conversation_id) do
-    # spec 74 EFFICIENCY-32: only the head run matters — one row, not the list.
-    head =
-      Repo.all(
+    candidate =
+      Repo.one(
         from(r in Run,
-          where: r.conversation_id == ^conversation_id,
-          order_by: [desc: :started_at],
+          where:
+            r.conversation_id == ^conversation_id and r.status == "stopped" and
+              r.interrupted == true,
+          order_by: [desc: r.started_at, desc: r.id],
           limit: 1
         )
       )
 
-    interrupted_run(conversation_id, head)
+    with %Run{} = run <- candidate,
+         false <-
+           Repo.exists?(
+             from(r in Run,
+               where:
+                 r.resumed_from_run_id == ^run.id or
+                   (r.conversation_id == ^conversation_id and r.status in ^@live_run_statuses)
+             )
+           ) do
+      {run, []}
+    else
+      _ -> nil
+    end
   end
 
   @doc """
@@ -1265,29 +2208,37 @@ defmodule SwarmCode.Domain.Conversations do
   """
   @spec interrupted_run(String.t(), [Run.t()]) :: {Run.t(), [String.t()]} | nil
   def interrupted_run(_conversation_id, runs) when is_list(runs) do
-    case runs do
-      [%Run{status: "stopped", interrupted: true} = run | _] ->
-        titles =
-          Repo.all(
-            from(n in Node,
-              where:
-                n.run_id == ^run.id and n.kind == "op" and n.status == "done" and
-                  n.op_type != "llm",
-              order_by: [asc: n.position],
-              limit: 20,
-              select: n.title
-            )
-          )
-
-        {run, titles}
-
-      _ ->
-        nil
+    # pass76 fix-m1-resume-paths: the banner's prompt comes from
+    # `Engine.resume_run/1`, so no op titles are read here.
+    with %Run{} = run <- Enum.find(runs, &(&1.status == "stopped" and &1.interrupted)),
+         false <-
+           Enum.any?(runs, &(&1.resumed_from_run_id == run.id or &1.status in @live_run_statuses)) do
+      {run, []}
+    else
+      _ -> nil
     end
   end
 
-  @doc "Marks a run as no longer needing the resume banner."
+  @doc """
+  Marks exactly this run as no longer needing the resume banner (resumed or
+  dismissed). Other interrupted runs of the conversation keep their own state,
+  so the banner moves on to the next unresolved one. Announces the change as
+  `{:interrupted_changed, conversation_id}` so every open window refreshes its
+  banner and sidebar marker.
+  """
   def clear_interrupted(%Run{} = run), do: update_run(run, %{interrupted: false})
+
+  # Every write that turns `interrupted` from true to false announces it here,
+  # so a caller cannot forget (resume, workflow control, dismiss).
+  defp announce_interrupted_cleared(%Run{interrupted: true}, %Run{interrupted: false} = updated) do
+    event = {:interrupted_changed, updated.conversation_id}
+    SwarmCode.Domain.PubSub.broadcast(SwarmCode.Domain.PubSub, @runs_topic, event)
+    # The secondary pages that show the sidebar listen here, so they do not
+    # also receive every run status.
+    SwarmCode.Domain.PubSub.broadcast(SwarmCode.Domain.PubSub, @interruptions_topic, event)
+  end
+
+  defp announce_interrupted_cleared(_before, _after), do: :ok
 
   @doc "The most recent distinct user prompts across every conversation, newest first."
   @spec recent_prompts(pos_integer()) :: [String.t()]
@@ -1676,6 +2627,8 @@ defmodule SwarmCode.Domain.Conversations do
         if updated.status != run.status and Keyword.get(opts, :broadcast, true),
           do: broadcast_run(updated)
 
+        if Keyword.get(opts, :broadcast, true), do: announce_interrupted_cleared(run, updated)
+
         {:ok, updated}
 
       {:error, changeset} ->
@@ -1864,6 +2817,68 @@ defmodule SwarmCode.Domain.Conversations do
 
   @node_light_fields Node.__schema__(:fields) -- [:prompt, :result, :input]
 
+  @resume_fields ~w(id run_id parent_id kind op_type name role title status position finished_at
+                    branch integrated changes_stat)a
+  @resume_op_cap 20
+  @resume_agent_cap 100
+  @resume_report_chars 400
+
+  @doc """
+  The node rows a non-consensus resume prompt reads (pass 76 eng-resume-latest):
+  only the columns the prompt needs, the newest rows of the kind it lists, and a
+  worker's `result` cut to a 400-character prefix in SQL. Returns
+  `{nodes_in_position_order, earlier}` where `earlier` counts the matching rows
+  that were left out, so the prompt can say so.
+
+  `:chat` lists the finished non-`llm` ops (last #{@resume_op_cap}); `:swarm`
+  lists the finished agents with a report (last #{@resume_agent_cap}).
+  """
+  @spec list_resume_nodes(String.t(), :chat | :swarm) :: {[Node.t()], non_neg_integer()}
+  def list_resume_nodes(run_id, :chat) do
+    matching =
+      from(n in Node,
+        where:
+          n.run_id == ^run_id and n.kind == "op" and n.status == "done" and
+            coalesce(n.op_type, "") != "llm"
+      )
+
+    recent_with_count(matching, @resume_op_cap)
+  end
+
+  def list_resume_nodes(run_id, :swarm) do
+    matching =
+      from(n in Node,
+        where:
+          n.run_id == ^run_id and n.kind == "agent" and n.status == "done" and
+            not is_nil(n.result) and n.result != ""
+      )
+
+    recent_with_count(matching, @resume_agent_cap, true)
+  end
+
+  defp recent_with_count(matching, cap, with_report \\ false) do
+    total = Repo.aggregate(matching, :count)
+
+    base =
+      from(n in matching,
+        order_by: [desc: n.position],
+        limit: ^cap,
+        select: struct(n, ^@resume_fields)
+      )
+
+    query =
+      if with_report,
+        do:
+          from(n in base,
+            select_merge: %{result: fragment("substr(?, 1, ?)", n.result, ^@resume_report_chars)}
+          ),
+        else: base
+
+    nodes = query |> Repo.all() |> Enum.reverse()
+
+    {nodes, max(total - length(nodes), 0)}
+  end
+
   @doc """
   The first node of `run_id` (in position order) whose id or branch is
   `id_or_branch`, without its prompt, result and input — one narrow read
@@ -2034,9 +3049,14 @@ defmodule SwarmCode.Domain.Conversations do
   statement, and a raise past `busy_timeout` that killed the run's sole state
   owner.
   """
-  @spec flush_run_writes([map()], [{String.t(), keyword()}], {Run.t(), map()} | nil) ::
+  @spec flush_run_writes(
+          [map()],
+          [{String.t(), keyword()}],
+          {Run.t(), map()} | nil,
+          keyword()
+        ) ::
           {:ok, Run.t() | nil} | {:error, :database_busy | term()}
-  def flush_run_writes(inserts, updates, run_totals) do
+  def flush_run_writes(inserts, updates, run_totals, opts \\ []) do
     # spec 60 T27: the sidebar's status event goes out after the commit, not
     # from inside a transaction a busy retry may still roll back.
     before =
@@ -2062,6 +3082,14 @@ defmodule SwarmCode.Domain.Conversations do
                 {0, _} -> log_write_failure("node #{id} is not in the table")
               end
             end)
+
+            # pass76 eng-answer-checkpoint: the streamed answer so far, exact
+            # bytes, written silently (the LiveView already has it by delta).
+            with {message_id, content} <- opts[:answer_checkpoint] do
+              Repo.update_all(from(m in Message, where: m.id == ^message_id),
+                set: [content: content]
+              )
+            end
 
             case run_totals do
               nil ->
@@ -2175,11 +3203,41 @@ defmodule SwarmCode.Domain.Conversations do
   runs are left alone — the watchdog and the budget dialog own those. Every other
   run is simply `stopped`, and every in-flight node (agent or op) is stopped too.
 
-  Returns the number of workflow runs that were interrupted, which the boot toast
-  counts.
+  Returns the number of workflow runs that were interrupted. Callers that
+  announce the interruption use `mark_interrupted_report/0`, which also names
+  every chat, swarm, goal and workflow run it settled.
   """
   @spec mark_interrupted() :: {:ok, non_neg_integer()}
   def mark_interrupted do
+    {:ok, %{workflows: workflows}} = mark_interrupted_report()
+    {:ok, workflows}
+  end
+
+  @boot_report_cap 50
+
+  @typedoc "One run the boot marking settled, with what the boot notice shows for it."
+  @type interrupted_entry :: %{
+          run_id: String.t(),
+          conversation_id: String.t(),
+          kind: String.t(),
+          title: String.t() | nil,
+          project: String.t() | nil
+        }
+
+  @doc """
+  `mark_interrupted/0` with a report (pass76 att-interrupted): `:workflows` is
+  the workflow count, `:total` every chat, swarm and workflow run settled, and
+  `:runs` the newest of them (at most #{@boot_report_cap}) with `kind` one of
+  `"chat"`, `"swarm"`, `"goal"` (a chat turn pursuing a goal) or `"workflow"`.
+  """
+  @spec mark_interrupted_report() ::
+          {:ok,
+           %{
+             workflows: non_neg_integer(),
+             total: non_neg_integer(),
+             runs: [interrupted_entry()]
+           }}
+  def mark_interrupted_report do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     wf_ids = resumable_workflow_run_ids()
 
@@ -2217,7 +3275,58 @@ defmodule SwarmCode.Domain.Conversations do
       set: [status: "stopped", detail: "interrupted by restart", finished_at: now]
     )
 
-    {:ok, length(wf_ids)}
+    {total, runs} = interrupted_page(0)
+    {:ok, %{workflows: length(wf_ids), total: total, runs: runs}}
+  end
+
+  @doc "The number of entries per `interrupted_page/1` page."
+  @spec interrupted_page_size() :: pos_integer()
+  def interrupted_page_size, do: @boot_report_cap
+
+  @doc """
+  One page of the unresolved interruptions (`interrupted = true`, so neither
+  resumed nor dismissed) across all conversations, newest first: what the
+  boot sweep just wrote and what an orderly shutdown persisted earlier.
+  Returns `{total, entries}`; `page` is zero-based.
+  """
+  @spec interrupted_page(non_neg_integer()) :: {non_neg_integer(), [interrupted_entry()]}
+  def interrupted_page(page) when is_integer(page) and page >= 0 do
+    settled =
+      from(r in Run,
+        join: c in Conversation,
+        on: c.id == r.conversation_id,
+        left_join: p in Projects.Project,
+        on: p.id == c.project_id,
+        where:
+          r.interrupted == true and
+            r.status in ["stopped", "interrupted"] and r.kind in ["chat", "swarm", "workflow"] and
+            is_nil(c.research_id)
+      )
+
+    total = Repo.aggregate(settled, :count)
+
+    runs =
+      Repo.all(
+        from([r, c, p] in settled,
+          order_by: [desc: r.started_at, desc: r.id],
+          limit: @boot_report_cap,
+          offset: ^(page * @boot_report_cap),
+          select: {r.id, r.conversation_id, r.kind, r.goal_id, c.title, p.name}
+        )
+      )
+      |> Enum.map(fn {id, conversation_id, kind, goal_id, title, project} ->
+        kind = if kind == "chat" and goal_id, do: "goal", else: kind
+
+        %{
+          run_id: id,
+          conversation_id: conversation_id,
+          kind: kind,
+          title: title,
+          project: project
+        }
+      end)
+
+    {total, runs}
   end
 
   @doc """

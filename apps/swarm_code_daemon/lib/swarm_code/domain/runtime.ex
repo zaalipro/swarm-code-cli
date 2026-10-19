@@ -29,6 +29,9 @@ defmodule SwarmCode.Domain.Runtime do
       SwarmCode.Domain.LLM.Speed,
       # spec 74 BUGS-76: the attached-research blocks the agents expand.
       SwarmCode.Domain.Engine.ResearchContext,
+      # pass76: the per-provider stream limit and shared rate-limit cooldown
+      # every LLM call goes through; before the runs that make those calls.
+      SwarmCode.Domain.LLM.Gate,
       SwarmCode.Domain.Engine.Questions,
       # spec 67 G30: the book of what a run left running, before any run can
       # leave something running.
@@ -40,6 +43,9 @@ defmodule SwarmCode.Domain.Runtime do
       # spec 70 F1: the supervised home of fire-and-forget tool hooks; every
       # tool call's post-hook starts a task here.
       {Task.Supervisor, name: SwarmCode.Domain.Hooks.TaskSupervisor},
+      # pass76: the guardians of hook trees. Without it `OSProcess` rescues the
+      # missing table and a hook's shell tree runs untracked.
+      {Registry, keys: :duplicate, name: SwarmCode.Domain.OSProcess.Guards},
       SwarmCode.Domain.Research.Supervisor,
       SwarmCode.Domain.MCP.Supervisor,
       # spec 70 B3: one LSP client per {project, language}, started lazily.

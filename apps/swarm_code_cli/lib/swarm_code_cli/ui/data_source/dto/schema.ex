@@ -224,6 +224,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.Schema do
       end
   end
 
+  # The runs outside the shown conversation are some of the session's runs.
+  def relations?(%{__struct__: DTO.Elsewhere} = fact), do: fact.live <= fact.total
+
   def relations?(%{state: :superseded, allowed_actions: actions}),
     do: Enum.all?(actions, &(&1 in [:inspect, :copy, :fork]))
 

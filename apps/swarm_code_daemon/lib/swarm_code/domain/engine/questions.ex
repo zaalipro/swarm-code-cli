@@ -7,12 +7,6 @@ defmodule SwarmCode.Domain.Engine.Questions do
   use GenServer
 
   @table __MODULE__
-  @approval_timeout_ms 600_000
-  @question_timeout_ms 1_800_000
-
-  def deadline_ms(:approval), do: @approval_timeout_ms
-  def deadline_ms(:question), do: @question_timeout_ms
-
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
   @impl true
@@ -58,6 +52,24 @@ defmodule SwarmCode.Domain.Engine.Questions do
     _ -> MapSet.new()
   catch
     _, _ -> MapSet.new()
+  end
+
+  @doc """
+  What each waiting conversation waits for: `:approval` or `:question`. An
+  approval wins when a conversation has both, since it blocks a tool call.
+  """
+  @spec kinds() :: %{String.t() => :approval | :question}
+  def kinds do
+    @table
+    |> :ets.select([{{:_, :"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
+    |> Enum.reduce(%{}, fn
+      {id, :approval}, acc -> Map.put(acc, id, :approval)
+      {id, kind}, acc -> Map.put_new(acc, id, kind)
+    end)
+  rescue
+    _ -> %{}
+  catch
+    _, _ -> %{}
   end
 
   @doc "All pending questions and approvals, oldest first."
