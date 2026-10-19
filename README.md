@@ -127,7 +127,8 @@ the composer (under 120 columns also through the pages), and Esc returns to the
 chat at the same scroll with the same draft. The approval letters and `o [ ]`
 act only while the overlay's composer is empty.
 
-An approval or a question opens over the conversation by itself; for a moment
+An approval or a question opens over the conversation by itself and waits for you
+(an approval never expires, a question only with a timeout the agent set); for a moment
 after it opens, keys keep typing into the draft, so a sentence is never
 answered by accident. Only the letters of the decisions the card offers answer
 it, and only while the draft is empty, also on a card you brought up with
@@ -145,7 +146,10 @@ still wins at the next launch), `/mouse [on|off]`, `/trust`, `/queue <text>`, `/
 and `/quit`; `/panel`, `/diff`, `/theme` and `/mouse` are kept in `cli.json`.
 Typing `/` lists every command above the composer. The project's approval mode is the desktop's and is always on
 the status line: a new project is read-only until `/trust`; in `auto`, edits and
-safe commands (`ls`, `git status`) run by themselves and other commands ask.
+safe commands (`ls`, `git status`) run by themselves and other commands ask (an
+unquoted `~` or glob character also asks). A request that waits in another
+conversation of the session rings or notifies while the terminal is unfocused,
+naming the conversation.
 Quitting stops the runs of every conversation of the session (the confirmation counts them
 all and says how many are in other conversations) and prints a short summary that lists the
 runs it stopped, naming the conversation of those from other conversations, and a
@@ -205,15 +209,20 @@ ncode [DIR] [--new | --continue | --resume ID] [--model M]
   continue one) without the full-screen view and prints the answer
   as it streams (`-p -` reads the prompt from stdin). The project's approval mode
   applies; anything that would still need a person is denied, and a line on
-  stderr says what (and, in full access, that nothing asks). A question stops the run. `--json` prints one object at the
+  stderr says what (and, in full access, that nothing asks). A question stops the run. A swarm or workflow the
+  run launches (a workflow's own continuation too) is followed to its end and named on stderr; a paused
+  workflow ends the wait with a line that says `ncode --resume ID`, then `/resume-run`. `--json` prints one object at the
   end instead: `conversation_id`, `run_id`, `state`, `reason`, `text`, `error`,
-  `denied`, `exit_code`.
+  `question`, `denied`, `runs` (every run followed: `id`, `kind`, `state`, `title`, `parent_run_id`,
+  `launched`, `error`), `exit_code`; `state` is that of the first run that did not finish.
 - `--plain` is the line presenter for pipes, CI and SSH (one command per line,
   `help` lists them); it is chosen by itself when stdin or stdout is not a
   terminal. `--ndjson` prints one JSON record per line.
-- Exit codes: `0` done, `1` the run failed or was stopped, `2` usage, `3`
-  startup refused (another instance holds the database, no provider, an
-  incompatible schema: one line says which).
+- Exit codes: `0` done, `1` the run (or one it launched) failed or was stopped,
+  or a workflow is paused, `2` usage, `3` startup refused (another instance holds
+  the database, no provider, an incompatible schema: one line says which), `129`
+  and `143` closed by SIGHUP or SIGTERM (the live runs are stopped and the session
+  closes first; a second signal a second or more later halts at once).
 
 ```sh
 ncode -p "summarise the open TODOs in lib/" > todos.md
@@ -479,8 +488,9 @@ Its current schema contract describes all 58 migrations at desktop `4c7c577`
 0.1.0 (57) is backed up and migrated through the contract's `forward_compatible`
 allowlist, and any other pending or unknown migration is refused with one sentence
 (a newer desktop's database names the CLI version to replace). The domain itself
-is re-derived with `mix swarm_code.provenance.sync` (see AGENTS.md), since CLI 0.2.1
-from desktop `a93d6d8` (desktop pass 74, which adds no migration).
+is re-derived with `mix swarm_code.provenance.sync` (see AGENTS.md), now from desktop
+`68bc97cd` (desktop pass 76, which adds no migration; CLI 0.2.1 and 0.2.2 shipped
+from `a93d6d8`).
 
 - [Approved CLI architecture](docs/superpowers/specs/2026-09-01-swarm-code-cli-design.md)
 - [Foundation safety and macOS residual risk](docs/foundation-safety.md)
@@ -521,8 +531,9 @@ and [draw wire contract](docs/implementation/terminal-port-wire-v1.md).
 
 The 2026-09-01 source authorization, MIT license, and NOTICE terms are recorded in
 [`SOURCE_AUTHORIZATION.md`](SOURCE_AUTHORIZATION.md), [`LICENSE`](LICENSE), and [`NOTICE`](NOTICE).
-The current desktop does not honor the shared lease, so concurrent desktop/CLI operation is not
-supported; follow the shutdown order in the safety note.
+The current desktop does not take the shared lease. Since its pass 76 it refuses to start
+while a live CLI session owns the data (it only reads `instance_owner.json`), but concurrent
+desktop/CLI operation is still not supported; follow the shutdown order in the safety note.
 
 
 The live runtime component is `SwarmCode.Daemon.Runtime.Run` in the daemon app.
