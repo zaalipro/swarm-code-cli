@@ -111,8 +111,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `04baeb1c` (desktop pass
-  76, branch `pass76-reliability`, CLI pass 76; before it `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `2552de92` (desktop pass
+  76, branch `pass76-reliability`, CLI pass 76; merge it into desktop `main` without squashing, the CLI pins this sha; before it `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
   `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
@@ -174,7 +174,7 @@ Invariants that the code base defends and tests pin:
 - The canonical database is never reset, recreated or repaired. An unknown schema fails closed
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
   (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
-  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `04baeb1c` (desktop pass 76, no
+  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `2552de92` (desktop pass 76, no
   migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
@@ -440,12 +440,12 @@ Headless and release (lane B):
   finish; `error` is the sentence of the first run that did not finish, whatever launched
   runs finished before it) and exits 1 if any failed. A finished workflow's default
   continuation (`workflow_run` `continue`, `mission_start`: `RunServer.continue_assistant/2`
-  starts a chat turn with `store_user: false`) is one of those runs: a recorded provenance
-  patch (`engine.ex` `chat_run_attrs`, `run_server.ex` `continue_assistant`) stores the
+  starts a chat turn with `store_user: false`) is one of those runs: desktop pass 76 (synced
+  code, no CLI patch in `engine.ex` or `run_server.ex` for it) stores the
   workflow as its `launched_by_run_id`. When the conversation asked for an automatic
   compaction (`compact_due`), `Engine.compact_then_turn` starts a compaction run and a chain
   task (`{:chain, conversation_id, compaction_run_id}` in the domain registry) that starts the
-  turn when it ends: the same patch stores the workflow as the compaction run's
+  turn when it ends: the same upstream code stores the workflow as the compaction run's
   `launched_by_run_id` (`start_compact` takes `launched_by_run_id:`) and as the chain's registry
   value (the eventual turn already carries it through `opts`). A turn that cannot start at all
   (no provider, the project gone) leaves no row after a `store_user: false` launch, with or
@@ -572,7 +572,7 @@ The pass's brief is `docs/superpowers/plans/2026-10-08-cli-0.2.1/00_brief.md` (r
 0.2.0 contract), its lane notes are in `notes/{K,B,C,U}.md`, the outcome is the "CLI 0.2.1"
 section of `docs/research/2026-10-07-cli020-outcome.md`.
 
-- Domain (pass 76): synced to desktop `04baeb1c` (see the lineage above); the K7 notes below
+- Domain (pass 76): synced to desktop `2552de92` (see the lineage above); the K7 notes below
   describe the earlier pin.
 - Domain (K7): synced to desktop `a93d6d8e` (desktop pass 74 = desktop 0.2.2's engine, no
   migration). Every model without a configured `context_window` has a 1,000,000-token window

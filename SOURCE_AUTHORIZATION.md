@@ -167,3 +167,21 @@ owner as the commits named above. It adds no migration, so the schema contract s
 `4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier admits version 2 records at eight
 adaptation pins: the seven named above and this commit. The recorded copyright, MIT license and
 NOTICE terms remain in place. This addendum does not publish or modify the desktop repository.
+
+## Addendum: desktop commit 2552de92 (pass 76 reliability, final, 2026-10-19)
+
+**Date:** 2026-10-19
+
+The pass 76 reliability mission re-pins the extracted domain to desktop commit
+`2552de92c4136a7dd88bb707902d2814bc26e263`, the final commit of the desktop branch
+`pass76-reliability`, the same project and owner as the commits named above. It follows
+`04baeb1c87cf8c9682ecafb8290e831c664f9f05` with the hook-tree reap fixes (a quit reaps every
+`session_end` hook tree and joins that reap at the final fallback); the only synced-file change is
+test-side, and `lib/swarm_code/quit.ex` is desktop-only. It adds no migration, so the schema
+contract stays `desktop-4c7c577` (58 migrations). The provenance sync pins this commit
+(`provenance/sync-rules.json`), and 264 of the 288 entries in `provenance/extracted-files.json`
+record it as their upstream commit; 23 record `fb1b4ff82354ac8ff2e82d4f6516121fd55ff212` and one,
+the frozen `domain/format.ex`, records `4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier
+admits version 2 records at nine adaptation pins: the eight named above and this commit. The
+recorded copyright, MIT license and NOTICE terms remain in place. This addendum does not publish
+or modify the desktop repository.
