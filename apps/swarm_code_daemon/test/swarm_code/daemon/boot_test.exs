@@ -146,6 +146,13 @@ defmodule SwarmCode.Daemon.BootTest do
     assert at.(SwarmCode.Domain.LLM.Gate) < at.(SwarmCode.Domain.Engine.RunSupervisor)
     assert is_pid(Process.whereis(SwarmCode.Domain.LLM.Gate))
 
+    # pass76: the hook guardians' registry; without it a hook tree is untracked.
+    guards = SwarmCode.Domain.OSProcess.guards_registry()
+    assert guards == SwarmCode.Domain.OSProcess.Guards
+    assert at.(guards) < at.(SwarmCode.Domain.Engine.RunSupervisor)
+    assert is_pid(Process.whereis(guards))
+    assert SwarmCode.Domain.OSProcess.tracked_guards() == []
+
     assert at.(SwarmCode.Domain.Tools.BackgroundProcs) <
              at.(SwarmCode.Domain.Engine.CleanupSupervisor)
 

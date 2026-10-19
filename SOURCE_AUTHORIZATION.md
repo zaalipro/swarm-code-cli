@@ -185,3 +185,22 @@ the frozen `domain/format.ex`, records `4c7c577aa909274b009dc1bf0f216e5179acddc9
 admits version 2 records at nine adaptation pins: the eight named above and this commit. The
 recorded copyright, MIT license and NOTICE terms remain in place. This addendum does not publish
 or modify the desktop repository.
+
+## Addendum: desktop commit 68bc97cd (pass 76 reliability, hook ownership, 2026-10-19)
+
+**Date:** 2026-10-19
+
+The pass 76 reliability mission re-pins the extracted domain to desktop commit
+`68bc97cd37ff3f2c5fed18f8c5e36ad46d24a9ab`, the final commit of the desktop branch
+`pass76-reliability`, the same project and owner as the commits named above. It follows
+`2552de92c4136a7dd88bb707902d2814bc26e263` with the hook-ownership fix (a hook's port is opened
+and its guardian registered under one lock, and a quit joins the tracked guardians under one
+deadline); the synced changes are `os_process.ex` and `hooks.ex`, and `lib/swarm_code/quit.ex` and
+`application.ex` are desktop-only. It adds no migration, so the schema contract stays
+`desktop-4c7c577` (58 migrations). The provenance sync pins this commit
+(`provenance/sync-rules.json`), and 264 of the 288 entries in `provenance/extracted-files.json`
+record it as their upstream commit; 23 record `fb1b4ff82354ac8ff2e82d4f6516121fd55ff212` and one,
+the frozen `domain/format.ex`, records `4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier
+admits version 2 records at ten adaptation pins: the nine named above and this commit. The
+recorded copyright, MIT license and NOTICE terms remain in place. This addendum does not publish
+or modify the desktop repository.

@@ -1,4 +1,4 @@
-# CLI-local change to lib/swarm_code/mcp/client.ex at 2552de9, after the rewrite
+# CLI-local change to lib/swarm_code/mcp/client.ex at 68bc97c, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/mcp/client.ex

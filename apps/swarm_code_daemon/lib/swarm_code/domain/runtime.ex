@@ -43,6 +43,9 @@ defmodule SwarmCode.Domain.Runtime do
       # spec 70 F1: the supervised home of fire-and-forget tool hooks; every
       # tool call's post-hook starts a task here.
       {Task.Supervisor, name: SwarmCode.Domain.Hooks.TaskSupervisor},
+      # pass76: the guardians of hook trees. Without it `OSProcess` rescues the
+      # missing table and a hook's shell tree runs untracked.
+      {Registry, keys: :duplicate, name: SwarmCode.Domain.OSProcess.Guards},
       SwarmCode.Domain.Research.Supervisor,
       SwarmCode.Domain.MCP.Supervisor,
       # spec 70 B3: one LSP client per {project, language}, started lazily.

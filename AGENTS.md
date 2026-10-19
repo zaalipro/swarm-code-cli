@@ -111,8 +111,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `2552de92` (desktop pass
-  76, branch `pass76-reliability`, CLI pass 76; merge it into desktop `main` without squashing, the CLI pins this sha; before it `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `68bc97cd` (desktop pass
+  76, branch `pass76-reliability`, CLI pass 76; merge it into desktop `main` without squashing, the CLI pins this sha; before it `2552de92`, `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
   `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
@@ -130,7 +130,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   flush, stop run/research/MCP/LSP subtrees): quitting a session stops the runs of every
   conversation, not only the one on screen.
   `domain/runtime.ex` starts the domain's children, including `Tools.BackgroundProcs`,
-  `Hooks.TaskSupervisor` (every tool call's post-hook needs it) and `LSP.Supervisor`.
+  `Hooks.TaskSupervisor` (every tool call's post-hook needs it), the `OSProcess.Guards` registry
+  (hook guardians; without it a hook tree runs untracked) and `LSP.Supervisor`.
   `Daemon.Runtime.Run` is the transient in-memory runtime the live launcher uses; saved sessions go
   through `Domain.Engine` and the guarded Repo. The socket listener never starts with the
   application; launchers own it. A custom Mix compiler (`:schema_snapshot`, top of
@@ -174,7 +175,7 @@ Invariants that the code base defends and tests pin:
 - The canonical database is never reset, recreated or repaired. An unknown schema fails closed
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
   (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
-  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `2552de92` (desktop pass 76, no
+  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `68bc97cd` (desktop pass 76, no
   migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
@@ -572,7 +573,7 @@ The pass's brief is `docs/superpowers/plans/2026-10-08-cli-0.2.1/00_brief.md` (r
 0.2.0 contract), its lane notes are in `notes/{K,B,C,U}.md`, the outcome is the "CLI 0.2.1"
 section of `docs/research/2026-10-07-cli020-outcome.md`.
 
-- Domain (pass 76): synced to desktop `2552de92` (see the lineage above); the K7 notes below
+- Domain (pass 76): synced to desktop `68bc97cd` (see the lineage above); the K7 notes below
   describe the earlier pin.
 - Domain (K7): synced to desktop `a93d6d8e` (desktop pass 74 = desktop 0.2.2's engine, no
   migration). Every model without a configured `context_window` has a 1,000,000-token window

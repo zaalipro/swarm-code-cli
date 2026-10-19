@@ -331,12 +331,18 @@ defmodule SwarmCode.Domain.Hooks do
     timeout = hook.timeout_ms
     cap = hook.output_cap
 
-    case open_port(hook.command, root, env) do
-      {:ok, port} ->
+    # pass76 fix-m7-r2-hook-ownership: opening the port and registering its guardian are one step
+    # against `Quit.session_end_hooks/1`, which stops the hook tasks under the same lock, so a
+    # task is never killed with a shell that no guardian knows about.
+    opened =
+      SwarmCode.Domain.OSProcess.spawn_locked(fn ->
+        with {:ok, port} <- open_port(hook.command, root, env),
+             do: {:ok, port, SwarmCode.Domain.OSProcess.guard_port_tracked(port)}
+      end)
+
+    case opened do
+      {:ok, port, guardian} ->
         deadline = System.monotonic_time(:millisecond) + timeout
-        # pass76 fix-hook-shutdown-reap: the same guard `OSProcess.run/3` uses, so a hook task
-        # killed mid-reap (or mid-run) still has its shell tree killed.
-        guardian = SwarmCode.Domain.OSProcess.guard_port(port)
 
         try do
           collect(port, [], 0, cap, deadline)

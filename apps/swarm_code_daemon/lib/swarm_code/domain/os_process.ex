@@ -151,18 +151,110 @@ defmodule SwarmCode.Domain.OSProcess do
   guardian pid.
   """
   @spec guard_port(port()) :: pid()
-  def guard_port(port) do
+  def guard_port(port), do: start_guard(port, false)
+
+  @guards __MODULE__.Guards
+  @spawn_lock :ncode_os_spawn
+
+  @doc false
+  def guards_registry, do: @guards
+
+  @doc """
+  `guard_port/1` whose guardian is also entered in `#{inspect(@guards)}` (OS pid as value) before
+  this returns, and leaves it when its tree is gone. `tracked_guards/0` lists them.
+  """
+  @spec guard_port_tracked(port()) :: pid()
+  def guard_port_tracked(port), do: start_guard(port, true)
+
+  @doc "`[{guardian, os_pid}]` of the tracked guardians alive now."
+  @spec tracked_guards() :: [{pid(), pos_integer()}]
+  def tracked_guards do
+    Registry.lookup(@guards, :guard)
+  rescue
+    ArgumentError -> []
+  end
+
+  @doc """
+  Runs `fun` holding the spawn lock (`:global`, released when the holder dies), which
+  `exclusive_spawn/2` also needs: a tracked port is opened and guarded atomically against it.
+  """
+  @spec spawn_locked((-> result)) :: result when result: term()
+  def spawn_locked(fun) do
+    id = {@spawn_lock, self()}
+    :global.set_lock(id, [node()])
+
+    try do
+      fun.()
+    after
+      :global.del_lock(id, [node()])
+    end
+  end
+
+  @doc """
+  Runs `fun` while no `spawn_locked/1` section is running or can start. Waits at most `retries`
+  lock attempts, then runs `fun` anyway: the caller is a quit and must not hang.
+  """
+  @spec exclusive_spawn(non_neg_integer(), (-> result)) :: result when result: term()
+  def exclusive_spawn(retries, fun) do
+    id = {@spawn_lock, self()}
+    :global.set_lock(id, [node()], retries)
+
+    try do
+      fun.()
+    after
+      :global.del_lock(id, [node()])
+    end
+  end
+
+  @doc """
+  KILLs `os_pids` and the process groups they lead without a single `ps`: for a tree whose
+  guardian could not finish. A pid that leads no group is just signalled; a descendant that left
+  the group is not reached.
+  """
+  @spec kill_now([pos_integer()]) :: :ok
+  def kill_now([]), do: :ok
+
+  def kill_now(os_pids) do
+    pids = Enum.filter(os_pids, &(is_integer(&1) and &1 > 1 and &1 != self_pid()))
+    cmd("kill", ["-KILL", "--" | Enum.map(pids, &"-#{&1}")])
+    cmd("kill", ["-KILL" | Enum.map(pids, &Integer.to_string/1)])
+    :ok
+  end
+
+  defp start_guard(port, track?) do
     owner = self()
     os_pid = port_pid(port)
+    ref = make_ref()
 
-    spawn(fn ->
-      ref = Process.monitor(owner)
+    guardian =
+      spawn(fn ->
+        mon = Process.monitor(owner)
 
+        if track? do
+          try do
+            Registry.register(@guards, :guard, os_pid)
+          rescue
+            ArgumentError -> :ok
+          end
+
+          send(owner, {ref, :tracked})
+        end
+
+        receive do
+          :released -> :ok
+          {:DOWN, ^mon, :process, ^owner, _reason} -> kill_tree(os_pid)
+        end
+      end)
+
+    if track? do
       receive do
-        :released -> :ok
-        {:DOWN, ^ref, :process, ^owner, _reason} -> kill_tree(os_pid)
+        {^ref, :tracked} -> :ok
+      after
+        5_000 -> :ok
       end
-    end)
+    end
+
+    guardian
   end
 
   @doc "Stands the guardian from `guard_port/1` down once the caller has finished with the port."
