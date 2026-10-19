@@ -92,6 +92,9 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         slots: %{},
         serial_queue: [],
         serial_running: nil,
+        # pass76 eng-op-watch: op id → the monitor on its task, dropped when the
+        # op's `op_done` is handled.
+        op_mons: %{},
         # spec 66 T14: the last turn an auto-compaction was launched at, and the
         # one-shot flag of the context-overflow retry.
         last_compact_turn: nil,
@@ -242,6 +245,50 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   def handle_cast(:continue, state), do: {:noreply, %{state | paused?: false}}
 
   @impl true
+  # pass76 eng-op-watch: a settled op's monitor goes before its result is
+  # handled (the flush keeps its `:normal` DOWN out of the mailbox).
+  def handle_info({:op_done, id, _result} = msg, %{op_mons: mons} = state)
+      when is_map_key(mons, id) do
+    Process.demonitor(Map.fetch!(mons, id), [:flush])
+    handle_info(msg, %{state | op_mons: Map.delete(mons, id)})
+  end
+
+  # pass76 eng-op-watch: an op task that died without reporting. A shutdown is
+  # the stop path's (it persists `stopped`); anything else is a crash the agent
+  # continues from as if the op had returned `{:error, :bug, _}`.
+  def handle_info({:DOWN, ref, :process, pid, reason}, %{op_mons: mons} = state) do
+    case Enum.find(mons, fn {_id, r} -> r == ref end) do
+      nil ->
+        {:noreply, state}
+
+      {id, _ref} ->
+        state = %{state | op_mons: Map.delete(mons, id)}
+
+        if shutdown_reason?(reason) do
+          {:noreply, state}
+        else
+          msg = "the operation crashed: " <> crash_text(reason)
+
+          # pass76 fix-m1-agent-waits (M1-R3-001): the dead op's parked
+          # approval/question/wait_for_message must go before the failure is
+          # written, or a late answer revives the node and a peer message is
+          # consumed by a caller that no longer exists.
+          RunServer.cancel_op_waits(state.run_id, state.node_id, id, pid)
+
+          RunServer.update_node(state.run_id, id, %{
+            status: "failed",
+            progress: 100,
+            error: msg,
+            detail: msg,
+            error_kind: "bug",
+            finished_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+          })
+
+          handle_info({:op_done, id, {:error, :bug, msg}}, state)
+        end
+    end
+  end
+
   # spec 74 ARCHITECTURE-4: the in-place summary (an owned op) is in. Its usage
   # is billed whatever came of it (spec 74 BUGS-33), the history is replaced
   # on a good summary, and the think step it held back starts — or holds, if a
@@ -387,6 +434,18 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  defp shutdown_reason?(:shutdown), do: true
+  defp shutdown_reason?({:shutdown, _}), do: true
+  defp shutdown_reason?(_reason), do: false
+
+  defp crash_text(reason) do
+    text = inspect(reason, limit: 20, printable_limit: 200)
+    if byte_size(text) > 300, do: String.slice(text, 0, 300) <> "…", else: text
+  end
+
+  defp watch_op(state, id, pid),
+    do: %{state | op_mons: Map.put(state.op_mons, id, Process.monitor(pid))}
 
   defp llm_failed(id, kind, msg, state) do
     state = %{state | llm_node: nil}
@@ -664,8 +723,8 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
 
     RunServer.update_node(state.run_id, state.node_id, %{turn: turn, max_turns: state.max_turns})
 
-    {:ok, id} =
-      Operation.start(state.ops_sup, self(), %{
+    {:ok, id, pid} =
+      start_operation(state, %{
         run_id: state.run_id,
         parent_id: state.node_id,
         op_type: "llm",
@@ -673,7 +732,7 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         work: {:llm, request}
       })
 
-    {:noreply, %{state | llm_node: id, turn: turn, status: :thinking}}
+    {:noreply, %{watch_op(state, id, pid) | llm_node: id, turn: turn, status: :thinking}}
   end
 
   # spec 73 T9: a message that arrived while a tool batch ran is oldest-first
@@ -704,7 +763,12 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
 
         %{state | steer: drained ++ state.steer}
 
-      _none_or_gone ->
+      {:error, :not_running} ->
+        # pass76 eng-patient-calls: nothing was popped; keep the flag so a
+        # later think step asks again instead of forgetting queued messages.
+        %{state | mailbox_pending?: true}
+
+      _none ->
         state
     end
   end
@@ -813,8 +877,8 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     before = context_tokens(state)
     {request, model} = inline_request(state, budget)
 
-    {:ok, id} =
-      Operation.start(state.ops_sup, self(), %{
+    {:ok, id, pid} =
+      start_operation(state, %{
         run_id: state.run_id,
         parent_id: state.node_id,
         op_type: "compact",
@@ -822,7 +886,7 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
         work: {:summary, request}
       })
 
-    {:noreply, %{state | held: {:inline_compact, id, before, model}}}
+    {:noreply, %{watch_op(state, id, pid) | held: {:inline_compact, id, before, model}}}
   end
 
   defp apply_inline_summary(state, op, {:ok, summary}, before, tokens) do
@@ -1158,17 +1222,29 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     }
   end
 
+  # pass76 fix-m1-agent-waits (M1-R3-002): a RunServer that is gone cannot
+  # register the op node. Nothing of this agent survives its run, so the agent
+  # leaves with a shutdown (not a crash report) instead of a MatchError.
+  defp start_operation(state, attrs) do
+    case Operation.start(state.ops_sup, self(), attrs) do
+      {:ok, _id, _pid} = started -> started
+      {:error, :not_running} -> exit(:shutdown)
+    end
+  end
+
   defp start_plan(state, plan), do: state |> start_op(plan) |> elem(0)
 
   defp start_op(state, plan) do
-    {:ok, op_id} =
-      Operation.start(state.ops_sup, self(), %{
+    {:ok, op_id, pid} =
+      start_operation(state, %{
         run_id: state.run_id,
         parent_id: state.node_id,
         op_type: plan.op_type,
         title: plan.title,
         work: plan.work
       })
+
+    state = watch_op(state, op_id, pid)
 
     state = %{
       state

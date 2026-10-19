@@ -242,7 +242,12 @@ defmodule SwarmCode.Daemon.CrossAppLease do
         synchronous: :full,
         foreign_keys: :on,
         busy_timeout: 15_000,
-        timeout: 15_000,
+        # pass76: DBConnection's `timeout` counts queue time and kills a checkout
+        # that outlives it. Equal to `busy_timeout`, every writer waiting out
+        # SQLite's busy handler was disconnected at the same instant instead of
+        # failing as `Database busy`; it must stay strictly larger (a transaction
+        # can wait that long at BEGIN IMMEDIATE and again at COMMIT).
+        timeout: 60_000,
         default_transaction_mode: :immediate,
         queue_target: 50,
         idle_interval: 1_000,

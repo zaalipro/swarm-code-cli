@@ -345,24 +345,50 @@ defmodule SwarmCode.Domain.Tools.SpawnAgent do
 
   defp watchdog(_run_id, _agent_id, 0), do: nil
 
+  # pass76 eng-no-expiry: only time the worker (and its subtree) spends *not*
+  # waiting for the user counts against `sub_agent_timeout_s`. The clock is
+  # sampled in small slices; a slice during which an approval or question is
+  # parked below the worker is not charged.
+  @watchdog_slice_ms 250
+
   defp watchdog(run_id, agent_id, seconds) do
     caller = self()
 
-    spawn(fn ->
-      ref = Process.monitor(caller)
+    {:ok, pid} =
+      Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
+        ref = Process.monitor(caller)
+        watch(run_id, agent_id, caller, ref, seconds * 1_000)
+      end)
 
-      receive do
-        {:DOWN, ^ref, :process, ^caller, _reason} -> :ok
-        {:cancel, ^agent_id} -> :ok
-      after
-        seconds * 1_000 ->
-          # The message goes first: the stop settles the await, and the op
-          # process must already know why it came back.
-          send(caller, {:sub_agent_timeout, agent_id})
-          # spec 72 B7: use stop_agent_timeout so the node gets :spawn_timeout.
-          RunServer.stop_agent_timeout(run_id, agent_id)
-      end
-    end)
+    pid
+  end
+
+  defp watch(run_id, agent_id, caller, ref, remaining_ms) do
+    slice = min(@watchdog_slice_ms, remaining_ms)
+
+    receive do
+      {:DOWN, ^ref, :process, ^caller, _reason} -> :ok
+      {:cancel, ^agent_id} -> :ok
+    after
+      slice ->
+        case RunServer.waiting_in_subtree?(run_id, agent_id) do
+          {:error, :not_running} ->
+            :ok
+
+          true ->
+            watch(run_id, agent_id, caller, ref, remaining_ms)
+
+          false when remaining_ms - slice > 0 ->
+            watch(run_id, agent_id, caller, ref, remaining_ms - slice)
+
+          false ->
+            # The message goes first: the stop settles the await, and the op
+            # process must already know why it came back.
+            send(caller, {:sub_agent_timeout, agent_id})
+            # spec 72 B7: use stop_agent_timeout so the node gets :spawn_timeout.
+            RunServer.stop_agent_timeout(run_id, agent_id)
+        end
+    end
   end
 
   defp cancel(nil, agent_id), do: fired?(agent_id)

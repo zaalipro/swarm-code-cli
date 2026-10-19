@@ -289,21 +289,25 @@ defmodule SwarmCode.Domain.Engine.RunServerPendingInteractionsTest do
     end
   end
 
-  # pass75: the ask's clock and its questions' headers reach the row.
-  test "question rows carry deadline_at 30 minutes after requested_at" do
+  # pass76: only an ask with its own explicit timeout has a clock; its deadline
+  # is when that timer fires.
+  test "a question row's deadline is when the ask's own timer fires" do
     id = Ecto.UUID.generate()
+    timer = Process.send_after(self(), :ask_timeout_never_awaited, 1_800_000)
 
     entry = %{
       questions: [%{"question" => "Which?"}],
-      timer: make_ref(),
+      timer: timer,
       requested_at: DateTime.utc_now()
     }
 
     state = state(%{}, %{id => entry}, %{})
 
     assert {:reply, [row], ^state} = RunServer.handle_call(:pending_interactions, nil, state)
-    assert DateTime.diff(row.deadline_at, entry.requested_at, :millisecond) == 1_800_000
+    remaining = DateTime.diff(row.deadline_at, DateTime.utc_now(), :millisecond)
+    assert remaining in 1_700_000..1_800_000
     assert Map.keys(row) |> Enum.sort() == Enum.sort(@row_keys)
+    Process.cancel_timer(timer)
   end
 
   test "an ask without a timer has no deadline" do

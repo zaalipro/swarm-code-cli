@@ -348,7 +348,20 @@ defmodule SwarmCode.Domain.Conversations.Writes do
   defp update_message!(nil), do: nil
 
   defp update_message!({%Message{} = message, attrs}) do
-    case message |> Message.changeset(attrs) |> Repo.update() do
+    changeset = Message.changeset(message, attrs)
+
+    # pass76 fix-m1-answer-lifecycle: `cast/3` reads a whitespace-only string
+    # as empty and drops it; the answer is stored byte for byte.
+    changeset =
+      case attrs do
+        %{content: content} when is_binary(content) ->
+          Ecto.Changeset.put_change(changeset, :content, content)
+
+        _ ->
+          changeset
+      end
+
+    case Repo.update(changeset) do
       {:ok, updated} -> updated
       {:error, changeset} -> Repo.rollback(changeset)
     end

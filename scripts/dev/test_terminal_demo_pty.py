@@ -168,6 +168,14 @@ class LiveDemo(unittest.TestCase):
         end=time.monotonic()+20
         while b'Which review should proceed?' in d.screen() and time.monotonic()<end: d.pump()
         self.assertNotIn(b'Which review should proceed?',d.screen()); self.settle(d,.5)
+    @staticmethod
+    def sgr_bold_at(data,offset):
+        bold=False
+        for match in re.finditer(rb'\x1b\[([0-9;]*)m',data[:offset]):
+            for value in [int(v) if v else 0 for v in match[1].split(b';')]:
+                if value==0 or value==22: bold=False
+                elif value==1: bold=True
+        return bold
     def test_effort_picker_arrows_and_enter_change_the_status_line(self):
         # cli021 B1: the picker's cursor follows the arrows (it stayed on the
         # ticked row, so they looked dead); Enter sets the row under it.
@@ -183,7 +191,11 @@ class LiveDemo(unittest.TestCase):
         # repainted so, `default` (where it started) is not the cursor now.
         moved=bytes(d.output[mark:]); at=moved.rfind(b'medium')
         self.assertNotEqual(at,-1,'the picker was not repainted by the arrows')
-        self.assertEqual(moved[at-4:at],b'\x1b[1m',moved[max(0,at-60):at+10])
+        # Styling starts earlier on the cursor row (before its marker), so read
+        # the SGR state in force where the word is drawn, not the bytes beside it.
+        self.assertTrue(self.sgr_bold_at(moved,at),moved[max(0,at-60):at+10])
+        stale=moved.rfind(b'default')
+        if stale!=-1: self.assertFalse(self.sgr_bold_at(moved,stale),moved[max(0,stale-60):stale+10])
         d.send(b'\r')
         end=time.monotonic()+15
         while time.monotonic()<end and (b'Effort \xc2\xb7 chat model' in d.screen() or b'medium' not in status()): d.pump()

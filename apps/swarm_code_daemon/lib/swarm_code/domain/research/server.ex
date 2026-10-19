@@ -408,8 +408,20 @@ defmodule SwarmCode.Domain.Research.Server do
     end
 
     # The row is untouched otherwise, but the borrowed run still has to close or
-    # its RunServer would sit there with an open root node.
-    if state.run_id, do: RunServer.research_finished(state.run_id, "done", %{})
+    # its RunServer would sit there with an open root node. pass76
+    # fix-m4-sidebar-notices-title: it closes with the pass's real outcome, so
+    # the run-end notice never announces a failed or cancelled design as done.
+    if state.run_id do
+      run_status =
+        cond do
+          is_binary(outcome[:report_path]) -> "done"
+          status == "stopped" -> "stopped"
+          true -> "failed"
+        end
+
+      RunServer.research_finished(state.run_id, run_status, %{})
+    end
+
     %{state | closed?: true}
   end
 

@@ -9,7 +9,7 @@ defmodule SwarmCode.Domain.LLM do
   `{:text_reset}` so the UI drops the partial text.
   """
 
-  alias SwarmCode.Domain.LLM.Request
+  alias SwarmCode.Domain.LLM.{Gate, Request}
   alias SwarmCode.Domain.Providers.Provider
 
   def provider_module(kind) when is_binary(kind) do
@@ -34,9 +34,62 @@ defmodule SwarmCode.Domain.LLM do
 
     case provider_module(p.kind) do
       nil -> {:error, :provider, "unknown provider kind: " <> p.kind}
-      mod -> mod.stream(request, on_event)
+      mod -> gated(p, on_event, fn -> mod.stream(request, on_event) end)
     end
   end
+
+  # pass76 llm-gate: one slot per provider call, taken before the provider
+  # module opens its call clock so a wait never eats the call's deadline.
+  defp gated(provider, on_event, fun) do
+    name = Map.get(provider, :name) || "provider"
+
+    opts = [
+      on_wait: fn -> on_event.({:gate_wait, "waiting for a free #{name} slot"}) end,
+      on_acquired: fn -> on_event.({:gate_acquired}) end
+    ]
+
+    case Gate.acquire(gate_key(provider), opts) do
+      {:ok, ref} ->
+        # pass76 llm-cooldown-patience: a wait for the provider's rate-limit
+        # cooldown shows on the node through the same two events as a gate wait.
+        Process.put(SwarmCode.Domain.LLM.HTTP.wait_notice_key(), fn
+          nil -> on_event.({:gate_acquired})
+          detail -> on_event.({:gate_wait, detail})
+        end)
+
+        try do
+          fun.()
+        after
+          Process.delete(SwarmCode.Domain.LLM.HTTP.wait_notice_key())
+          Gate.release(ref)
+        end
+
+      {:error, :stopped} ->
+        {:error, :provider, "the LLM concurrency gate is not running"}
+    end
+  end
+
+  @doc false
+  def gate_key(%{id: id}) when is_binary(id), do: id
+
+  def gate_key(%{base_url: url}) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: s, host: h, port: p} when is_binary(h) -> {s, h, p}
+      _ -> url
+    end
+  end
+
+  def gate_key(provider), do: Map.get(provider, :name, :unknown)
+
+  @doc """
+  The node detail of a transport retry: `retrying 2/5 · HTTP 500`. A rate limit
+  is retried past the usual attempts (the patience budget), where `7/5` would
+  read wrong, so past the last attempt only the count shows: `retrying 7 ·
+  HTTP 429 · 25m left`.
+  """
+  @spec retry_detail(pos_integer(), pos_integer(), String.t()) :: String.t()
+  def retry_detail(attempt, of, reason) when attempt > of, do: "retrying #{attempt} · #{reason}"
+  def retry_detail(attempt, of, reason), do: "retrying #{attempt}/#{of} · #{reason}"
 
   @doc """
   The `on_retry` callback the HTTP layer calls before it sleeps: it turns a

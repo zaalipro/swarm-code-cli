@@ -111,8 +111,9 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `a93d6d8e` (desktop pass
-  74, CLI 0.2.1 and 0.2.2; before it `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `04baeb1c` (desktop pass
+  76, branch `pass76-reliability`, CLI pass 76; before it `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
+  `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
   conversations, `Engine` with run/agent supervisors, LLM adapters, tools, workflows, research,
@@ -173,7 +174,8 @@ Invariants that the code base defends and tests pin:
 - The canonical database is never reset, recreated or repaired. An unknown schema fails closed
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
   (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
-  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration); its schema contract is
+  (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `04baeb1c` (desktop pass 76, no
+  migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
   `20261016000002`, `20261017000004` and `20261018000001` itself after the verified backup.
@@ -368,13 +370,27 @@ Provenance and domain (lane A):
 - The CLI keeps its own Ultra (workflow + swarm tools, the CLI `@ultra` text): two recorded
   patches in `domain/tools.ex` and `domain/engine/prompts.ex`; keep them on every sync until the
   missions pass.
+- Desktop pass 76 carries what used to be CLI patches (command safety, workflow admission and
+  `Host` reads, the MCP queue, background-process reapers, the `start_swarm`/workflow approval
+  inheritance, the in-flight note, `launched_by_run_id` on workflow-launched runs and their
+  continuation, the owned LLM transport), so those patches are gone. What stays recorded:
+  the `umask_prefix/0` hunk in `tools/run_command.ex` and `hooks.ex`, the `clientInfo` comment in
+  `mcp/client.ex` and `lsp/client.ex`, the two Ultra patches, `repo.ex`, `storage.ex`,
+  `tools/spawn_agent.ex` (`title`), `engine/run_server.ex` (`answer_question/5`,
+  `pending_interactions/1`, the `start_agent` title) and four test patches.
+- Approvals never expire (desktop pass 76): an approval waits until answered or the run stops, and
+  an `ask_user` without an explicit timeout has no clock. `PendingInteractions` rows carry
+  `deadline_at` only for an ask with its own explicit timer. `SwarmCode.Domain.LLM.Gate` (the
+  per-provider stream limit and shared rate-limit cooldown) is a child of `Domain.Runtime` before
+  `RunSupervisor`; without it every LLM call fails with "the LLM concurrency gate is not running".
+  The guarded Repo's pool `timeout` (60 s) stays above its `busy_timeout` (15 s).
 - The live runtime (`Daemon.Runtime.Run`, unsaved sessions) streams through the synced
   `SwarmCode.Domain.LLM` adapters (cli020 fix L, A5), chosen by the live kind in `Run`
   (`openai` → `OpenAI`, `anthropic` → `Anthropic`; no `:llm_providers` registry needed);
   `SwarmCode.Providers.Provider` stays its database-free configuration and becomes a synced
   provider row in `Run`. The frozen `lib/swarm_code/llm/**` copies are gone. Their CLI
-  behaviours are recorded patches on `domain/llm/{http,anthropic,openai}.ex`, kept on every
-  sync: the owned transport (the no-progress deadline and the hard cap are exact on a silent
+  behaviours were recorded patches on `domain/llm/{http,anthropic,openai}.ex`; since desktop pass 76
+  they are the desktop's own code and the patches are gone: the owned transport (the no-progress deadline and the hard cap are exact on a silent
   socket), `HTTP.with_call_clock/1` (one hard cap per provider call), the
   `:llm_max_response_bytes` ceiling (16 MiB) while reading, `HTTP.redact_key/2` (the request's
   key at any length, before the snippet is cut), no redirect URL or host in the logs, and a
@@ -556,6 +572,8 @@ The pass's brief is `docs/superpowers/plans/2026-10-08-cli-0.2.1/00_brief.md` (r
 0.2.0 contract), its lane notes are in `notes/{K,B,C,U}.md`, the outcome is the "CLI 0.2.1"
 section of `docs/research/2026-10-07-cli020-outcome.md`.
 
+- Domain (pass 76): synced to desktop `04baeb1c` (see the lineage above); the K7 notes below
+  describe the earlier pin.
 - Domain (K7): synced to desktop `a93d6d8e` (desktop pass 74 = desktop 0.2.2's engine, no
   migration). Every model without a configured `context_window` has a 1,000,000-token window
   (`Engine.Context.default_window/0`, `effective_window/2`), the trim budget stays 75 %

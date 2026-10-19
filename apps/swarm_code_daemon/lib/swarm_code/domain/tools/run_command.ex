@@ -109,9 +109,6 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
     poll? = pid_arg(args, "poll") != nil
     stop? = pid_arg(args, "stop") != nil
 
-    # CLI pass71 F7 (review R3): `run/3` never runs `command` when polling,
-    # so a `command` sent along with `poll` (models send `"true"`) must not
-    # turn the poll into an approval for a command that does not run.
     if poll? and not stop?, do: :read, else: :execute
   end
 

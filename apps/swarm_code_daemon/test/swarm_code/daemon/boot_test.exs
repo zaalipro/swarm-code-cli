@@ -124,6 +124,7 @@ defmodule SwarmCode.Daemon.BootTest do
           SwarmCode.Domain.Tools.BackgroundProcs.Supervisor,
           SwarmCode.Domain.LLM.Finch,
           SwarmCode.Domain.LLM.Speed,
+          SwarmCode.Domain.LLM.Gate,
           SwarmCode.Domain.Engine.ResearchContext,
           SwarmCode.Domain.Engine.CleanupSupervisor
         ] do
@@ -139,6 +140,11 @@ defmodule SwarmCode.Daemon.BootTest do
     assert at.(SwarmCode.Domain.Cache) < at.(SwarmCode.Domain.LLM.Speed)
     assert at.(SwarmCode.Domain.LLM.Speed) < at.(SwarmCode.Domain.Engine.ResearchContext)
     assert at.(SwarmCode.Domain.Engine.ResearchContext) < at.(SwarmCode.Domain.Engine.Questions)
+
+    # pass76: without the gate every LLM call fails with "the LLM concurrency
+    # gate is not running".
+    assert at.(SwarmCode.Domain.LLM.Gate) < at.(SwarmCode.Domain.Engine.RunSupervisor)
+    assert is_pid(Process.whereis(SwarmCode.Domain.LLM.Gate))
 
     assert at.(SwarmCode.Domain.Tools.BackgroundProcs) <
              at.(SwarmCode.Domain.Engine.CleanupSupervisor)

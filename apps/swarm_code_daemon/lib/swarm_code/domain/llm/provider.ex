@@ -14,6 +14,8 @@ defmodule SwarmCode.Domain.LLM.Provider do
           | {:text_reset}
           | {:reasoning_reset}
           | {:retry, pos_integer(), pos_integer(), String.t()}
+          | {:gate_wait, String.t()}
+          | {:gate_acquired}
 
   # spec 55 T13 (55a A-P5): `{:ok, result}` only after the provider's terminal event
   # (message_stop / finish_reason / [DONE]); a 200 whose body merely ends is retried

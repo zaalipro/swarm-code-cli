@@ -130,11 +130,44 @@ defmodule SwarmCode.Domain.OSProcess do
         cut?: false
       }
 
-      collect_run(state)
+      guardian = guard_port(port)
+
+      try do
+        collect_run(state)
+      after
+        send(guardian, :released)
+      end
     end
   rescue
     e -> {:error, Exception.message(e)}
   end
+
+  # pass76 fix-m5-engine (M5-ASYNC-002): closing a port closes its pipes but does not stop a program
+  # that is computing without output, and the collector's own deadline dies with the caller. This
+  # guardian outlives a killed or cancelled caller just long enough to kill the native tree.
+  @doc """
+  Starts the guardian of `port`'s native tree: if the calling process dies
+  before `release_guard/1`, the tree is killed (`kill_tree/1`). Returns the
+  guardian pid.
+  """
+  @spec guard_port(port()) :: pid()
+  def guard_port(port) do
+    owner = self()
+    os_pid = port_pid(port)
+
+    spawn(fn ->
+      ref = Process.monitor(owner)
+
+      receive do
+        :released -> :ok
+        {:DOWN, ^ref, :process, ^owner, _reason} -> kill_tree(os_pid)
+      end
+    end)
+  end
+
+  @doc "Stands the guardian from `guard_port/1` down once the caller has finished with the port."
+  @spec release_guard(pid()) :: :released
+  def release_guard(guardian), do: send(guardian, :released)
 
   defp port_env(env) do
     for {k, v} <- env do

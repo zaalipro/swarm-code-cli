@@ -72,13 +72,20 @@ defmodule SwarmCode.Domain.Repo do
 
   @doc false
   def busy_error?(%DBConnection.ConnectionError{message: m}) do
-    String.contains?(m, "connection not available") or String.contains?(m, "dropped from queue")
+    String.contains?(m, "connection not available") or String.contains?(m, "dropped from queue") or
+      closed_connection?(m)
   end
 
   def busy_error?(error) do
     message = error |> Exception.message() |> String.downcase()
     String.contains?(message, "database busy") or String.contains?(message, "database is locked")
   end
+
+  # pass76 db-writer-stall (M4-UT-002): DBConnection kills a connection whose checkout outlives
+  # `timeout`; every other client of that connection then gets this error. `retry/3` re-runs the
+  # whole transaction on a fresh checkout (the rolled-back attempt left nothing behind), so it is
+  # safe to treat as transient here and nowhere else.
+  defp closed_connection?(message), do: String.contains?(message, "connection is closed")
 
   # The test seam (spec 54 §1.1, widened): an arity-1 function is called with the tag
   # before every attempt; an arity-0 function keeps its pass-48 scope, `:flush_run_writes`.

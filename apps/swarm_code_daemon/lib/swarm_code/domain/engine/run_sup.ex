@@ -23,10 +23,15 @@ defmodule SwarmCode.Domain.Engine.RunSup do
         restart: :temporary,
         significant: true,
         # spec 55 T11 (55a A7): terminate/2 may sit on busy_timeout (15 s) twice.
-        shutdown: 30_000
+        shutdown: run_server_shutdown_ms()
       }
     ]
 
     Supervisor.init(children, strategy: :one_for_all, auto_shutdown: :any_significant)
   end
+
+  @doc "How long the supervisor waits for `RunServer.terminate/2` before killing it."
+  @spec run_server_shutdown_ms() :: pos_integer()
+  def run_server_shutdown_ms,
+    do: Application.get_env(:swarm_code_daemon, :run_server_shutdown_ms, 30_000)
 end

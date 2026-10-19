@@ -334,8 +334,16 @@ defmodule SwarmCode.Domain.Hooks do
     case open_port(hook.command, root, env) do
       {:ok, port} ->
         deadline = System.monotonic_time(:millisecond) + timeout
+        # pass76 fix-hook-shutdown-reap: the same guard `OSProcess.run/3` uses, so a hook task
+        # killed mid-reap (or mid-run) still has its shell tree killed.
+        guardian = SwarmCode.Domain.OSProcess.guard_port(port)
 
-        case collect(port, [], 0, cap, deadline) do
+        try do
+          collect(port, [], 0, cap, deadline)
+        after
+          SwarmCode.Domain.OSProcess.release_guard(guardian)
+        end
+        |> case do
           {:ok, 0, output} ->
             {:ok, output}
 

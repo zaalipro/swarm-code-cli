@@ -13,6 +13,7 @@ defmodule SwarmCode.Daemon.Service.Pass76CompactChainOwnerTest do
 
   alias SwarmCode.Daemon.Service.RunProcesses
   alias SwarmCode.Domain.{Conversations, Engine}
+  alias SwarmCode.Domain.Engine.Events
   alias SwarmCode.Test.C020Backend, as: Fixture
   alias SwarmCode.Test.LoopbackHTTP, as: HTTP
 
@@ -21,6 +22,7 @@ defmodule SwarmCode.Daemon.Service.Pass76CompactChainOwnerTest do
     world = Fixture.setup_world("compact-owner")
     {:ok, conversation} = Conversations.create(world.project.id)
     on_exit(fn -> Engine.stop_all(conversation.id) end)
+    Events.subscribe(conversation.id)
 
     server =
       HTTP.start(fn socket, request, _turn ->
@@ -73,6 +75,13 @@ defmodule SwarmCode.Daemon.Service.Pass76CompactChainOwnerTest do
   defp runs(c, kind),
     do: Enum.filter(Conversations.list_runs(c.conversation.id), &(&1.kind == kind))
 
+  # `pending?/1` going false only proves the chain launched the chat; the run's
+  # own `{:run_updated, _}` is what says it ended, and a run that stays alive
+  # past the test would log missing-Repo errors at teardown.
+  defp await_done(kind) do
+    assert_receive {:run_updated, %{kind: ^kind, status: "done"}}, 15_000
+  end
+
   defp chain_value(compaction_id) do
     SwarmCode.Domain.Registry
     |> Registry.select([{{{:chain, :_, compaction_id}, :_, :"$1"}, [], [:"$1"]}])
@@ -97,6 +106,8 @@ defmodule SwarmCode.Daemon.Service.Pass76CompactChainOwnerTest do
     send(compactor, :release)
 
     assert Fixture.eventually(fn -> not RunProcesses.pending?(owner) end)
+    await_done("chat")
+    await_done("compact")
     assert [%{status: "done", launched_by_run_id: ^owner}] = runs(c, "chat")
     assert [%{status: "done", launched_by_run_id: ^owner}] = runs(c, "compact")
   end
@@ -109,6 +120,8 @@ defmodule SwarmCode.Daemon.Service.Pass76CompactChainOwnerTest do
     assert chain_value(compaction_id) == nil
 
     send(compactor, :release)
-    assert Fixture.eventually(fn -> [] != runs(c, "chat") end)
+    await_done("compact")
+    await_done("chat")
+    assert [%{launched_by_run_id: nil}] = runs(c, "chat")
   end
 end

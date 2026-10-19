@@ -29,7 +29,7 @@ defmodule SwarmCode.Domain.Engine.Operation do
           op_type: String.t(),
           title: String.t(),
           work: work
-        }) :: {:ok, String.t()}
+        }) :: {:ok, String.t(), pid()} | {:error, :not_running}
   def start(ops_sup, owner, %{
         run_id: run_id,
         parent_id: parent_id,
@@ -39,25 +39,28 @@ defmodule SwarmCode.Domain.Engine.Operation do
       }) do
     progress0 = if Tools.determinate?(op_type), do: 0, else: nil
 
-    {:ok, node} =
-      RunServer.register_node(run_id, %{
-        kind: "op",
-        op_type: op_type,
-        title: title,
-        parent_id: parent_id,
-        progress: progress0,
-        status: "running",
-        input: input_of(work)
-      })
+    case RunServer.register_node(run_id, %{
+           kind: "op",
+           op_type: op_type,
+           title: title,
+           parent_id: parent_id,
+           progress: progress0,
+           status: "running",
+           input: input_of(work)
+         }) do
+      {:ok, node} ->
+        # spec 73 T52: the agent node id is `parent_id` — it rides along for the
+        # op's Logger metadata instead of being guessed (as nil) from the owner pid.
+        {:ok, pid} =
+          Task.Supervisor.start_child(ops_sup, fn ->
+            run(owner, run_id, parent_id, node.id, op_type, work)
+          end)
 
-    # spec 73 T52: the agent node id is `parent_id` — it rides along for the
-    # op's Logger metadata instead of being guessed (as nil) from the owner pid.
-    {:ok, _pid} =
-      Task.Supervisor.start_child(ops_sup, fn ->
-        run(owner, run_id, parent_id, node.id, op_type, work)
-      end)
+        {:ok, node.id, pid}
 
-    {:ok, node.id}
+      {:error, :not_running} = error ->
+        error
+    end
   end
 
   # Spec 45 §8.3: the tool arguments travel with the op node (JSON, at most
@@ -155,21 +158,49 @@ defmodule SwarmCode.Domain.Engine.Operation do
           {:error, :bug, "crashed: #{inspect({kind, value})}"}
       end
 
-    # spec 70 E2: close the op telemetry span on normal completion.
-    Telemetry.span_stop(Telemetry.op_span(), tel_start, %{
-      run_id: run_id,
-      op_id: id,
-      op_type: op_type
-    })
+    # pass76 eng-op-watch: nothing between the try and the `op_done` may skip
+    # the send — a raise here left the owner waiting for an op that was over.
+    try do
+      # spec 70 E2: close the op telemetry span on normal completion.
+      Telemetry.span_stop(Telemetry.op_span(), tel_start, %{
+        run_id: run_id,
+        op_id: id,
+        op_type: op_type
+      })
 
-    # spec 74 ARCHITECTURE-4: a summary's outcome (a cut-off one fails, and the
-    # note says how far it compacted) is its owner's to write.
-    if not match?({:summary, _request}, work),
-      do: RunServer.update_node(run_id, id, finalize(result))
+      # spec 74 ARCHITECTURE-4: a summary's outcome (a cut-off one fails, and the
+      # note says how far it compacted) is its owner's to write.
+      if not match?({:summary, _request}, work),
+        do: RunServer.update_node(run_id, id, safe_finalize(result))
+    rescue
+      _ -> :ok
+    catch
+      _kind, _value -> :ok
+    end
 
-    send(owner, {:op_done, id, owner_view(result)})
+    send(owner, {:op_done, id, safe_owner_view(result)})
     result
   end
+
+  # An unexpected result shape makes `finalize/1` / `owner_view/1` raise
+  # FunctionClauseError; the node and the owner then get a failed result.
+  defp safe_finalize(result) do
+    finalize(result)
+  rescue
+    _ -> finalize({:error, :bug, "crashed: unexpected result " <> bounded(result)})
+  end
+
+  defp safe_owner_view(result) do
+    case result do
+      {:ok, _} -> owner_view(result)
+      {:ok, _, _} -> result
+      {:error, _} -> result
+      {:error, _, _} -> result
+      other -> {:error, :bug, "crashed: unexpected result " <> bounded(other)}
+    end
+  end
+
+  defp bounded(term), do: term |> inspect(limit: 20, printable_limit: 200) |> window(300)
 
   # Spec 43 §1.1: the agent never reads the reasoning text (the RunServer got
   # its preview above; the signed thinking travels in `provider_blocks`), so it
@@ -189,6 +220,12 @@ defmodule SwarmCode.Domain.Engine.Operation do
 
     result =
       LLM.stream(request, fn
+        {:gate_wait, detail} ->
+          RunServer.update_node(run_id, id, %{status: "retrying", detail: detail})
+
+        {:gate_acquired} ->
+          RunServer.update_node(run_id, id, %{status: "running", detail: nil})
+
         {:retry, attempt, of, reason} ->
           # spec 74 BUGS-53: the provider refused the history's signed
           # thinking and asked again without it (`Anthropic.stream/2`).
@@ -196,7 +233,7 @@ defmodule SwarmCode.Domain.Engine.Operation do
 
           RunServer.update_node(run_id, id, %{
             status: "retrying",
-            detail: "retrying #{attempt}/#{of} · #{reason}"
+            detail: LLM.retry_detail(attempt, of, reason)
           })
 
         {:text_delta, text} ->
@@ -240,10 +277,16 @@ defmodule SwarmCode.Domain.Engine.Operation do
   # message). A retry still shows on the node.
   defp do_work(_owner, run_id, id, _op_type, {:summary, request}, _progress) do
     LLM.stream(request, fn
+      {:gate_wait, detail} ->
+        RunServer.update_node(run_id, id, %{status: "retrying", detail: detail})
+
+      {:gate_acquired} ->
+        RunServer.update_node(run_id, id, %{status: "running", detail: nil})
+
       {:retry, attempt, of, reason} ->
         RunServer.update_node(run_id, id, %{
           status: "retrying",
-          detail: "retrying #{attempt}/#{of} · #{reason}"
+          detail: LLM.retry_detail(attempt, of, reason)
         })
 
       _other ->
@@ -337,7 +380,6 @@ defmodule SwarmCode.Domain.Engine.Operation do
       # spec 70 D3: pre_tool_use hook (spec 73 T6: `:project_root`).
       :approved -> hooked_run(ref, args, ctx, progress)
       :denied -> {:error, "denied by user"}
-      :timeout -> {:error, "approval timed out after 10 minutes"}
     end
   end
 

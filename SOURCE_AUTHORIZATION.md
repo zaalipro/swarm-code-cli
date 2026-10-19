@@ -148,3 +148,22 @@ It adds no migration, so the schema contract stays `desktop-4c7c577`
 verifier admits version 2 records at seven adaptation pins: the six named above
 and this commit. The recorded copyright, MIT license and NOTICE terms remain in
 place. This addendum does not publish or modify the desktop repository.
+
+## Addendum: desktop commit 04baeb1c (pass 76 reliability, 2026-10-19)
+
+**Date:** 2026-10-19
+
+The pass 76 reliability mission re-derives the extracted domain from desktop commit
+`04baeb1c87cf8c9682ecafb8290e831c664f9f05`: the final commit of the desktop branch
+`pass76-reliability` (approvals and questions that never expire, the owned and bounded LLM
+transport with the per-provider concurrency gate and rate-limit patience, the hardened command
+safety, workflow admission and MCP queue ports, the memory-bounded transcript paging, the
+database-writer retry, and the workflow `launched_by_run_id` continuation), the same project and
+owner as the commits named above. It adds no migration, so the schema contract stays
+`desktop-4c7c577` (58 migrations). The provenance sync pins this commit
+(`provenance/sync-rules.json`), and 264 of the 288 entries in
+`provenance/extracted-files.json` record it as their upstream commit; 23 record
+`fb1b4ff82354ac8ff2e82d4f6516121fd55ff212` and one, the frozen `domain/format.ex`, records
+`4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier admits version 2 records at eight
+adaptation pins: the seven named above and this commit. The recorded copyright, MIT license and
+NOTICE terms remain in place. This addendum does not publish or modify the desktop repository.

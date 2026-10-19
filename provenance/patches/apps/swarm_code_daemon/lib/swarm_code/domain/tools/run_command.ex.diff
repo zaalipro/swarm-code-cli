@@ -1,20 +1,8 @@
-# CLI-local change to lib/swarm_code/tools/run_command.ex at a93d6d8, after the rewrite
+# CLI-local change to lib/swarm_code/tools/run_command.ex at 04baeb1, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/tools/run_command.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/tools/run_command.ex
-@@ -109,7 +109,10 @@
-     poll? = pid_arg(args, "poll") != nil
-     stop? = pid_arg(args, "stop") != nil
- 
--    if poll? and not stop? and blank?(args["command"]), do: :read, else: :execute
-+    # CLI pass71 F7 (review R3): `run/3` never runs `command` when polling,
-+    # so a `command` sent along with `poll` (models send `"true"`) must not
-+    # turn the poll into an approval for a command that does not run.
-+    if poll? and not stop?, do: :read, else: :execute
-   end
- 
-   @impl true
-@@ -382,6 +385,24 @@
+@@ -382,6 +382,24 @@
    # `command` is concatenated, not `to_string/1`-ed: a provider that streams a
    # non-string `command` still raises here and the model is told the call
    # crashed, exactly as before this task (`failure_test.exs:72`).
@@ -39,7 +27,7 @@
    defp script(command, rc_file) do
      # Spec 51 §7.3 (R18): the port's stdin is a pipe nobody ever writes to, so
      # `cat`, `git commit` without `-m`, `python`, `npm init`, `ssh` and `sudo`
-@@ -403,7 +424,8 @@
+@@ -403,7 +421,8 @@
        ~s(jobs -p > ") <>
          jobs_file(rc_file) <> ~s(" 2>/dev/null; printf %s "$__sc_rc" > ") <> rc_file <> ~s(")
  
