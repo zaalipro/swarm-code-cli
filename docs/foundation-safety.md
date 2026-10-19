@@ -42,7 +42,7 @@ Normal ready admission does not create a backup automatically.
 
 ## macOS safety limitation
 
-The current macOS desktop release does not acquire the shared SQLite lease. SwarmCode CLI detects an already-running desktop before and after acquiring its own lease, but the desktop can still start after the second check. Concurrent desktop/CLI operation is unsupported. Quit the desktop before starting the CLI daemon, and stop the CLI daemon before reopening the desktop. There is no force-unlock option.
+The current macOS desktop release does not acquire the shared SQLite lease. SwarmCode CLI detects an already-running desktop before and after acquiring its own lease. Since desktop pass 76 the desktop in turn refuses to start while a live CLI session owns the data: `Bootstrap.preflight` runs the read-only `SwarmCode.Desktop.CliSession` check on the CLI's `instance_owner.json` beside the database, before `Repo` starts, and never writes the CLI's files. It still does not take the shared lease, so the refusal is a start-time check, not a lock. Concurrent desktop/CLI operation is unsupported. Quit the desktop before starting the CLI daemon, and stop the CLI daemon before reopening the desktop. There is no force-unlock option.
 
 The bundled macOS helper now performs the read-only detector and process identity probe using
 `NSWorkspace`, `libproc`, and `sysctl`. It requires the exact `com.zaali.swarmcode` bundle
