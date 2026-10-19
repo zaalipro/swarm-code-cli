@@ -43,7 +43,7 @@ defmodule SwarmCode.Domain.LLM.LiveTransportTest do
     on_exit(fn -> HTTP.stop(server) end)
 
     provider = %Provider{
-      id: "fixture-id",
+      id: "fixture-id-#{System.unique_integer([:positive])}",
       kind: kind,
       name: "fixture",
       base_url: server.url,
@@ -248,6 +248,8 @@ defmodule SwarmCode.Domain.LLM.LiveTransportTest do
       fixture(fn socket, _, _ -> HTTP.respond(socket, 429, "busy", [{"retry-after", "60"}]) end)
 
     request = %{request | deadline_ms: 120_000}
+    cooldown_id = request.provider.id
+    on_exit(fn -> :ets.delete(:swarm_code_llm_cooldown, cooldown_id) end)
     owner = self()
     task = Task.async(fn -> LLM.stream(request, fn event -> send(owner, event) end) end)
     assert_receive {:retry, 2, 5, "HTTP 429"}, 2_000
