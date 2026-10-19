@@ -89,23 +89,28 @@ defmodule SwarmCodeCLI.Release.C74LaunchTest do
 
   test "cli.json's startup_conversation chooses when nothing else did", %{dir: dir} do
     assert PersistedSession.startup_selection(cli!(dir, %{"startup_conversation" => "new"})) ==
-             {:new, false}
+             {:new, nil}
 
     assert PersistedSession.startup_selection(cli!(dir, %{"startup_conversation" => "ask"})) ==
-             {:latest, true}
+             {:latest, :picker}
 
-    assert PersistedSession.startup_selection(cli!(dir, %{})) == {:latest, false}
-    assert PersistedSession.startup_selection(Path.join(dir, "missing.json")) == {:latest, false}
-    assert PersistedSession.startup_selection(nil) == {:latest, false}
+    # orbit: the default (no key, no file) opens Home; an explicit `latest` does not.
+    assert PersistedSession.startup_selection(cli!(dir, %{})) == {:latest, :home}
+
+    assert PersistedSession.startup_selection(cli!(dir, %{"startup_conversation" => "latest"})) ==
+             {:latest, nil}
+
+    assert PersistedSession.startup_selection(Path.join(dir, "missing.json")) == {:latest, :home}
+    assert PersistedSession.startup_selection(nil) == {:latest, :home}
   end
 
   test "a flag (SWARM_CONVERSATION) wins; a settings-only session opens the latest" do
     System.put_env("SWARM_CONVERSATION", "new")
     System.delete_env("SWARM_SETTINGS_ONLY")
-    assert PersistedSession.tui_selection() == {:new, false}
+    assert PersistedSession.tui_selection() == {:new, nil}
 
     System.delete_env("SWARM_CONVERSATION")
     System.put_env("SWARM_SETTINGS_ONLY", "1")
-    assert PersistedSession.tui_selection() == {:latest, false}
+    assert PersistedSession.tui_selection() == {:latest, nil}
   end
 end

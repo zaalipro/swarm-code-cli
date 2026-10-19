@@ -98,7 +98,8 @@ defmodule SwarmCodeCLI.UI.Action do
              | :panel
              | :diff
              | :theme
-             | :mouse}
+             | :mouse
+             | :home}
           # pass73-K: Enter on the palette runs its command (T4); the opt-out
           # key sends a "workflow" message as it is (T5); /diff, /theme and
           # /mouse (T1, T2, T9) and the /approval picker's rows (T7).
@@ -108,6 +109,9 @@ defmodule SwarmCodeCLI.UI.Action do
           | {:run_argument, binary()}
           | :send_plain
           # cli020 lane D (§8.3).
+          # orbit: Home (spec 3.6).
+          | :open_home
+          | {:home, SwarmCodeCLI.UI.Home.verb()}
           | {:cycle_permission_mode}
           | :shell_send
           | {:paste_image}
@@ -277,6 +281,8 @@ defmodule SwarmCodeCLI.UI.Action do
           :theme,
           :mouse,
           :settings,
+          # orbit: `/home` opens Home.
+          :home,
           # cli020 D10/D20.
           :rewind,
           :undo,
@@ -358,6 +364,12 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:settings_open, arg} = action),
     do: valid_action(action, SwarmCodeCLI.UI.Settings.Event.open_arg?(arg))
+
+  # orbit: Home opens (Alt-O, `/home`) and takes its keys as verbs.
+  def validate(:open_home), do: {:ok, :open_home}
+
+  def validate({:home, verb} = action),
+    do: valid_action(action, SwarmCodeCLI.UI.Home.verb?(verb))
 
   def validate({:show_diffs, value} = action),
     do: valid_action(action, is_boolean(value) or value == :toggle)

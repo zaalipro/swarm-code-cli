@@ -169,12 +169,14 @@ defmodule SwarmCodeCLI.UI.Keymap do
     "/new" => :new,
     "/clear" => :new,
     "/resume" => :resume,
-    "/conversations" => :conversations
+    "/conversations" => :conversations,
+    # orbit: Home, the startup dashboard.
+    "/home" => :home
   }
 
   @doc """
   The slash commands the client answers itself, from the draft's text: a bare
-  `/help`, `/quit` (`/exit`), `/new` (`/clear`), `/resume`, `/conversations`,
+  `/help`, `/quit` (`/exit`), `/new` (`/clear`), `/resume`, `/conversations`, `/home`,
   `/trust`, and `/queue`, `/approval`, `/panel`, `/diff`, `/theme` and
   `/mouse` with or without their argument.
   """
@@ -360,8 +362,9 @@ defmodule SwarmCodeCLI.UI.Keymap do
     end
   end
 
-  defp fallthrough(context, code, mods, state) when context in [:composer, :field, :overlay],
-    do: editor_fallthrough(code, mods, state)
+  defp fallthrough(context, code, mods, state)
+       when context in [:composer, :field, :overlay, :home_composer, :home_list],
+       do: editor_fallthrough(code, mods, state)
 
   defp fallthrough(context, code, mods, _state) when context in @settings_contexts,
     do: settings_fallthrough(context, code, mods)
@@ -1103,6 +1106,16 @@ defmodule SwarmCodeCLI.UI.Keymap do
   # cli74 U1-2: the settings layer's editors keep their own text; nothing
   # typed there reaches the draft or the overlay beneath it.
   def editor_context(%{settings: %Settings.Layer{}}), do: nil
+
+  # orbit: Home's composer is the session's own draft; its list types into the
+  # search field; its map types nowhere (its letters are bindings).
+  def editor_context(%{home: %SwarmCodeCLI.UI.Home{focus: :composer}, source_epoch: epoch}),
+    do: {:editor, {epoch, :home}}
+
+  def editor_context(%{home: %SwarmCodeCLI.UI.Home{focus: :list}}),
+    do: {:field_editor, SwarmCodeCLI.UI.Home.filter_key()}
+
+  def editor_context(%{home: %SwarmCodeCLI.UI.Home{}}), do: nil
 
   # The agent overlay's composer takes the typing wherever its focus ring is.
   def editor_context(%{overlay: %{draft_key: key}}) when not is_nil(key), do: {:editor, key}

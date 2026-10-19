@@ -28,6 +28,9 @@ defmodule SwarmCodeCLI.UI.ReadModel do
             # conversations (`DTO.Elsewhere`, from the shell watch), nil
             # before the first.
             elsewhere: nil,
+            # orbit §3.2: the newest home revision a `home_stale` delta named
+            # (the max; Home re-asks its overview while it is open).
+            home_revision: 0,
             order: %{},
             coverage: %{},
             chunks: %ChunkDeque{}
@@ -336,6 +339,10 @@ defmodule SwarmCodeCLI.UI.ReadModel do
   # pass76: the daemon sends the whole fact whenever it changes, in order.
   def delta(model, _slot, %Delta{kind: :elsewhere, body: %DTO.Elsewhere{} = body}),
     do: {:ok, %{model | elsewhere: body}, [], []}
+
+  # orbit §3.2: an invalidation, not a payload; only the newest revision is kept.
+  def delta(model, _slot, %Delta{kind: :home_stale, body: %DTO.HomeStale{revision: revision}}),
+    do: {:ok, %{model | home_revision: max(model.home_revision, revision)}, [], []}
 
   # Metadata only ever describes the workspace's conversation; anywhere else
   # there is nothing it could update.

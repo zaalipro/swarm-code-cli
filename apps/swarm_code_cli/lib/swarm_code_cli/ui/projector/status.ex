@@ -21,20 +21,33 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   alias SwarmCodeCLI.UI.Projector.Workspace.Turns
 
   @composer_contexts [:composer, :composer_normal, :composer_visual]
+  # orbit: the facts Home's status row keeps (no ctx, no cost).
+  @home_items ~w(mode approval model effort branch waiting)
 
   def project(state, class, width, opts \\ []) do
     policy = state.capabilities.ambiguous_width
     context = Context.of(state)
     budget = if class in [:xl, :wide, :medium], do: 2, else: 1
+    # orbit: on Home the row drops the conversation's context and cost, adds the
+    # branch, counts what waits across projects, and hints Home's own keys.
+    home? = Keyword.get(opts, :home, false)
 
-    lead = [gap(" ", state)] ++ vim_spans(state, context) ++ select_spans(state)
+    lead =
+      if home?,
+        do: [gap(" ", state)],
+        else: [gap(" ", state)] ++ vim_spans(state, context) ++ select_spans(state)
+
     lead_cells = cells(lead, policy)
-    parts = facts(state, class, Keyword.get(opts, :vitals?, false))
+    parts = facts(state, class, Keyword.get(opts, :vitals?, false), home?)
     toast = toast(state)
 
     right =
       toast ||
-        if(select_mode?(state), do: select_hints(state), else: hints(state, context, budget))
+        cond do
+          home? -> home_hints(state, context, if(class in [:xl, :wide, :medium], do: 4, else: 1))
+          select_mode?(state) -> select_hints(state)
+          true -> hints(state, context, budget)
+        end
 
     right = if right == [], do: [], else: right ++ [gap(" ", state)]
 
@@ -148,7 +161,7 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
   end
 
   # mode · approval · trust · model · ctx · cost · waiting · vitals · connection
-  defp facts(state, class, vitals?) do
+  defp facts(state, class, vitals?, home?) do
     workspace = Map.get(state.read_model.snapshots, :workspace)
     run = Support.run(state)
 
@@ -212,8 +225,13 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     context = context_words(state, run, workspace)
     cost = cost_words(state, workspace)
 
+    waiting_total =
+      if home?,
+        do: max(waiting_count(state), SwarmCodeCLI.UI.Home.View.waiting(state)),
+        else: waiting_count(state)
+
     waiting =
-      case waiting_count(state) do
+      case waiting_total do
         0 -> nil
         n -> {"#{n} waiting", tint(:plain, state, :warning, [:bold])}
       end
@@ -256,7 +274,9 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
             "cost" => [{40, cost}, {45, background}]
         }
 
-    listed = state |> status_items() |> Enum.flat_map(&Map.get(items, &1, []))
+    listed =
+      if(home?, do: @home_items, else: status_items(state))
+      |> Enum.flat_map(&Map.get(items, &1, []))
 
     always =
       if narrow?,
@@ -869,6 +889,101 @@ defmodule SwarmCodeCLI.UI.Projector.Status do
     end)
     |> Enum.take(budget)
     |> hint_spans(state)
+  end
+
+  # orbit: Home's hints for its focus, from `HomeBindings.hints/1`, so a key the
+  # user rebound is spelled as rebound and the row agrees with docs/keybindings.md.
+  defp home_hints(state, context, budget) do
+    overrides = SwarmCodeCLI.UI.Keymap.overrides(state)
+    ascii? = state.capabilities.ascii?
+
+    hints = SwarmCodeCLI.UI.Keymap.HomeBindings.hints(context)
+
+    # A narrow row keeps one hint: the way out of the composer (the last, the
+    # keys sheet) or the strongest of the list and the map.
+    hints = home_hint_words(state, context, hints)
+
+    hints =
+      cond do
+        length(hints) <= budget -> hints
+        context == :home_composer -> Enum.take(hints, -budget)
+        true -> Enum.take(hints, budget)
+      end
+
+    hints
+    |> Enum.flat_map(fn {ids, words} ->
+      case home_key_words(ids, context, overrides, ascii?) do
+        nil -> []
+        key -> [{key, words}]
+      end
+    end)
+    |> hint_spans(state)
+  end
+
+  # First run copies commands instead of opening rows, so the digits are not
+  # advertised; on another project's bead Enter copies its command (D5).
+  defp home_hint_words(state, :home_composer, hints) do
+    hints =
+      if SwarmCodeCLI.UI.Home.View.first_run?(state),
+        do: Enum.reject(hints, &match?({:digits, _}, &1)),
+        else: hints
+
+    # An open slash list takes Tab (it completes the highlighted row).
+    if SlashPalette.open?(state),
+      do:
+        Enum.map(hints, fn
+          {[:home_focus_next], _} -> {[:home_focus_next], "complete"}
+          other -> other
+        end),
+      else: hints
+  end
+
+  defp home_hint_words(state, :home_map, hints) do
+    if SwarmCodeCLI.UI.Home.View.foreign?(state) do
+      hints
+      |> Enum.reject(&match?({[:home_copy], _}, &1))
+      |> Enum.map(fn
+        {[:home_enter], _} -> {[:home_enter], "copy command"}
+        other -> other
+      end)
+    else
+      hints
+    end
+  end
+
+  defp home_hint_words(_state, _context, hints), do: hints
+
+  @doc false
+  # The key words of a Home hint: one id prints its first key in the context,
+  # several print side by side (`↑↓`), the digit rows print as `Alt-1…9`.
+  def home_key_words(:digits, context, overrides, ascii?) do
+    case Bindings.fetch(:home_open_1) do
+      %{} = binding ->
+        case Bindings.key_in_context(binding, context, overrides) do
+          nil -> nil
+          key -> KeyLabel.label(key, ascii?) <> if(ascii?, do: "...9", else: "…9")
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def home_key_words(ids, context, overrides, ascii?) when is_list(ids) do
+    labels =
+      for id <- ids,
+          %{} = binding <- [Bindings.fetch(id)],
+          key = Bindings.key_in_context(binding, context, overrides),
+          key != nil,
+          do: KeyLabel.label(key, ascii?)
+
+    cond do
+      labels == [] -> nil
+      length(labels) < length(ids) -> hd(labels)
+      length(labels) == 1 -> hd(labels)
+      ascii? -> Enum.join(labels, "/")
+      true -> Enum.join(labels)
+    end
   end
 
   defp hint_spans(pairs, state) do

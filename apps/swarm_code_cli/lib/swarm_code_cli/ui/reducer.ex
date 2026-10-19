@@ -25,6 +25,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
   alias SwarmCodeCLI.UI.Reducer.{Watch, Commands, Pages, Editing, Details, PathCompletion}
   alias SwarmCodeCLI.UI.Reducer.Hint, as: Hints
   alias SwarmCodeCLI.UI.Reducer.Overlay
+  alias SwarmCodeCLI.UI.Reducer
 
   alias SwarmCodeCLI.UI.Reducer.{
     Deliveries,
@@ -68,6 +69,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
   @history_conversations 16
   @history_max_bytes 65_536
   @dismissed_limit 64
+  # The notice an Enter kept for the workspace shows (and clears when it sends).
+  @deferred_words "Sends once the conversation has loaded."
 
   @spec init(Init.t()) :: {State.t(), [SwarmCodeCLI.UI.Effect.t()]}
   def init(%Init{} = init) do
@@ -88,14 +91,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
              is_integer(init.id_sequence) and init.id_sequence >= 0 and is_map(init.prefs) and
              is_map(init.launch_facts) and
              SwarmCodeCLI.UI.Settings.Event.open_arg?(init.settings_open) and
-             is_boolean(init.resume_picker?),
+             is_boolean(init.resume_picker?) and is_boolean(init.home?),
            do: raise(ArgumentError, "invalid reducer init")
 
     # cli74: the boot query waits for the shell (`pending_open_settings`), and
     # the key overrides are compiled once from cli.json's `keys`.
     state =
       State
-      |> struct!(init |> Map.from_struct() |> Map.drop([:settings_open, :resume_picker?]))
+      |> struct!(init |> Map.from_struct() |> Map.drop([:settings_open, :resume_picker?, :home?]))
       |> Map.merge(%{
         pending_open_settings: init.settings_open,
         pending_resume_picker: init.resume_picker? and is_nil(init.settings_open),
@@ -115,6 +118,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, shell} = Watch.open(state, :shell, :global, nil)
     {state, destination} = open_destination(state, init.destination)
 
+    # orbit (spec 3.5): Home is on the very first frame, over the conversation
+    # that opens underneath it. A resume picker (`ask`) wins when both are set;
+    # Settings, opened once the shell is ready, covers Home (D7).
+    state =
+      if init.home? and not init.resume_picker?,
+        do: %{state | home: SwarmCodeCLI.UI.Home.new(state, :boot)},
+        else: state
+
     effects = shell ++ destination
     Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
     {state, effects}
@@ -133,12 +144,17 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {next, effects} = SwarmCodeCLI.UI.Reducer.Attention.after_update(state, next, effects)
         next = note_policy_change(state, next)
         next = hush_refusals(state, next)
-        next = stamp_notice(state, next)
         next = repair_switcher(state, next)
         next = follow_note_focus(state, next)
         next = SwarmCodeCLI.UI.Reducer.Settings.track_legacy(next, effects)
         {next, effects} = boot_settings(next, effects)
         {next, effects} = boot_resume_picker(next, effects)
+        {next, effects} = home_after_update(state, next, effects)
+        {next, effects} = home_closed_interactions(state, next, effects)
+        # orbit int (SMOKE-F2): last, so a notice Home's own step set (the send
+        # it deferred, a command it refused) is stamped too; stamped nowhere,
+        # `notice_at` stayed nil and the notice never faded.
+        next = stamp_notice(state, next)
         Enum.each(effects, &SwarmCodeCLI.UI.Effect.validate!/1)
 
         if next == state,
@@ -151,6 +167,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp transition(state, :boot), do: {state, []}
+
+  # orbit: Alt-O, `/home`, and every key Home's contexts resolve to.
+  defp transition(state, :open_home), do: Reducer.Home.open(state, :key)
+  defp transition(state, {:home, verb}), do: Reducer.Home.handle(state, verb)
 
   # ------------------------------------ pass72-O: the panel, hints, the overlay
 
@@ -671,7 +691,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {%{
            state
            | deferred_send: {key, Keymap.draft_text(state)},
-             notice: {:command_feedback, "Sends once the conversation has loaded."}
+             notice: {:command_feedback, @deferred_words}
          }, []}
     end
   end
@@ -769,7 +789,10 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, closed} = close_switcher(state)
 
     if state.destination == {:conversation, id} do
-      {state, closed}
+      # orbit int (UI-U-7): the pick over Home names the conversation Home sits
+      # on, so no destination changes (D20) and nothing else would close it.
+      {state, left} = Reducer.Home.close(state, :opened)
+      {state, closed ++ left}
     else
       {state, sent} = service_request(state, {:conversation_open, id}, {:conversation, :open})
       {state, closed ++ sent}
@@ -1147,6 +1170,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
       do: PathCompletion.dismiss(state),
       else: {SlashPalette.dismiss_args(state), []}
   end
+
+  # orbit: the wheel over Home moves the list's selection.
+  defp transition(
+         %{home: %SwarmCodeCLI.UI.Home{}, layers: [], settings: nil} = state,
+         {:scroll, region, {:line, delta}}
+       )
+       when region in ["main", "panel"],
+       do: Reducer.Home.scroll(state, delta)
 
   defp transition(state, {:scroll, region, operation}), do: Pages.scroll(state, region, operation)
 
@@ -1640,6 +1671,11 @@ defmodule SwarmCodeCLI.UI.Reducer do
       %{scope: scope, generation: generation} = request
       when scope == delivery.scope and generation == delivery.generation ->
         case {request.expected_response, delivery.body} do
+          # orbit: the answers Home waits for (its overview and its search)
+          # never reach the palette's conversation list.
+          {_, body} when elem(request.origin, 0) == :home ->
+            Reducer.Home.response(state, request, body)
+
           {:library_snapshot, body} ->
             if PathCompletion.owns?(state, request),
               do: PathCompletion.response(state, request, body),
@@ -2695,10 +2731,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
   defp replay_deferred(%{deferred_send: nil} = state, effects), do: {state, effects}
 
   defp replay_deferred(%{deferred_send: {key, text}} = state, effects) do
+    # orbit int (UI-U-8): the send belongs to the conversation underneath. While
+    # Home is open its own composer is the current draft, so the key, the draft
+    # and the send are all read as they are with Home away.
+    view = %{state | home: nil}
     status = Map.get(state.watches, :workspace, %{status: :closed}).status
 
     cond do
-      State.current_draft_key(state) != key ->
+      State.current_draft_key(view) != key ->
         drop_deferred(state, effects, "Not sent: another conversation opened first.")
 
       status in [:frozen, :resyncing] ->
@@ -2707,22 +2747,27 @@ defmodule SwarmCodeCLI.UI.Reducer do
       status != :ready ->
         drop_deferred(state, effects, "Not sent: the conversation did not load.")
 
-      Keymap.draft_text(state) != text ->
+      Keymap.draft_text(view) != text ->
         drop_deferred(state, effects, "Not sent: the draft changed after Enter.")
 
       true ->
-        state = %{state | deferred_send: nil}
+        view = %{view | deferred_send: nil, notice: sent_notice(view.notice)}
 
-        case Keymap.draft_send(state) do
+        case Keymap.draft_send(view) do
           {:ok, action} ->
-            {state, more} = transition(state, action)
-            {state, effects ++ more}
+            {sent, more} = transition(view, action)
+            {%{sent | home: state.home}, effects ++ more}
 
           :ignore ->
-            {state, effects}
+            {%{state | deferred_send: nil, notice: view.notice}, effects}
         end
     end
   end
+
+  # "Sends once the conversation has loaded." stops being true when it sends
+  # (orbit int, SMOKE-F2); any other notice stays.
+  defp sent_notice({:command_feedback, @deferred_words}), do: nil
+  defp sent_notice(notice), do: notice
 
   defp drop_deferred(state, effects, words),
     do: {%{state | deferred_send: nil, notice: {:command_feedback, words}}, effects}
@@ -2946,13 +2991,17 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # agent overlay (pass 72) hold them back: the overlay's band shows its own
   # agent's request, and Ctrl-N reaches the rest.
   # cli74: approvals and questions wait while the settings layer is open; its
-  # header shows them and Ctrl-N reaches them.
+  # header shows them and Ctrl-N reaches them. orbit D19: they wait under Home
+  # too (the dot and "Ctrl-N go" carry them); the step that closes Home is
+  # one of its own, so the card opens as Home goes.
   defp auto_open?(
-         %{layers: [], lifecycle: :running, hint: nil, overlay: nil, settings: nil} = state,
+         %{layers: [], lifecycle: :running, hint: nil, overlay: nil, settings: nil, home: nil} =
+           state,
          action
        ) do
     (match?({:data, %{kind: kind}} when kind != :response, action) or
-       action in [:close_top_layer, :boot] or match?({:navigate, _}, action)) and
+       action in [:close_top_layer, :boot] or match?({:navigate, _}, action) or
+       match?({:home, _}, action)) and
       state.focus in ["composer", "main", "inspector"] and
       Layout.for_state(state).mutations_visible?
   end
@@ -3121,6 +3170,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
            not match?({:undo_boundary, _}, operation),
          do: clear_vim_prefix(next),
          else: next
+
+    # orbit: the list's search text follows the field it types into.
+    {next, effects} =
+      if kind == :field_editor and key == {:home, :filter} do
+        {next, asked} = Reducer.Home.filter_changed(next)
+        {next, effects ++ asked}
+      else
+        {next, effects}
+      end
 
     if kind == :editor and next != state do
       {next, completion} = PathCompletion.sync(next)
@@ -3571,6 +3629,13 @@ defmodule SwarmCodeCLI.UI.Reducer do
     {state, cleared ++ opened}
   end
 
+  # orbit: `/home` opens Home (typed in Home's own composer it only clears it).
+  defp slash_local(state, :home) do
+    {state, cleared} = clear_command_draft(state)
+    {state, opened} = Reducer.Home.open(state, :command)
+    {state, cleared ++ opened}
+  end
+
   defp slash_local(state, :trust) do
     {state, cleared} = clear_command_draft(state)
     {state, sent} = service_request(state, {:project_update, nil, true}, {:project, :update})
@@ -3716,11 +3781,18 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # Conversation and project operations are service requests of their own
   # (pass70 C1), sent in the shell watch's scope, which the service accepts
   # for all of them.
-  defp service_request(state, kind, origin) do
+  @doc false
+  def service_request(state, kind, origin) do
     watch = Map.get(state.watches, :shell)
 
     expected =
-      if match?({:conversation_list, _, _, _}, kind), do: :conversation_list, else: :outcome
+      case kind do
+        {:conversation_list, _, _, _} -> :conversation_list
+        # orbit §3.3: Home's list search answers a conversation list.
+        {:conversation_search, _, _, _} -> :conversation_list
+        {:home_overview, _, _, _} -> :home_overview
+        _ -> :outcome
+      end
 
     with %{status: :ready, scope: scope, generation: generation} <- watch,
          {id, state} = State.next_id(state, :request),
@@ -3743,7 +3815,8 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   # One list request at a time; the palette shows the last answer meanwhile.
-  defp request_conversations(state) do
+  @doc false
+  def request_conversations(state) do
     in_flight =
       Enum.any?(state.requests, fn {_, request} ->
         request.origin == {:conversation, :list}
@@ -3843,6 +3916,60 @@ defmodule SwarmCodeCLI.UI.Reducer do
   end
 
   defp boot_resume_picker(state, effects), do: {state, effects}
+
+  # orbit: Home asks again when the shell turned ready or a push moved the
+  # revision, and closes when the destination changed (D20).
+  defp home_after_update(prev, next, effects) do
+    {next, more} = Reducer.Home.after_update(prev, next)
+    {next, effects ++ more}
+  end
+
+  # D19: an approval that waited under Home opens as Home goes, also when it was
+  # the destination change (after the step's own interaction sync) that closed it.
+  defp home_closed_interactions(
+         %{home: %SwarmCodeCLI.UI.Home{}} = previous,
+         %{home: nil} = next,
+         effects
+       ),
+       do: sync_interactions(next, effects, {:home, :close}, previous)
+
+  defp home_closed_interactions(_previous, next, effects), do: {next, effects}
+
+  # orbit: the steps `Reducer.Home` takes through the reducer's private parts.
+
+  @doc false
+  # What Enter does with the draft in view: sends it, or keeps it for the
+  # workspace that is still loading. A client slash command (`deferrable?` false)
+  # needs no workspace and runs as the shell runs it.
+  def home_send(state, deferrable? \\ true) do
+    status = Map.get(state.watches, :workspace, %{status: :closed}).status
+
+    if deferrable? and status in [:frozen, :resyncing] and Keymap.deferrable_send?(state) do
+      transition(state, :defer_send)
+    else
+      case Keymap.draft_send(state) do
+        {:ok, action} -> transition(state, action)
+        :ignore -> {state, []}
+      end
+    end
+  end
+
+  @doc false
+  def home_replace_draft(state, key, text), do: replace_draft(state, key, text)
+
+  @doc false
+  # Ctrl-C with nothing to clear: the press that arms the quit, and the one
+  # that confirms it.
+  def home_ctrl_c(state) do
+    case state.quit_armed do
+      nil ->
+        arm_quit(state)
+
+      armed ->
+        {state, effects} = exit_requested(disarm_quit(state), :detach)
+        {state, [{:cancel_timer, armed} | effects]}
+    end
+  end
 
   defp leave_modes(state, action) do
     state =

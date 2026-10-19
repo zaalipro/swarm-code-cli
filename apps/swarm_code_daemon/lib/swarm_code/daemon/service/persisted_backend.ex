@@ -38,7 +38,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     :conversation_list,
     :agent_detail,
     :rewind_turns,
-    :history_search
+    :history_search,
+    # orbit S4: Home's overview and the conversation search are reads (jobs).
+    :home_overview,
+    :conversation_search
   ]
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
@@ -60,6 +63,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     CommandDispatcher,
     ShellEscape,
     CommandLedger,
+    HomeOverview,
     PersistedProjection,
     QueueState,
     Rewind,
@@ -259,7 +263,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         settings_pending: [],
         settings_timer: nil,
         settings_own_at: nil,
-        settings_session: SettingsDeltas.session_values(conversation)
+        settings_session: SettingsDeltas.session_values(conversation),
+        # orbit S4/S5: Home's month spend cached for 10 s (`{monotonic ms,
+        # month}`), the revision of the last `home_stale` push and the timer
+        # that debounces the next one (500 ms, owned by this process).
+        home_month: nil,
+        home_revision: 0,
+        home_timer: nil,
+        # orbit int (DAEMON-F3): `%{monitor ref => {run id, pid}}` of the live
+        # runs the last overview listed (at most 64).
+        home_monitors: %{}
       }
 
       # cli020 C1 (bugs-7): a prompt queued before a restart drains now (after
@@ -556,6 +569,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # orbit int (DAEMON-F3): a live run Home listed is gone; Home hears about it.
+  def handle_info({:DOWN, ref, :process, _, _}, %{home_monitors: monitors} = state)
+      when is_map_key(monitors, ref),
+      do:
+        {:noreply,
+         state |> Map.put(:home_monitors, Map.delete(monitors, ref)) |> arm_home_stale()}
+
   # pass71 S2: a job crashed or was killed without answering.
   def handle_info({:DOWN, ref, :process, _, _}, %{jobs: jobs} = state)
       when is_map_key(jobs, ref),
@@ -622,11 +642,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass70 C5 (arch F10): the domain's own notices become toasts on the shell
   # watch. "Waiting" comes from `:waiting_changed` instead, which knows the
   # conversation.
+  #
+  # orbit int (lane S issue 6): a swarm, workflow or research run that finished
+  # in any conversation (the notice is global) is also a Home trigger, so a
+  # Home left open sees a background run end.
   def handle_info({:notification, kind, message}, state) when is_binary(message) do
     case kind do
-      :finished -> {:noreply, toast(state, "success", "Finished", message, nil)}
-      :info -> {:noreply, toast(state, "info", "ncode", message, nil)}
-      _waiting -> {:noreply, state}
+      :finished ->
+        {:noreply, state |> toast("success", "Finished", message, nil) |> arm_home_stale()}
+
+      :info ->
+        {:noreply, toast(state, "info", "ncode", message, nil)}
+
+      _waiting ->
+        {:noreply, state}
     end
   end
 
@@ -634,7 +663,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: {:noreply, toast(state, "info", "ncode", text, nil)}
 
   def handle_info({:waiting_changed}, state),
-    do: {:noreply, state |> waiting_elsewhere() |> arm_elsewhere() |> schedule_refresh()}
+    do:
+      {:noreply,
+       state
+       |> waiting_elsewhere()
+       |> arm_elsewhere()
+       |> arm_home_stale()
+       |> schedule_refresh()}
 
   # pass76: any conversation's run changed status.
   def handle_info({:run_status, _conversation_id, _status}, state),
@@ -646,11 +681,36 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:timeout, _stale, :elsewhere_due}, state), do: {:noreply, state}
 
+  # orbit S5: the debounce ended; Home's shell watch hears one `home_stale`
+  # with the new revision (an invalidation: the client reads `home.overview`).
+  def handle_info(:home_stale_due, state) do
+    revision = state.home_revision + 1
+    state = %{state | home_timer: nil, home_revision: revision}
+
+    {:noreply,
+     broadcast(state, %{
+       "kind" => "home_stale",
+       "entity_id" => nil,
+       "run_id" => nil,
+       "conversation_id" => nil,
+       "channel" => nil,
+       "attempt_id" => nil,
+       "text" => nil,
+       "body" => %{"revision" => revision},
+       "sequence" => 0,
+       "revision" => state.revision
+     })}
+  end
+
   # Runs of this conversation may be research or workflow runs; the library
   # itself is read on demand, so a changed workflow file needs no delta.
+  # orbit int (lane S issue 6): the two run events are global (any
+  # conversation's research or workflow run), so they are Home triggers too.
   def handle_info({event}, state)
-      when event in [:research_runs_changed, :workflow_runs_changed, :workflows_changed],
-      do: {:noreply, schedule_refresh(state)}
+      when event in [:research_runs_changed, :workflow_runs_changed],
+      do: {:noreply, state |> arm_home_stale() |> schedule_refresh()}
+
+  def handle_info({:workflows_changed}, state), do: {:noreply, schedule_refresh(state)}
 
   def handle_info({:rate_limit, provider_id, snapshot}, state)
       when is_binary(provider_id) and is_map(snapshot),
@@ -797,6 +857,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
     with ref when is_reference(ref) <- Map.get(state, :ledger_timer),
          do: Process.cancel_timer(ref)
+
+    with timer when is_reference(timer) <- Map.get(state, :home_timer),
+         do: Process.cancel_timer(timer)
+
+    Enum.each(Map.get(state, :home_monitors, %{}), fn {ref, _} ->
+      Process.demonitor(ref, [:flush])
+    end)
 
     with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
@@ -1139,7 +1206,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
     case Conversations.get(target) do
       %{project_id: ^project} ->
-        {accepted(id, [target]), switch_conversation(state, target)}
+        {accepted(id, [target]), state |> switch_conversation(target) |> arm_home_stale()}
 
       _ ->
         {reject(id, :not_allowed), state}
@@ -1150,7 +1217,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp execute(%{operation: :conversation_new}, _scope, id, state) do
     case Conversations.create(state.opts[:project_id]) do
       {:ok, conversation} ->
-        {accepted(id, [conversation.id]), switch_conversation(state, conversation.id)}
+        {accepted(id, [conversation.id]),
+         state |> switch_conversation(conversation.id) |> arm_home_stale()}
 
       {:error, _} ->
         {reject(id, :not_allowed), state}
@@ -1176,6 +1244,68 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # orbit S4 (`home.overview`): the bounded cross-project overview, built by a
+  # job (a newer request replaces an older one). The project is the admitted
+  # one, never a client field. Fitting the byte limit happens in the job too,
+  # so this process only wraps and replies; the 10 s month cache is refreshed
+  # only by a reading that was not itself served from it.
+  defp execute(%{operation: :home_overview, params: params}, _scope, id, state) do
+    project = state.opts[:project_id]
+    cached = cached_month(state)
+    revision = state.home_revision
+    options = %{projects: params["projects"], per_project: params["per_project"]}
+
+    build = state.work.home_overview
+
+    work = fn ->
+      {body, entries} = build.(project, options, cached, revision)
+
+      body
+      |> Map.merge(%{"request_id" => id, "state" => "ready", "error" => nil})
+      |> fit_home(params["byte_limit"])
+      |> case do
+        {:ok, body} -> {:ok, body, entries}
+        {:error, code} -> {:error, code}
+      end
+    end
+
+    finish = fn
+      {:ok, body, entries}, next ->
+        next =
+          if cached == nil,
+            do: %{next | home_month: {System.monotonic_time(:millisecond), body["month"]}},
+            else: next
+
+        {result("home_overview", body), watch_live_runs(next, entries)}
+
+      {:error, code}, next ->
+        {wire_error(code), next}
+    end
+
+    {{:job, %{key: :home_overview, replace: true, work: work, finish: finish}}, state}
+  end
+
+  # orbit S4 (`conversation.search`): this project's conversations matching a
+  # title or prompt text, in the shape of `conversation.list`.
+  defp execute(%{operation: :conversation_search, params: params}, _scope, id, state) do
+    project = state.opts[:project_id]
+
+    work = fn ->
+      PersistedProjection.conversation_search(project, params["query"], params["limit"])
+    end
+
+    finish = fn {:ok, rows, more?}, next ->
+      body = conversation_list(rows, more?, nil, id, next)
+
+      case fit("conversation_list", body, params["byte_limit"]) do
+        {:ok, kind, body} -> {result(kind, body), next}
+        {:error, code} -> {wire_error(code), next}
+      end
+    end
+
+    {{:job, %{key: :conversation_search, replace: true, work: work, finish: finish}}, state}
+  end
+
   # pass70 C2 (arch F12): the project's approval mode and trust, the
   # desktop's own (`Projects.trust/1` stamps `trusted_at` and lifts a
   # read-only project to `auto`).
@@ -1186,6 +1316,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       text = picked || project_notice(project, params)
       state = refresh(state)
       state = toast(state, "success", "Project", text, nil)
+      state = arm_home_stale(state)
 
       {accepted(id, [project.id], %{
          "kind" => "notice",
@@ -4728,7 +4859,48 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp attachment_ids(_), do: []
 
+  # orbit S5: at most one `home_stale` per 500 ms window. The first trigger
+  # arms this process's own timer; the rest do nothing until it fires. The
+  # timer dies with the process (and `terminate/2` cancels it).
+  @home_stale_ms 500
+
+  # orbit int (DAEMON-F3): a chat or goal run (or a stopped swarm) ending in
+  # another conversation sends this backend nothing, yet Home shows it as a live
+  # bar and bead. The run processes the overview was read from are monitored (a
+  # DOWN arms `home_stale`; one already dead answers at once, so no end is lost
+  # between the read and now), monitors of runs a later overview no longer
+  # lists are dropped, and the monitors die with this process.
+  defp watch_live_runs(state, entries) do
+    listed = MapSet.new(entries, fn {_id, pid} -> pid end)
+
+    {kept, monitors} =
+      Enum.reduce(state.home_monitors, {MapSet.new(), %{}}, fn {ref, {_id, pid} = entry},
+                                                               {kept, monitors} ->
+        if MapSet.member?(listed, pid) do
+          {MapSet.put(kept, pid), Map.put(monitors, ref, entry)}
+        else
+          Process.demonitor(ref, [:flush])
+          {kept, monitors}
+        end
+      end)
+
+    monitors =
+      for {id, pid} <- entries, not MapSet.member?(kept, pid), into: monitors do
+        {Process.monitor(pid), {id, pid}}
+      end
+
+    %{state | home_monitors: monitors}
+  end
+
+  defp arm_home_stale(%{home_timer: nil} = state),
+    do: %{state | home_timer: Process.send_after(self(), :home_stale_due, @home_stale_ms)}
+
+  defp arm_home_stale(state), do: state
+
   defp broadcast(state, delta) do
+    # A run changing is a Home trigger; `home_stale` itself never is.
+    state = if delta["kind"] == "run_update", do: arm_home_stale(state), else: state
+
     # pass74 S1-10: settings deltas belong to no conversation (§3.4.4).
     delta =
       if delta["kind"] in ["settings_update", "settings_task"],
@@ -4753,7 +4925,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "settings_task",
                 "desktop_running",
                 "vitals",
-                "elsewhere"
+                "elsewhere",
+                "home_stale"
               ]
 
             _other when settings_delta? ->
@@ -4769,7 +4942,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "rate_limit",
                 "desktop_running",
                 "vitals",
-                "elsewhere"
+                "elsewhere",
+                "home_stale"
               ]
 
             # pass70 C6: background commands belong to the workspace and the
@@ -4782,7 +4956,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "rate_limit",
                 "desktop_running",
                 "vitals",
-                "elsewhere"
+                "elsewhere",
+                "home_stale"
               ]
 
             _ ->
@@ -4796,6 +4971,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                 "desktop_running",
                 "vitals",
                 "elsewhere",
+                "home_stale",
                 "shell_upsert",
                 "shell_remove"
               ]
@@ -5067,6 +5243,49 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     if byte_size(Jason.encode!(body)) <= bytes,
       do: {:ok, kind, body},
       else: {:error, :capacity_exceeded}
+  end
+
+  # orbit S4: the month spend read within the last 10 s, else nil (the job reads
+  # it again).
+  @home_month_ms 10_000
+
+  defp cached_month(%{home_month: {at, month}}) do
+    if System.monotonic_time(:millisecond) - at < @home_month_ms, do: month
+  end
+
+  defp cached_month(_state), do: nil
+
+  # orbit S4: a `home.overview` body within `limit` bytes. Conversations leave
+  # from the last project backwards (its oldest first, then the previous
+  # project's) until the encoding fits; with none left and still too large the
+  # reply is the closed `capacity_exceeded` error (`conversation.list`'s code).
+  defp fit_home(body, limit) do
+    cond do
+      byte_size(Jason.encode!(body)) <= limit ->
+        {:ok, body}
+
+      home_conversations?(body) ->
+        fit_home(drop_last_home_conversation(body), limit)
+
+      true ->
+        {:error, :capacity_exceeded}
+    end
+  end
+
+  defp home_conversations?(body),
+    do: Enum.any?(body["projects"], &(&1["conversations"] != []))
+
+  defp drop_last_home_conversation(body) do
+    index = Enum.find_index(Enum.reverse(body["projects"]), &(&1["conversations"] != []))
+    last = length(body["projects"]) - 1 - index
+
+    %{
+      body
+      | "projects" =>
+          List.update_at(body["projects"], last, fn project ->
+            %{project | "conversations" => Enum.drop(project["conversations"], -1)}
+          end)
+    }
   end
 
   # `Next.local_zone/0` reads `/etc/localtime`; once per daemon is enough.
@@ -5755,7 +5974,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       diff: &change_or_op_diff/2,
       change_diff: &SwarmCode.Domain.FeatureCatalog.change_diff/2,
       feature_query: &SwarmCode.Daemon.Service.FeatureRequest.execute/4,
-      summarize: &AgentStatus.summarize/2
+      summarize: &AgentStatus.summarize/2,
+      # orbit S4: `project |> build.(options, month, revision)` answers
+      # `{body, [{run_id, pid}]}` (DAEMON-F3: the registry rows it read).
+      home_overview: &HomeOverview.build_watched/4
     }
 
     if is_map(overrides),

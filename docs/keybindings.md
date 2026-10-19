@@ -58,6 +58,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
 | `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
+| `Alt-O` | Home: recent work, live runs and resume (also /home) |
 
 ### Edit
 
@@ -180,6 +181,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
 | `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
+| `Alt-O` | Home: recent work, live runs and resume (also /home) |
 
 ### Edit
 
@@ -344,6 +346,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
 | `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
+| `Alt-O` | Home: recent work, live runs and resume (also /home) |
 
 ### Session
 
@@ -427,6 +430,7 @@ Mouse: Wheel scrolls; select text with the mouse. /mouse on sends wheel reports 
 | `Alt-L` / `Alt-Shift-L` / `Ctrl-Alt-L` / `Ctrl-Alt-Shift-L` | Widen the inspector dock (add Ctrl for a bigger step) |
 | `Alt-0` / `Alt-Shift-0` / `Ctrl-Alt-0` / `Ctrl-Alt-Shift-0` | Reset the inspector dock to its default width |
 | `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
+| `Alt-O` | Home: recent work, live runs and resume (also /home) |
 
 ### Session
 
@@ -936,3 +940,147 @@ terminal.keys` in a shell.
 | `Backspace` | Delete the character before the caret |
 | `Tab` | The next button (focus stays inside the popover) |
 | `Shift-Tab` | The previous button |
+
+# Home
+
+`ncode` opens Home over your latest conversation: recent work in this
+project, the live runs of every project, this month's spend and what waits
+for you. Type to start a new conversation, or press `Enter` on an empty
+draft to open the selected one. `Esc` leaves Home for the conversation
+underneath; `Alt-O` or `/home` brings it back, with your draft. `Tab` walks
+the composer, the resume list (type to search every conversation) and the
+project map. Opening another project's conversation copies the command that
+opens it in a new terminal tab; there is no switching of projects inside a
+session. Alt-1…9 open the numbered rows; `Ctrl-N` goes to what waits for you.
+
+## Home: the composer
+
+### Layers
+
+| Keys | Does |
+|---|---|
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
+| `Ctrl-G` | Runs dashboard; the same chord closes it |
+| `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
+
+### Edit
+
+| Keys | Does |
+|---|---|
+| `Ctrl-O` / `Ctrl-J` / `Shift-Enter` | Insert a line break without sending (Ctrl-O or Ctrl-J) |
+| `Ctrl-A` | Move to the start of the line |
+| `Ctrl-E` | Move to the end of the line |
+| `Ctrl-W` | Delete the word before the cursor |
+| `Alt-←` / `Ctrl-←` / `Alt-B` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-→` / `Ctrl-→` / `Alt-F` | Word left/right (Option-←/→, Ctrl-←/→, Alt-b/f) |
+| `Alt-D` / `Alt-Del` | Delete the word after the cursor (Option-Delete, Alt-d) |
+| `Ctrl-Z` | Undo the last edit |
+| `Ctrl-Shift-Z` | Redo (needs a terminal that reports Ctrl-Shift) |
+
+### Session
+
+| Keys | Does |
+|---|---|
+| `F1` | The keyboard help sheet; the same key closes it |
+| `Ctrl-L` | Repaint the whole screen |
+
+### Home
+
+| Keys | Does |
+|---|---|
+| `Enter` | Composer: start work with the text, or open the selected conversation when it is empty; list: open; map: open, or copy the command for another project |
+| `Esc` | Composer: leave Home for the conversation underneath; list and map: back to the composer |
+| `Tab` | Composer, then the list, then the map, then the composer (the map only where it is drawn) |
+| `Shift-Tab` | The same walk backwards |
+| `↑` | The conversation above (the project map: the bead above; a draft of several lines keeps it for the caret) |
+| `↓` | The conversation below (the project map: the bead below; a draft of several lines keeps it for the caret) |
+| `Alt-1` | Open conversation 1 of the list (another project's: copy the command to open it there) |
+| `Alt-2` | Open conversation 2 of the list (another project's: copy the command to open it there) |
+| `Alt-3` | Open conversation 3 of the list (another project's: copy the command to open it there) |
+| `Alt-4` | Open conversation 4 of the list (another project's: copy the command to open it there) |
+| `Alt-5` | Open conversation 5 of the list (another project's: copy the command to open it there) |
+| `Alt-6` | Open conversation 6 of the list (another project's: copy the command to open it there) |
+| `Alt-7` | Open conversation 7 of the list (another project's: copy the command to open it there) |
+| `Alt-8` | Open conversation 8 of the list (another project's: copy the command to open it there) |
+| `Alt-9` | Open conversation 9 of the list (another project's: copy the command to open it there) |
+| `Ctrl-N` | Go to the approval or question that waits for you (another project's: copy the command) |
+| `Ctrl-C` | Clear the search, then the draft; with nothing to clear a second press quits as in the shell |
+
+## Home: the resume list and its search
+
+### Layers
+
+| Keys | Does |
+|---|---|
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
+| `Ctrl-G` | Runs dashboard; the same chord closes it |
+| `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
+
+### Session
+
+| Keys | Does |
+|---|---|
+| `F1` | The keyboard help sheet; the same key closes it |
+
+### Home
+
+| Keys | Does |
+|---|---|
+| `Enter` | Composer: start work with the text, or open the selected conversation when it is empty; list: open; map: open, or copy the command for another project |
+| `Esc` | Composer: leave Home for the conversation underneath; list and map: back to the composer |
+| `Tab` | Composer, then the list, then the map, then the composer (the map only where it is drawn) |
+| `Shift-Tab` | The same walk backwards |
+| `↑` | The conversation above (the project map: the bead above; a draft of several lines keeps it for the caret) |
+| `↓` | The conversation below (the project map: the bead below; a draft of several lines keeps it for the caret) |
+| `Alt-1` | Open conversation 1 of the list (another project's: copy the command to open it there) |
+| `Alt-2` | Open conversation 2 of the list (another project's: copy the command to open it there) |
+| `Alt-3` | Open conversation 3 of the list (another project's: copy the command to open it there) |
+| `Alt-4` | Open conversation 4 of the list (another project's: copy the command to open it there) |
+| `Alt-5` | Open conversation 5 of the list (another project's: copy the command to open it there) |
+| `Alt-6` | Open conversation 6 of the list (another project's: copy the command to open it there) |
+| `Alt-7` | Open conversation 7 of the list (another project's: copy the command to open it there) |
+| `Alt-8` | Open conversation 8 of the list (another project's: copy the command to open it there) |
+| `Alt-9` | Open conversation 9 of the list (another project's: copy the command to open it there) |
+| `Ctrl-N` | Go to the approval or question that waits for you (another project's: copy the command) |
+| `Ctrl-C` | Clear the search, then the draft; with nothing to clear a second press quits as in the shell |
+
+## Home: the project map
+
+### Layers
+
+| Keys | Does |
+|---|---|
+| `Ctrl-P` | Command palette; pressed again it keeps the palette and its query |
+| `Ctrl-G` | Runs dashboard; the same chord closes it |
+| `F2` | Settings: every setting, provider, search engine, MCP server and key (also /settings) |
+
+### Session
+
+| Keys | Does |
+|---|---|
+| `?` / `F1` | The keyboard help sheet; the same key closes it |
+
+### Home
+
+| Keys | Does |
+|---|---|
+| `Enter` | Composer: start work with the text, or open the selected conversation when it is empty; list: open; map: open, or copy the command for another project |
+| `Esc` | Composer: leave Home for the conversation underneath; list and map: back to the composer |
+| `Tab` | Composer, then the list, then the map, then the composer (the map only where it is drawn) |
+| `Shift-Tab` | The same walk backwards |
+| `↑` | The conversation above (the project map: the bead above; a draft of several lines keeps it for the caret) |
+| `↓` | The conversation below (the project map: the bead below; a draft of several lines keeps it for the caret) |
+| `←` | The orbit (project) to the left |
+| `→` | The orbit (project) to the right |
+| `Alt-1` | Open conversation 1 of the list (another project's: copy the command to open it there) |
+| `Alt-2` | Open conversation 2 of the list (another project's: copy the command to open it there) |
+| `Alt-3` | Open conversation 3 of the list (another project's: copy the command to open it there) |
+| `Alt-4` | Open conversation 4 of the list (another project's: copy the command to open it there) |
+| `Alt-5` | Open conversation 5 of the list (another project's: copy the command to open it there) |
+| `Alt-6` | Open conversation 6 of the list (another project's: copy the command to open it there) |
+| `Alt-7` | Open conversation 7 of the list (another project's: copy the command to open it there) |
+| `Alt-8` | Open conversation 8 of the list (another project's: copy the command to open it there) |
+| `Alt-9` | Open conversation 9 of the list (another project's: copy the command to open it there) |
+| `y` | Copy the command that opens the conversation under the cursor in a new terminal tab |
+| `Ctrl-N` | Go to the approval or question that waits for you (another project's: copy the command) |
+| `Ctrl-C` | Clear the search, then the draft; with nothing to clear a second press quits as in the shell |

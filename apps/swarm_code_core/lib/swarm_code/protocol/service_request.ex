@@ -47,6 +47,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :shell_run
           | :attachment_attach
           | :attachment_slot
+          | :home_overview
+          | :conversation_search
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -149,6 +151,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("rewind.apply"), do: :rewind_apply
   # cli020 C20: the prompt history (Ctrl-R).
   defp decode_operation("history.search"), do: :history_search
+  # orbit S1: Home's bounded cross-project overview and the project-filtered
+  # conversation search (both reads, capability `home`).
+  defp decode_operation("home.overview"), do: :home_overview
+  defp decode_operation("conversation.search"), do: :conversation_search
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -183,6 +189,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:rewind_turns), do: "rewind.turns"
   defp encode_operation(:rewind_apply), do: "rewind.apply"
   defp encode_operation(:history_search), do: "history.search"
+  defp encode_operation(:home_overview), do: "home.overview"
+  defp encode_operation(:conversation_search), do: "conversation.search"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -230,6 +238,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(:rewind_turns), do: []
   defp param_keys(:rewind_apply), do: ~w(message_id scope)
   defp param_keys(:history_search), do: ~w(query)
+  defp param_keys(:home_overview), do: ~w(projects per_project byte_limit)
+  defp param_keys(:conversation_search), do: ~w(query limit byte_limit)
   defp param_keys(_operation), do: []
 
   defp valid_params?(:query, params, scope) do
@@ -390,6 +400,21 @@ defmodule SwarmCode.Protocol.ServiceRequest do
         (is_binary(params["query"]) and byte_size(params["query"]) <= 200 and
            String.valid?(params["query"]))
 
+  # orbit S1: both are reads in the shell watch's scope (like conversation.list);
+  # neither names a project: the service uses its admitted one.
+  defp valid_params?(:home_overview, params, scope) do
+    scope.kind in [:global, :project, :conversation] and
+      bounded_integer?(params["projects"], 1, 8) and
+      bounded_integer?(params["per_project"], 1, 24) and
+      bounded_integer?(params["byte_limit"], 1, 1_048_576)
+  end
+
+  defp valid_params?(:conversation_search, params, scope) do
+    scope.kind in [:global, :project, :conversation] and search_query?(params["query"]) and
+      bounded_integer?(params["limit"], 1, 50) and
+      bounded_integer?(params["byte_limit"], 1, 1_048_576)
+  end
+
   defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
 
   defp valid_params?(:queue_edit, params, scope) do
@@ -400,6 +425,11 @@ defmodule SwarmCode.Protocol.ServiceRequest do
         _ -> false
       end
   end
+
+  defp search_query?(query),
+    do:
+      is_binary(query) and byte_size(query) in 1..200 and String.valid?(query) and
+        not String.match?(query, ~r/[\x00-\x1F\x7F]/)
 
   defp json_attributes?(_, depth) when depth > 6, do: false
 

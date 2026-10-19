@@ -91,6 +91,10 @@ defmodule SwarmCodeCLI.UI.State do
     # `UI.Settings.Layer`), and the user's key overrides from cli.json's
     # `keys` (`UI.Keymap.Overrides`; nil = the defaults everywhere).
     settings: nil,
+    # orbit (spec 3.6): Home, the layer over the conversation (nil while it is
+    # closed), and the position the last closed Home left for the next one.
+    home: nil,
+    home_resume: nil,
     key_overrides: nil,
     # The page stack, focus and tasks kept after the layer closes, for the
     # next `/settings` (nil before the first close).
@@ -287,6 +291,11 @@ defmodule SwarmCodeCLI.UI.State do
   end
 
   def dirty?(state), do: Drafts.dirty?(state.drafts) or FieldEditors.dirty?(state.field_editors)
+
+  # orbit D9: Home's own composer, one draft for the whole session. While Home
+  # is open it covers the agent overlay, so its key comes first.
+  def current_draft_key(%{home: %{focus: :composer}, source_epoch: epoch}) when is_binary(epoch),
+    do: {epoch, :home}
 
   # The agent overlay's composer is the one being typed into while it is open.
   def current_draft_key(%{overlay: %{draft_key: key}}) when not is_nil(key), do: key

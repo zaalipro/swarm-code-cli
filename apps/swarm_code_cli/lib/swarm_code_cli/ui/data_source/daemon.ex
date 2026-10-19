@@ -984,6 +984,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
   defp request_capability(%{"op" => "conversation.open"}), do: :conversation_open
   defp request_capability(%{"op" => "conversation.list"}), do: :conversation_list
   defp request_capability(%{"op" => "conversation.new"}), do: :conversation_new
+  # orbit §3.1.3: both of Home's reads need the `home` grant.
+  defp request_capability(%{"op" => "home.overview"}), do: :home
+  defp request_capability(%{"op" => "conversation.search"}), do: :home
   defp request_capability(%{"op" => "mark_seen"}), do: :mark_seen
   defp request_capability(%{"op" => "project.update"}), do: :project_update
   # pass74 §3.4.1: both settings ops need the `settings` grant.
@@ -1111,6 +1114,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
         :conversation_list ->
           struct!(DTO.ConversationList, attrs)
+
+        :home_overview ->
+          struct!(DTO.HomeOverview, attrs)
 
         :agent_detail ->
           struct!(DTO.AgentDetail, attrs)

@@ -25,6 +25,7 @@ defmodule SwarmCodeCLI.Release do
          ncode help | version | doctor
 
   Opens the saved session for DIR (default: the current directory).
+  With no flag it opens Home: recent work, live runs, resume (Esc continues the latest).
 
     settings [QUERY]  open Settings, at QUERY when given ('ncode settings providers');
                       it opens even when no model provider is set up yet
@@ -33,7 +34,7 @@ defmodule SwarmCodeCLI.Release do
                       (a folder with one of these names: ncode ./settings, ./config)
 
     --new             start a new conversation
-    --continue, -c    continue the latest conversation (the default)
+    --continue, -c    continue the latest conversation, skipping Home
     --resume, -r [ID] open the conversation with this id, 6+ characters of it or its
                       title; without one, pick it from a list
     --model, -m M     use model M (or provider/model) for this session only

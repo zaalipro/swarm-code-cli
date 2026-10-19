@@ -52,6 +52,21 @@ defmodule SwarmCode.Daemon.Service.Settings.Usage do
     }
   end
 
+  @doc """
+  orbit: this calendar month's spend and the monthly budget (nil when none), both
+  as floats. `body/0`'s `"month"` keeps its own integer-for-a-whole-budget form.
+  """
+  @spec month() :: %{String.t() => float() | nil}
+  def month do
+    budget =
+      case budget(Values.settings_row()) do
+        value when is_number(value) -> value * 1.0
+        _ -> nil
+      end
+
+    %{"spend_usd" => month_spend() * 1.0, "budget_usd" => budget}
+  end
+
   defp budget(nil), do: nil
   defp budget(%{monthly_budget_usd: nil}), do: nil
 

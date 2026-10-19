@@ -94,6 +94,11 @@ class SavedSession(unittest.TestCase):
                     shell += ['export SWARM_PROVIDER=openai', 'export SWARM_MODEL=pty-fixture',
                               'export SWARM_BASE_URL=' + shlex.quote(f'http://127.0.0.1:{server.server_port}/v1'),
                               'export SWARM_API_KEY=fixture', 'export SWARM_CONVERSATION=new']
+                else:
+                    # orbit: a bare launch opens Home over the latest conversation
+                    # (cli.json `startup_conversation` default). This phase checks
+                    # resume across a restart, so it asks for the latest (no Home).
+                    shell += ['export SWARM_CONVERSATION=latest']
                 shell += ['exec mise exec -- elixir --erl "-noinput" -S mix run --no-start ' + shlex.quote(str(runner))]
                 wrapper.write_text('\n'.join(shell) + '\n')
                 wrappers.append(wrapper)
