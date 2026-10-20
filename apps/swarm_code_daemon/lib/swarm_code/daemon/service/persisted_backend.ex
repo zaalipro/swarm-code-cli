@@ -1664,7 +1664,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp chat_runs(conversation_id), do: runs_of(conversation_id, ["chat"])
   # A turn is what a queued prompt waits behind: a chat turn or a compaction.
-  defp turn_runs(conversation_id), do: runs_of(conversation_id, ["chat", "compact"])
+  # pass 77 C-BUG-6: a compaction's chain owner is a turn too, until its chat run registers.
+  defp turn_runs(conversation_id),
+    do: runs_of(conversation_id, ["chat", "compact"]) ++ LiveRuns.chains(conversation_id)
 
   # The newest of the running chat runs is the turn a message steers.
   defp newest_run([{id, _}]), do: id
