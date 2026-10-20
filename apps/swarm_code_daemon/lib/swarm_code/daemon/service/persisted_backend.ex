@@ -64,6 +64,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     ShellEscape,
     CommandLedger,
     HomeOverview,
+    LiveRuns,
     PersistedProjection,
     QueueState,
     Rewind,
@@ -1659,14 +1660,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   # The running runs of this conversation of the given kinds, from the
   # registry (the truth about what runs): {id, pid}.
-  defp runs_of(conversation_id, kinds) do
-    Registry.select(SwarmCode.Domain.Registry, [
-      {{{:run, :"$1"}, :"$2", {:"$3", :"$4"}}, [{:==, :"$3", conversation_id}],
-       [{{:"$1", :"$2", :"$4"}}]}
-    ])
-    |> Enum.filter(fn {_id, _pid, kind} -> kind in kinds end)
-    |> Enum.map(fn {id, pid, _kind} -> {id, pid} end)
-  end
+  defp runs_of(conversation_id, kinds), do: LiveRuns.of_conversation(conversation_id, kinds)
 
   defp chat_runs(conversation_id), do: runs_of(conversation_id, ["chat"])
   # A turn is what a queued prompt waits behind: a chat turn or a compaction.
@@ -2256,10 +2250,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp conversation_list(rows, more?, cursor, id, state) do
     # The conversations with a running run: one registry select.
-    live =
-      MapSet.new(
-        Registry.select(SwarmCode.Domain.Registry, [{{{:run, :_}, :_, {:"$1", :_}}, [], [:"$1"]}])
-      )
+    live = MapSet.new(LiveRuns.conversation_ids())
 
     waiting =
       Questions.list()
