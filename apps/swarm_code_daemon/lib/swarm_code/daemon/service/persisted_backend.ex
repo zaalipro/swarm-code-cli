@@ -5169,6 +5169,48 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp arm_home_stale(state), do: state
 
+  # pass 77 C-ARCH-2: which watch slots a delta kind reaches, in one table. A
+  # kind that is not listed is scoped (workspace, inspector and transcript
+  # windows, never the shell or the activity feed). The table lists every kind
+  # this module and `PersistedProjection` emit, so a new kind is a visible
+  # decision (`r1019_delta_routes_test.exs` reads the sources to prove it).
+  @scoped ~w(workspace inspector transcript)
+  # Scoped delta kinds, then the result/payload kinds the two sources also name
+  # (they ride request results, not watches; listed so the source scan holds).
+  @scoped_kinds ~w(node_upsert agent_update interaction_upsert interaction_remove
+                   transcript_remove change_upsert change_remove verdict_upsert
+                   stream_append stream_reset)
+  @payload_kinds ~w(report notice attachment rewound rewind_turns question navigate main history)
+  @routes Map.merge(
+            Map.new(@scoped_kinds ++ @payload_kinds, &{&1, @scoped}),
+            %{
+              "run_update" => ~w(shell workspace inspector transcript),
+              "toast" => ~w(shell),
+              "rate_limit" => ~w(shell),
+              "settings_update" => ~w(shell),
+              "settings_task" => ~w(shell),
+              "desktop_running" => ~w(shell),
+              "vitals" => ~w(shell),
+              "elsewhere" => ~w(shell),
+              "home_stale" => ~w(shell),
+              "activity_upsert" => ~w(activity),
+              "workspace_metadata" => ~w(workspace),
+              "background_upsert" => ~w(workspace inspector),
+              "background_remove" => ~w(workspace inspector),
+              "shell_upsert" => ~w(workspace inspector),
+              "shell_remove" => ~w(workspace inspector)
+            }
+          )
+
+  defp slot_class(slot) when slot in ["shell", "activity", "workspace", "inspector"], do: slot
+  defp slot_class(_transcript_or_pending), do: "transcript"
+
+  @doc false
+  def routed?(slot, kind), do: slot_class(slot) in Map.get(@routes, kind, @scoped)
+
+  @doc false
+  def routes, do: @routes
+
   defp broadcast(state, delta) do
     # A run changing is a Home trigger; `home_stale` itself never is.
     state = if delta["kind"] == "run_update", do: arm_home_stale(state), else: state
@@ -5179,115 +5221,64 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         do: delta,
         else: Map.put(delta, "conversation_id", state.opts[:conversation_id])
 
-    settings_delta? = delta["kind"] in ["settings_update", "settings_task"]
+    kind = delta["kind"]
 
-    Enum.reduce(state.watches, state, fn {key, entry}, acc ->
-      relevant =
-        member?(state, entry.scope) and
-          (entry.scope.kind != :run or entry.scope.id == delta["run_id"]) and
-          case entry.slot do
-            # pass70 C1: toasts and rate limits reach the shell watch alone.
-            # pass74 S1-10: settings deltas are global and ride the shell.
-            "shell" ->
-              delta["kind"] in [
-                "run_update",
-                "toast",
-                "rate_limit",
-                "settings_update",
-                "settings_task",
-                "desktop_running",
-                "vitals",
-                "elsewhere",
-                "home_stale"
-              ]
+    # The cheap checks (route, run scope) come before `member?/2`, which reads
+    # the database for a run-scoped watch.
+    relevant =
+      for {key, entry} <- state.watches,
+          routed?(entry.slot, kind),
+          entry.scope.kind != :run or entry.scope.id == delta["run_id"],
+          member?(state, entry.scope),
+          do: {key, entry}
 
-            _other when settings_delta? ->
-              false
+    case relevant do
+      [] ->
+        state
 
-            "activity" ->
-              delta["kind"] == "activity_upsert"
-
-            "workspace" ->
-              delta["kind"] not in [
-                "activity_upsert",
-                "toast",
-                "rate_limit",
-                "desktop_running",
-                "vitals",
-                "elsewhere",
-                "home_stale"
-              ]
-
-            # pass70 C6: background commands belong to the workspace and the
-            # run inspector, not to the transcript or pending windows.
-            "inspector" ->
-              delta["kind"] not in [
-                "activity_upsert",
-                "workspace_metadata",
-                "toast",
-                "rate_limit",
-                "desktop_running",
-                "vitals",
-                "elsewhere",
-                "home_stale"
-              ]
-
-            _ ->
-              delta["kind"] not in [
-                "activity_upsert",
-                "workspace_metadata",
-                "toast",
-                "rate_limit",
-                "background_upsert",
-                "background_remove",
-                "desktop_running",
-                "vitals",
-                "elsewhere",
-                "home_stale",
-                "shell_upsert",
-                "shell_remove"
-              ]
-          end
-
-      if relevant do
+      relevant ->
         size = byte_size(Jason.encode!(delta))
-        # Coalesce complete entity replacements only. Stream events must retain
-        # their channel and order: dropping an append loses tokens, and moving
-        # a reset across an append changes the resulting text.
-        pending = :queue.to_list(entry.queue)
 
-        pending =
-          Enum.reject(pending, fn {old, _} ->
-            delta["kind"] not in ["stream_append", "stream_reset", "settings_update"] and
-              old["kind"] == delta["kind"] and old["entity_id"] == delta["entity_id"] and
-              not (delta["kind"] == "node_upsert" and
-                     Enum.any?(pending, fn {queued, _} ->
-                       queued["kind"] in ["stream_append", "stream_reset"] and
-                         queued["entity_id"] == delta["entity_id"]
-                     end))
-          end)
+        Enum.reduce(relevant, state, fn {key, entry}, acc ->
+          deliver(acc, key, entry, delta, size)
+        end)
+    end
+  end
 
-        # pass72 G14 (QA Q7): an append to a stream whose newest queued event
-        # is an append of the same channel and attempt joins it (the text in
-        # order, the newer revision): a chat stream next to a swarm filled
-        # the queue with appends (115 of 128) and forced a resync.
-        {pending, merged?} = join_append(pending, delta)
+  defp deliver(acc, key, entry, delta, size) do
+    # Coalesce complete entity replacements only. Stream events must retain
+    # their channel and order: dropping an append loses tokens, and moving
+    # a reset across an append changes the resulting text.
+    pending = :queue.to_list(entry.queue)
 
-        entry = %{
-          entry
-          | queue: :queue.from_list(pending),
-            bytes: Enum.reduce(pending, 0, fn {_, bytes}, n -> n + bytes end)
-        }
+    pending =
+      Enum.reject(pending, fn {old, _} ->
+        delta["kind"] not in ["stream_append", "stream_reset", "settings_update"] and
+          old["kind"] == delta["kind"] and old["entity_id"] == delta["entity_id"] and
+          not (delta["kind"] == "node_upsert" and
+                 Enum.any?(pending, fn {queued, _} ->
+                   queued["kind"] in ["stream_append", "stream_reset"] and
+                     queued["entity_id"] == delta["entity_id"]
+                 end))
+      end)
 
-        if merged? do
-          flush(put_in(acc.watches[key], entry), key)
-        else
-          enqueue_delta(acc, key, entry, delta, size)
-        end
-      else
-        acc
-      end
-    end)
+    # pass72 G14 (QA Q7): an append to a stream whose newest queued event
+    # is an append of the same channel and attempt joins it (the text in
+    # order, the newer revision): a chat stream next to a swarm filled
+    # the queue with appends (115 of 128) and forced a resync.
+    {pending, merged?} = join_append(pending, delta)
+
+    entry = %{
+      entry
+      | queue: :queue.from_list(pending),
+        bytes: Enum.reduce(pending, 0, fn {_, bytes}, n -> n + bytes end)
+    }
+
+    if merged? do
+      flush(put_in(acc.watches[key], entry), key)
+    else
+      enqueue_delta(acc, key, entry, delta, size)
+    end
   end
 
   @join_bytes 16_384
