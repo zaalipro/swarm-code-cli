@@ -117,7 +117,7 @@ TUI):
 | Ctrl-F (or Ctrl-Space) | hint mode: a badge before every agent in the side panel; its letter opens that agent's overlay, a digit shows a run (`0` all runs), Ctrl-F again is Ctrl-N, Esc cancels. Hint keys never answer a request; Ctrl-F also works over an approval card, and the letter opens the overlay whose band answers it. Ctrl-F is not forward-char; Right moves the caret |
 | Ctrl-B | the side panel: full, compact, hidden (under 120 columns: the strip or off); `/panel full\|compact\|hidden` sets it, and the choice is kept in `cli.json` beside the database |
 | `y` `Y` `A` `d` `D` `n` | on an approval: once, this run, always this command family, deny, deny and stop, next |
-| mouse wheel | scrolls the pane under the pointer: the transcript, the side panel, the agent overlay, the pager (three lines a notch). On by default; Shift-drag (Option-drag in Terminal.app and iTerm2) still selects text, and `/mouse off` (kept in `cli.json`; `NCODE_MOUSE=0\|1` or `SWARM_MOUSE=0\|1` overrides it) gives the terminal its own selection back |
+| mouse wheel | scrolls the pane under the pointer: the transcript, the side panel, the agent overlay, the pager (three lines a notch). Off by default (the wheel still scrolls through alternate scroll); `/mouse on` (kept in `cli.json`; `NCODE_MOUSE=0\|1` or `SWARM_MOUSE=0\|1` overrides it) sends wheel reports to ncode, and Shift-drag (Option-drag in Terminal.app and iTerm2) still selects text |
 
 The agent overlay (a badge letter, or Enter on an agent in select mode) shows
 one agent full screen: its request with the approval keys, its life on a time
@@ -326,7 +326,7 @@ shared provider-file loader.
 | `SWARM_MODEL_OVERRIDE` | Set by `ncode --model` only: the session's model, never written |
 | `NCODE_KEYMAP` (`SWARM_KEYMAP`) | `vim` for vim keys in the composer |
 | `NCODE_ASCII` (`SWARM_ASCII`) | `1` draws plain ASCII glyphs, for a terminal or font without symbols |
-| `NCODE_MOUSE` (`SWARM_MOUSE`) | `0` turns mouse-wheel reports off, `1` on; wins over `/mouse` in `cli.json` (default on) |
+| `NCODE_MOUSE` (`SWARM_MOUSE`) | `0` turns mouse-wheel reports off, `1` on; wins over `/mouse` in `cli.json` (default off) |
 | `NCODE_THEME` (`SWARM_THEME`) | `dark` or `light`; wins over `/theme` in `cli.json` and the desktop's mode (default dark) |
 | `NCODE_COMPANION` (`SWARM_COMPANION`) | `0` turns the visual companion off |
 | `SWARM_APPROVAL` | Unsaved live launcher only: `ask` (default), `read-only` or `auto`; saved sessions use the project's approval mode |
