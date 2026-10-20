@@ -1874,9 +1874,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # running turn on the conversation's own queue; it starts when that ends.
   defp enqueue(state, id, text) do
     conversation_id = state.opts[:conversation_id]
-    conversation = Conversations.get!(conversation_id)
 
-    case Conversations.set_queued(conversation, (conversation.queued || []) ++ [text]) do
+    # pass 77 C-BUG-5: one retried IMMEDIATE append, not a read-modify-write.
+    case Conversations.append_queued(conversation_id, text) do
       {:ok, updated} ->
         count = length(updated.queued)
 
@@ -1953,9 +1953,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp activate_queue(state, conversation_id) do
     project_id = state.opts[:project_id]
+    held? = QueueState.held(QueueState.entry(state.queues, conversation_id)) != []
 
     case Conversations.get(conversation_id) do
-      %{project_id: ^project_id, queued: [_ | _]} ->
+      # A held prompt (popped, not yet stored again) keeps the queue alive.
+      %{project_id: ^project_id, queued: queued} when held? or queued not in [nil, []] ->
         {queues, generation} = QueueState.activate(state.queues, conversation_id)
 
         watch_queue(
@@ -1990,6 +1992,52 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp pop_and_start(state, conversation_id, generation) do
+    case put_back_held(state, conversation_id) do
+      {:ok, state} -> pop_head(state, conversation_id, generation)
+      {:retry, state} -> retry_queue(state, conversation_id, generation)
+    end
+  end
+
+  # pass 77 C-BUG-5: prompts held in memory (their put-back met a busy
+  # database) go back to the head of the stored queue before anything is
+  # popped, last first so they keep their order. Nothing is popped while one
+  # is still held.
+  defp put_back_held(state, conversation_id) do
+    case QueueState.held(QueueState.entry(state.queues, conversation_id)) do
+      [] ->
+        {:ok, state}
+
+      held ->
+        case put_back(Enum.reverse(held), conversation_id) do
+          [] ->
+            queues =
+              state.queues
+              |> QueueState.release(conversation_id)
+              |> QueueState.reset(conversation_id)
+
+            {:ok, %{state | queues: queues}}
+
+          rest ->
+            queues = QueueState.release(state.queues, conversation_id)
+            queues = Enum.reduce(rest, queues, &QueueState.hold(&2, conversation_id, &1))
+            {:retry, %{state | queues: queues}}
+        end
+    end
+  end
+
+  # `reversed` is last-first; the texts that could not be stored come back in
+  # queue order. A conversation that is gone has nothing left to wait for.
+  defp put_back([], _conversation_id), do: []
+
+  defp put_back([text | earlier] = reversed, conversation_id) do
+    case Conversations.requeue_head(conversation_id, text) do
+      {:ok, _} -> put_back(earlier, conversation_id)
+      {:error, :not_found} -> []
+      {:error, _busy} -> Enum.reverse(reversed)
+    end
+  end
+
+  defp pop_head(state, conversation_id, generation) do
     case Conversations.pop_queued(conversation_id) do
       {:ok, text, conversation} ->
         case start_queued(conversation, text, approval_opts(state)) do
@@ -1999,8 +2047,19 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             drain_queue(state, conversation_id, generation)
 
           {:error, reason} when reason in [:database_busy, :operation_failed] ->
-            Conversations.set_queued(conversation, [text | conversation.queued || []])
-            retry_queue(state, conversation_id, generation)
+            # A prompt is never lost: back at the head in one retried IMMEDIATE
+            # write, or held in memory until that write can be made.
+            case Conversations.requeue_head(conversation_id, text) do
+              {:ok, _} ->
+                retry_queue(state, conversation_id, generation)
+
+              {:error, :not_found} ->
+                remove_queue(state, conversation_id)
+
+              {:error, _busy} ->
+                queues = QueueState.hold(state.queues, conversation_id, text)
+                retry_queue(%{state | queues: queues}, conversation_id, generation)
+            end
 
           {:error, reason} ->
             # It can never start (nothing to compact, an unknown command):
@@ -2138,19 +2197,41 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # cli020 fix S1: a queued item starts with the session's `--approval` mode
   # like a send does (`approval`: `approval_opts/1`, [] outside `ncode -p`).
   defp start_queued(conversation, text, approval) do
-    if command_name(text) != nil do
-      CommandDispatcher.dispatch(
-        conversation.id,
-        text,
-        [research_ids: [], attachments: []] ++ approval
-      )
-    else
-      # A prompt is never dropped: any failure puts it back to be retried.
-      case Engine.start_chat_turn(SessionConfiguration.overlay(conversation), text, [], approval) do
-        {:ok, _} = ok -> ok
-        {:error, _} -> {:error, :operation_failed}
+    safe_start(fn ->
+      if command_name(text) != nil do
+        CommandDispatcher.dispatch(
+          conversation.id,
+          text,
+          [research_ids: [], attachments: []] ++ approval
+        )
+      else
+        # A prompt is never dropped: any failure puts it back to be retried.
+        case Engine.start_chat_turn(
+               SessionConfiguration.overlay(conversation),
+               text,
+               [],
+               approval
+             ) do
+          {:ok, _} = ok -> ok
+          {:error, _} -> {:error, :operation_failed}
+        end
       end
-    end
+    end)
+  end
+
+  # pass 77 C-BUG-5: a queued item that raises (or exits) is a failed start
+  # like any other, so the popped prompt is put back instead of lost. The log
+  # line names the failure, never the prompt.
+  @doc false
+  def safe_start(fun) do
+    fun.()
+  catch
+    kind, reason ->
+      Logger.error(
+        "queue: a queued item raised: " <> Exception.format_banner(kind, reason, __STACKTRACE__)
+      )
+
+      {:error, :operation_failed}
   end
 
   # pass71 F8: a start refused by a passing condition (a busy database under
@@ -2170,10 +2251,43 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         %{state | queues: QueueState.put_timer(queues, conversation_id, timer)}
 
       {_, :exhausted} ->
-        state
-        |> remove_queue(conversation_id)
-        |> toast("error", "Queue", "The queued prompt could not start.", nil)
+        if QueueState.held(QueueState.entry(state.queues, conversation_id)) == [],
+          do: exhausted_queue(state, conversation_id),
+          else: keep_held_queue(state, conversation_id, generation)
     end
+  end
+
+  defp exhausted_queue(state, conversation_id) do
+    state
+    |> remove_queue(conversation_id)
+    |> toast("error", "Queue", "The queued prompt could not start.", nil)
+  end
+
+  # pass 77 C-BUG-5: a held prompt is the only copy, so the queue stays and
+  # tries again slowly; the user is told once.
+  @queue_held_retry_ms 5_000
+  defp keep_held_queue(state, conversation_id, generation) do
+    {queues, told} = QueueState.warn(state.queues, conversation_id)
+
+    timer =
+      :erlang.start_timer(
+        @queue_held_retry_ms,
+        self(),
+        {:queue_retry, conversation_id, generation}
+      )
+
+    state = %{state | queues: QueueState.put_timer(queues, conversation_id, timer)}
+
+    if told == :first,
+      do:
+        toast(
+          state,
+          "warning",
+          "Queue",
+          "A queued prompt could not be put back yet; ncode keeps it and tries again.",
+          nil
+        ),
+      else: state
   end
 
   defp refresh_queue(state, conversation_id) do

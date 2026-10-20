@@ -8,7 +8,15 @@ defmodule SwarmCode.Daemon.Service.QueueState do
     case entry(state, id) do
       nil ->
         generation = state.next_generation + 1
-        entry = %{generation: generation, monitors: %{}, retries: 0, timer: nil}
+
+        entry = %{
+          generation: generation,
+          monitors: %{},
+          retries: 0,
+          timer: nil,
+          held: [],
+          warned: false
+        }
 
         {%{state | next_generation: generation, entries: Map.put(state.entries, id, entry)},
          generation}
@@ -36,6 +44,21 @@ defmodule SwarmCode.Daemon.Service.QueueState do
     case entry(state, id) do
       %{retries: n} when n < 8 -> {update(state, id, &%{&1 | retries: n + 1}), :retry}
       _ -> {state, :exhausted}
+    end
+  end
+
+  # pass 77 C-BUG-5: a prompt popped off the stored queue whose put-back failed
+  # (a busy database) is kept here, in queue order, until it is stored again.
+  def hold(state, id, text), do: update(state, id, &%{&1 | held: &1.held ++ [text]})
+  def held(nil), do: []
+  def held(entry), do: entry.held
+  def release(state, id), do: update(state, id, &%{&1 | held: [], warned: false})
+
+  # Whether the user has been told about a held prompt already (once per hold).
+  def warn(state, id) do
+    case entry(state, id) do
+      %{warned: false} -> {update(state, id, &%{&1 | warned: true}), :first}
+      _ -> {state, :again}
     end
   end
 
