@@ -263,6 +263,52 @@ defmodule SwarmCode.Domain.FeatureCatalogTest do
     assert {:ok, %{items: [_]}} = FeatureCatalog.query(:workflows, c.scope, id: wf.run_id)
   end
 
+  # pass 77 X-2: a workflow row offers only what its status allows.
+  test "workflow_actions/1 follows the status table" do
+    assert FeatureCatalog.workflow_actions("running") == [:pause, :stop]
+
+    for status <- ["paused", "waiting_user", "interrupted"],
+        do: assert(FeatureCatalog.workflow_actions(status) == [:resume, :stop])
+
+    assert FeatureCatalog.workflow_actions("stopped") == [:resume]
+
+    for status <- ["failed", "done", "queued", nil],
+        do: assert(FeatureCatalog.workflow_actions(status) == [])
+  end
+
+  test "a workflow's row offers the actions of the run's status, none for a failed run", c do
+    {:ok, _project} = Projects.trust(c.project)
+    dir = Path.join([c.project.root_path, ".swarm_code", "workflows"])
+    File.mkdir_p!(dir)
+
+    File.write!(
+      Path.join(dir, "actions-run.exs"),
+      "meta = %{name: \"actions-run\", description: \"No-model workflow\"}\ncomplete(\"finished\")\n"
+    )
+
+    assert {:ok, wf} =
+             FeatureCatalog.start_workflow(%{
+               conversation_id: c.conversation.id,
+               name: "actions-run"
+             })
+
+    assert eventually(fn -> Conversations.get_run(wf.run_id).status == "done" end)
+
+    for {status, actions} <- [
+          {"done", []},
+          {"failed", []},
+          {"running", [:pause, :stop]},
+          {"paused", [:resume, :stop]},
+          {"waiting_user", [:resume, :stop]},
+          {"interrupted", [:resume, :stop]},
+          {"stopped", [:resume]}
+        ] do
+      {:ok, _} = Conversations.update_run(Conversations.get_run(wf.run_id), %{status: status})
+      assert {:ok, %{items: items}} = FeatureCatalog.query(:workflows, c.scope, id: wf.run_id)
+      assert %{status: ^status, actions: ^actions} = Enum.find(items, &(&1.id == wf.run_id))
+    end
+  end
+
   test "research and schedule scopes cannot widen to unrelated global data", c do
     assert {:ok, task} =
              FeatureCatalog.save_schedule(%{
