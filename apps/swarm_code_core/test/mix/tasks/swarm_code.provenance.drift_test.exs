@@ -92,6 +92,60 @@ defmodule Mix.Tasks.SwarmCode.Provenance.DriftTest do
     assert pristine?(c.upstream)
   end
 
+  # C-ARCH-3
+  test "every ledger entry whose upstream file moved since its pin is listed", c do
+    ledger = fn entries ->
+      File.write!(
+        Path.join(c.root, "provenance/extracted-files.json"),
+        Jason.encode!(%{"version" => 1, "entries" => entries})
+      )
+    end
+
+    entry = fn path, destination, commit ->
+      %{
+        "upstream_path" => path,
+        "destination" => destination,
+        "upstream_commit" => commit,
+        "classification" => "source",
+        "sha256" => "x",
+        "upstream_sha256" => "y"
+      }
+    end
+
+    ledger.([
+      entry.("lib/swarm_code/engine.ex", "apps/core/engine.ex", c.pin),
+      entry.("lib/swarm_code/engine.ex", "apps/daemon/run.ex", c.pin),
+      entry.("lib/swarm_code_web/live/workspace_live.ex", "apps/daemon/dispatcher.ex", c.pin),
+      entry.("priv/repo/migrations/20260820000001_create.exs", "apps/core/create.exs", c.pin)
+    ])
+
+    write!(c.upstream, "lib/swarm_code/engine.ex", "v2\n")
+    commit!(c.upstream, "engine 2")
+    write!(c.upstream, "lib/swarm_code_web/live/workspace_live.ex", "web 1\n")
+    commit!(c.upstream, "web 1")
+    write!(c.upstream, "lib/swarm_code_web/live/workspace_live.ex", "web 2\n")
+    commit!(c.upstream, "web 2")
+
+    {0, lines} = drift(c, [])
+
+    assert Enum.drop(lines, 1) == [
+             "ncode CLI drift: 3 ledger entries changed upstream since their pin:",
+             "     2  lib/swarm_code_web/live/workspace_live.ex → apps/daemon/dispatcher.ex",
+             "     1  lib/swarm_code/engine.ex → apps/core/engine.ex",
+             "     1  lib/swarm_code/engine.ex → apps/daemon/run.ex"
+           ]
+
+    refute Enum.any?(lines, &(&1 =~ "create.exs"))
+    assert {1, _} = drift(c, ["--strict"])
+    assert pristine?(c.upstream)
+
+    # An entry pinned at the ref itself has nothing to report.
+    head = git!(c.upstream, ["rev-parse", "HEAD"]) |> String.trim()
+    ledger.([entry.("lib/swarm_code/engine.ex", "apps/core/engine.ex", head)])
+    {0, quiet} = drift(c, [])
+    refute Enum.any?(quiet, &(&1 =~ "ledger entries"))
+  end
+
   test "no desktop checkout is skipped, and fails only with --strict", c do
     missing = Path.join(Path.dirname(c.upstream), "absent")
     expected = ["ncode CLI drift: no desktop checkout at #{missing}; skipped."]

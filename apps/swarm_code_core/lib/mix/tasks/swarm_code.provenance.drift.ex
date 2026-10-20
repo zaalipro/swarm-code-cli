@@ -17,6 +17,12 @@ defmodule Mix.Tasks.SwarmCode.Provenance.Drift do
   - Only code drift (commits since the pin that touch `lib/swarm_code` or
     `priv`): a warning, exit 0; exit 1 with `--strict`.
   - No desktop checkout at the path: skipped, exit 0; exit 1 with `--strict`.
+  - C-ARCH-3: the verdict is followed by every ledger entry
+    (`provenance/extracted-files.json`) whose upstream file changed since the
+    commit that entry was synced from, most-changed first: the web-lineage
+    ports (`command_dispatcher.ex` from `workspace_live.ex`) are not under
+    `lib/swarm_code`, so the count above never sees them. Information only; it
+    never changes the exit status.
 
   `mix precommit` runs it without `--strict`; `scripts/dev/build_release.sh`
   runs it with `--strict` (escape hatch `NCODE_ALLOW_DRIFT=1`).
@@ -27,6 +33,8 @@ defmodule Mix.Tasks.SwarmCode.Provenance.Drift do
   @switches [ref: :string, upstream: :string, strict: :boolean]
   @migrations "priv/repo/migrations/"
   @domain ["lib/swarm_code", "priv"]
+  @ledger "provenance/extracted-files.json"
+  @ledger_lines 50
   @git_timeout_ms 30_000
   @ref_pattern ~r/\A[0-9A-Za-z][0-9A-Za-z._\/^~-]{0,199}\z/
 
@@ -62,7 +70,8 @@ defmodule Mix.Tasks.SwarmCode.Provenance.Drift do
            {:ok, at_pin} <- migrations(upstream, pin_sha),
            {:ok, at_ref} <- migrations(upstream, ref_sha),
            {:ok, commits} <- domain_commits(upstream, pin_sha, ref_sha) do
-        verdict(ref, ref_sha, pin_sha, at_ref -- at_pin, commits, strict?)
+        {status, lines} = verdict(ref, ref_sha, pin_sha, at_ref -- at_pin, commits, strict?)
+        {status, lines ++ ledger_lines(root, upstream, ref_sha)}
       else
         {:error, message} -> {1, ["ncode CLI drift: " <> message]}
       end
@@ -143,6 +152,65 @@ defmodule Mix.Tasks.SwarmCode.Provenance.Drift do
       {:ok, count}
     else
       _ -> {:error, "cannot count the commits #{short(pin_sha)}..#{short(ref_sha)}."}
+    end
+  end
+
+  # C-ARCH-3: one `rev-list --count` per distinct {commit, upstream path}
+  # (at most one per ledger entry), against the commit the entry was synced
+  # from. An entry whose commit this checkout does not know is left out.
+  defp ledger_lines(root, upstream, ref_sha) do
+    entries = ledger(root)
+
+    changed =
+      entries
+      |> Enum.map(&{&1["upstream_commit"], &1["upstream_path"]})
+      |> Enum.uniq()
+      |> Map.new(fn {commit, path} = key ->
+        {key, entry_commits(upstream, commit, ref_sha, path)}
+      end)
+
+    moved =
+      for entry <- entries,
+          count = Map.get(changed, {entry["upstream_commit"], entry["upstream_path"]}),
+          is_integer(count) and count > 0,
+          do: {count, entry["upstream_path"], entry["destination"]}
+
+    case Enum.sort_by(moved, fn {count, path, _} -> {-count, path} end) do
+      [] ->
+        []
+
+      sorted ->
+        shown = Enum.take(sorted, @ledger_lines)
+        more = length(sorted) - length(shown)
+
+        ["ncode CLI drift: #{length(sorted)} ledger entries changed upstream since their pin:"] ++
+          Enum.map(shown, fn {count, path, destination} ->
+            "  #{String.pad_leading(Integer.to_string(count), 4)}  #{path} → #{destination}"
+          end) ++
+          if(more > 0, do: ["  … and #{more} more."], else: [])
+    end
+  end
+
+  defp ledger(root) do
+    with {:ok, bytes} <- File.read(Path.join(root, @ledger)),
+         {:ok, %{"entries" => entries}} when is_list(entries) <- Jason.decode(bytes) do
+      Enum.filter(entries, fn entry ->
+        is_map(entry) and is_binary(entry["upstream_commit"]) and
+          Regex.match?(~r/\A[0-9a-f]{40}\z/, entry["upstream_commit"]) and
+          is_binary(entry["upstream_path"]) and is_binary(entry["destination"])
+      end)
+    else
+      _ -> []
+    end
+  end
+
+  defp entry_commits(upstream, commit, ref_sha, path) do
+    with {:ok, out} <-
+           git(upstream, ["rev-list", "--count", "#{commit}..#{ref_sha}", "--", path]),
+         {count, ""} <- Integer.parse(String.trim(out)) do
+      count
+    else
+      _ -> nil
     end
   end
 
