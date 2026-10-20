@@ -215,21 +215,19 @@ defmodule SwarmCodeCLI.Release.OrbitE2ETest do
     end
   end
 
-  defp slash_extras_settled!(backend, left \\ 500) do
-    extras = :sys.get_state(backend).slash_extras
+  # The launch listing of the project's commands is an owned task of the
+  # backend: wait for it by monitor (no clock), then flush its reply.
+  defp slash_extras_settled!(backend) do
+    case :sys.get_state(backend).slash_extras do
+      %{task: %Task{pid: pid}} ->
+        ref = Process.monitor(pid)
 
-    cond do
-      extras.task == nil and extras.items != nil ->
-        :ok
-
-      left == 0 ->
-        flunk("the command list never settled")
-
-      true ->
         receive do
-        after
-          20 -> slash_extras_settled!(backend, left - 1)
+          {:DOWN, ^ref, :process, ^pid, _reason} -> slash_extras_settled!(backend)
         end
+
+      _ ->
+        :ok
     end
   end
 

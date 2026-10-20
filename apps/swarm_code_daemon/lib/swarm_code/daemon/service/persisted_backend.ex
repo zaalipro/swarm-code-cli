@@ -5505,6 +5505,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     %{"custom" => custom, "workflows" => workflows}
   rescue
     _ -> @slash_extras_empty
+  catch
+    # The repo went away mid-read (the session is closing): an empty list.
+    :exit, _ -> @slash_extras_empty
   end
 
   defp slash_name?(name),

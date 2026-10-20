@@ -4,6 +4,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
   alias SwarmCode.Domain.{Cache, Conversations, Engine, Projects, Providers, Repo}
   alias SwarmCode.Protocol.{Scope, ServiceRequest}
   alias SwarmCode.Test.LoopbackHTTP, as: HTTP
+  import SwarmCode.Test.C020Backend, only: [settle_slash_extras: 1]
 
   defmodule ApprovalOwner do
     use GenServer, restart: :temporary
@@ -91,7 +92,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
       source_epoch: Ecto.UUID.generate()
     ]
 
-    backend = start_supervised!({Backend, opts})
+    # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+    # delta of its own: let it land before a test counts deltas.
+    backend = {Backend, opts} |> start_supervised!() |> settle_slash_extras()
     on_exit(fn -> Engine.stop_all(conv.id) end)
 
     %{
@@ -163,7 +166,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     stop_supervised!(Backend)
 
     restarted =
-      start_supervised!({Backend, Keyword.put(c.opts, :source_epoch, Ecto.UUID.generate())})
+      {Backend, Keyword.put(c.opts, :source_epoch, Ecto.UUID.generate())}
+      |> start_supervised!()
+      |> settle_slash_extras()
 
     assert :sys.get_state(restarted).attachment_ids == [attachment_id]
 
@@ -228,7 +233,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     assert delta["body"]["mode"] == "ultra"
     assert {:ok, _} = SwarmCodeCLI.UI.DataSource.Delta.decode(delta)
     stop_supervised!(Backend)
-    restarted = start_supervised!({Backend, c.opts})
+    restarted = {Backend, c.opts} |> start_supervised!() |> settle_slash_extras()
     assert {:ok, %{"value" => snapshot}} = query(restarted, c.scope, "workspace")
     assert snapshot["mode"] == "ultra"
     assert snapshot["chat_model"] == "chat-model"
@@ -322,7 +327,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     assert {:ok, %{"value" => before}} = query(c.backend, c.scope, "workspace")
     assert Enum.any?(before["transcript"]["items"], &(&1["text"] == "Saved answer."))
     stop_supervised!(Backend)
-    restarted = start_supervised!({Backend, c.opts})
+    restarted = {Backend, c.opts} |> start_supervised!() |> settle_slash_extras()
     assert {:ok, %{"value" => after_reload}} = query(restarted, c.scope, "workspace")
     assert Enum.map(after_reload["runs"], & &1["id"]) == Enum.map(before["runs"], & &1["id"])
 
@@ -1240,7 +1245,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     stop_supervised!(Backend)
 
     resumed =
-      start_supervised!({Backend, Keyword.put(c.opts, :source_epoch, Ecto.UUID.generate())})
+      {Backend, Keyword.put(c.opts, :source_epoch, Ecto.UUID.generate())}
+      |> start_supervised!()
+      |> settle_slash_extras()
 
     assert {:ok, %{"value" => outcome}} =
              request(resumed, "unfinished", %{c.scope | generation: 8}, command)
@@ -1257,7 +1264,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackendTest do
     stop_supervised!(Backend)
 
     replacement =
-      start_supervised!({Backend, Keyword.put(c.opts, :source_epoch, Ecto.UUID.generate())})
+      {Backend, Keyword.put(c.opts, :source_epoch, Ecto.UUID.generate())}
+      |> start_supervised!()
+      |> settle_slash_extras()
 
     resumed_scope = %{c.scope | generation: c.scope.generation + 1}
     assert request(replacement, "restart-identity", resumed_scope, request) == first

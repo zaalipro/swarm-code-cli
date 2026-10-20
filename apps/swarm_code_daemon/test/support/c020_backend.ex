@@ -72,11 +72,13 @@ defmodule SwarmCode.Test.C020Backend do
         source_epoch: Ecto.UUID.generate()
       ] ++ extra
 
-    start_supervised!(%{
+    %{
       id: make_ref(),
       start: {Backend, :start_link, [opts]},
       restart: :temporary
-    })
+    }
+    |> start_supervised!()
+    |> settle_slash_extras()
   end
 
   def scope(conversation), do: %Scope{kind: :conversation, id: conversation.id, generation: 3}
@@ -183,6 +185,26 @@ defmodule SwarmCode.Test.C020Backend do
   def pending_approvals(backend, scope) do
     {:ok, %{"value" => %{"items" => items}}} = query(backend, scope, "pending")
     Enum.filter(items, &(&1["kind"] == "approval"))
+  end
+
+  @doc """
+  Waits (by monitor, no clock) for the backend's launch listing of the
+  project's commands and workflows (C-FEAT-1/8) to land, so the one metadata
+  delta it may send (a new revision) arrives before a test registers a watch
+  and counts deltas or revisions. Returns the backend.
+  """
+  def settle_slash_extras(backend) do
+    case :sys.get_state(backend).slash_extras do
+      %{task: %Task{pid: pid}} ->
+        ref = Process.monitor(pid)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> settle_slash_extras(backend)
+        end
+
+      _ ->
+        backend
+    end
   end
 
   # The command ledger is durable per project: every request names its own id.

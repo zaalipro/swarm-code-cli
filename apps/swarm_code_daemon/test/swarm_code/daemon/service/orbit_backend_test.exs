@@ -244,15 +244,17 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
       )
 
   defp start_backend!(c, conversation) do
-    start_supervised!(
-      {Backend,
-       mode: :persisted,
-       repo: Repo,
-       project_root: c.root,
-       project_id: c.project.id,
-       conversation_id: conversation.id,
-       source_epoch: Ecto.UUID.generate()}
-    )
+    # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+    # delta of its own: let it land before a test counts deltas.
+    {Backend,
+     mode: :persisted,
+     repo: Repo,
+     project_root: c.root,
+     project_id: c.project.id,
+     conversation_id: conversation.id,
+     source_epoch: Ecto.UUID.generate()}
+    |> start_supervised!()
+    |> SwarmCode.Test.C020Backend.settle_slash_extras()
   end
 
   describe "S4 home.overview and conversation.search" do
@@ -391,6 +393,10 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
            work: %{home_overview: build}},
           id: :injected_backend
         )
+
+      # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+      # delta of its own: let it land before a test counts deltas.
+      SwarmCode.Test.C020Backend.settle_slash_extras(backend)
 
       first = make_ref()
       second = make_ref()
@@ -961,6 +967,10 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
            work: %{home_overview: build}},
           id: :injected_backend
         )
+
+      # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+      # delta of its own: let it land before a test counts deltas.
+      SwarmCode.Test.C020Backend.settle_slash_extras(backend)
 
       watch!(backend, "shell", global(), "shell")
       assert {:ok, _} = request(backend, "home", global(), overview_request())

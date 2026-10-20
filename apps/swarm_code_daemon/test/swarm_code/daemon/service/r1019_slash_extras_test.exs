@@ -40,8 +40,8 @@ defmodule SwarmCode.Daemon.Service.R1019SlashExtrasTest do
     {:ok, conv} = Conversations.create(c.project.id)
     backend = start_backend(c, conv)
 
-    assert eventually(fn -> :sys.get_state(backend).slash_extras.task == nil end)
-    assert eventually(fn -> :sys.get_state(backend).slash_extras.items != nil end)
+    # `start_backend/3` returns once the launch listing has landed.
+    assert %{task: nil, items: %{}} = :sys.get_state(backend).slash_extras
 
     body = workspace(backend, scope(conv))
     assert %{"custom" => custom, "workflows" => workflows} = body["slash_extras"]
@@ -72,8 +72,8 @@ defmodule SwarmCode.Daemon.Service.R1019SlashExtrasTest do
     {:ok, conv} = Conversations.create(project.id)
     backend = start_backend(%{c | root: root, project: project}, conv)
 
-    assert eventually(fn -> :sys.get_state(backend).slash_extras.task == nil end)
-    assert eventually(fn -> :sys.get_state(backend).slash_extras.items != nil end)
+    # `start_backend/3` returns once the launch listing has landed.
+    assert %{task: nil, items: %{}} = :sys.get_state(backend).slash_extras
 
     assert %{"custom" => custom, "workflows" => workflows} =
              workspace(backend, scope(conv))["slash_extras"]
