@@ -166,7 +166,8 @@ defmodule SwarmCodeCLI.UI.State do
     # (`%{id, text}`: the `queue.edit` request that removes it and what it said).
     queue_take: nil,
     # cli020 D10: the rewind in flight (`%{mode}` while the turns load,
-    # `%{mode: :apply, turn, scope}` while it applies) and the last bare Esc.
+    # `%{mode: :apply, turn, scope, key, identity}` while it applies: the
+    # composer that asked and its payload identity, C-BUG-17) and the last bare Esc.
     rewind: nil,
     last_escape_at: nil,
     # cli020 D19: the history search's debounce timer and newest request,

@@ -98,14 +98,22 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
            ]
   end
 
+  # C-BUG-17: the confirm's choice, so `state.rewind` names the asking composer.
+  defp chosen(state, scope) do
+    state = %{state | layers: [{:rewind_confirm, @t1}, {:rewind, %{turns: [@t1], selected: 0}}]}
+    {state, effects} = Reducer.update(state, {:rewind_choose, scope})
+    [request] = for {:command, request} <- effects, do: request
+    {state, request}
+  end
+
+  defp answer(state, request, text),
+    do: Remote.answer(state, request, {:ok, %{"text" => text, "restored" => 2, "skipped" => 0}})
+
   test "the answer fills the draft as one undoable edit and says what came back" do
     state = ready() |> type("draft before")
-    state = %{state | rewind: %{mode: :apply, turn: @t1, scope: :both}}
-
-    request = %{
-      kind: {:rewind_apply, @c, "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603", :both},
-      origin: {:conversation, :rewind}
-    }
+    {state, request} = chosen(state, :both)
+    assert %{key: {@c, :main}, identity: identity} = state.rewind
+    assert is_binary(identity)
 
     {state, _} =
       Remote.answer(state, request, {:ok, %{"text" => "third", "restored" => 2, "skipped" => 1}})
@@ -118,6 +126,80 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
 
     {state, _} = Reducer.update(state, {:editor, key(state), :undo})
     assert text(state) == "draft before"
+  end
+
+  test "C-BUG-17: a late answer goes to the composer that asked, not to the overlay in view" do
+    state = ready()
+    {state, request} = chosen(state, :both)
+
+    agent_key = {@c, {:agent, "node-a"}}
+
+    {:ok, overlay_editor} =
+      SwarmCodeCLI.UI.Editor.apply(SwarmCodeCLI.UI.Editor.new(), {:insert, "steer"})
+
+    drafts =
+      SwarmCodeCLI.UI.Drafts.put(
+        state.drafts,
+        SwarmCodeCLI.UI.Draft.new(agent_key, overlay_editor)
+      )
+
+    state = %{
+      state
+      | drafts: drafts,
+        overlay: %{run_id: "r", node_id: "node-a", draft_key: agent_key, focus: :composer}
+    }
+
+    assert key(state) == agent_key
+
+    {state, _} = answer(state, request, "third")
+
+    conversation_draft = SwarmCodeCLI.UI.Drafts.fetch(state.drafts, {@c, :main}).editor
+    overlay_draft = SwarmCodeCLI.UI.Drafts.fetch(state.drafts, agent_key).editor
+    assert SwarmCodeCLI.UI.Editor.text(conversation_draft) == "third"
+    assert SwarmCodeCLI.UI.Editor.text(overlay_draft) == "steer"
+    assert state.rewind == nil
+  end
+
+  test "C-BUG-17: typing after the request keeps the draft and stashes the old prompt" do
+    {state, request} = chosen(ready(), :both)
+    state = type(state, "new typing")
+
+    {state, _} = answer(state, request, "third")
+
+    assert text(state) == "new typing"
+    assert state.stashes[{@c, :main}] == "third"
+
+    assert state.notice ==
+             {:command_feedback,
+              "Rewound to turn 3 · 2 files restored · your draft was kept; the old prompt is in the stash (Ctrl-P Restore stash)"}
+  end
+
+  test "C-BUG-17: an edited draft with a stash already there leaves the prompt in the transcript" do
+    {state, request} = chosen(ready(), :both)
+    state = %{type(state, "new typing") | stashes: %{{@c, :main} => "older stash"}}
+
+    {state, _} = answer(state, request, "third")
+
+    assert text(state) == "new typing"
+    assert state.stashes[{@c, :main}] == "older stash"
+
+    assert state.notice ==
+             {:command_feedback,
+              "Rewound to turn 3 · 2 files restored · your draft was kept; the old prompt is in the transcript"}
+  end
+
+  test "C-BUG-17: an answer with no remembered origin changes no draft" do
+    state = ready() |> type("keep")
+    state = %{state | rewind: %{mode: :apply, turn: @t1, scope: :both, key: nil, identity: nil}}
+
+    request = %{
+      kind: {:rewind_apply, @c, "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603", :both},
+      origin: {:conversation, :rewind}
+    }
+
+    {state, _} = answer(state, request, "third")
+    assert text(state) == "keep"
+    assert state.stashes == %{}
   end
 
   test "files only leaves the draft and says the files came back" do
