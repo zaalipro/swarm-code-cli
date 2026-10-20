@@ -378,7 +378,10 @@ defmodule SwarmCodeCLI.UI.Settings.C74Qa1Test do
 
   test "F-10: a and + apply a waiting fetch difference from any row of the provider's page" do
     id = I.ids().deepseek
-    {_s, tid, task, trows} = T.run(I.seed(), "provider.fetch_models", %{"id" => id})
+
+    {_s, tid, task, trows} =
+      T.run(I.seed(), "provider.fetch_models", %{"id" => id}, %{"apply" => "none"})
+
     c = record_ctx(:providers, "provider", id) |> T.put(tid, task, trows)
     rows = Providers.record_rows(c, "provider", id)
 
