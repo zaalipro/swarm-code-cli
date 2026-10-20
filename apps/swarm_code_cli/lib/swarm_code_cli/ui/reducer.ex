@@ -107,6 +107,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     state = SwarmCodeCLI.UI.Reducer.TerminalPrefs.apply_prefs(state, init.prefs)
 
+    # C-FEAT-14: the saved composer height and inspector width apply at launch
+    # (their live consumers emit no effects).
+    {state, _} =
+      SwarmCodeCLI.UI.Reducer.Settings.Commit.apply_names(state, [
+        "composer_rows",
+        "inspector_width"
+      ])
+
     state = %{
       state
       | watches: Map.new([:shell, :workspace, :activity, :inspector], &{&1, %WatchState{}}),
