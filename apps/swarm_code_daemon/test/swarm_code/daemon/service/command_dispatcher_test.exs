@@ -73,6 +73,13 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcherTest do
     %{conversation: conversation}
   end
 
+  # pass 77 C-FEAT-12: the backend answers /add-dir itself; the dispatcher only
+  # refuses it as the terminal's.
+  test "/add-dir reaches the dispatcher as a client-only command", %{conversation: c} do
+    assert {:error, :client_only} = Dispatcher.dispatch(c.id, "/add-dir ../shared")
+    assert {:error, :missing_argument} = Dispatcher.dispatch(c.id, "/add-dir")
+  end
+
   test "invalid requests and unknown commands do not mutate", %{conversation: c} do
     assert {:error, :invalid_request} = Dispatcher.dispatch(1, "/stop")
     assert {:error, :invalid_request} = Dispatcher.dispatch(c.id, <<255>>)

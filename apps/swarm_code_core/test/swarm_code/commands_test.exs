@@ -4,7 +4,20 @@ defmodule SwarmCode.CommandsTest do
 
   test "catalogue exposes all builtins" do
     assert Enum.map(Commands.catalogue(), & &1.name) ==
-             ~w(swarm goal plan review effort worker_effort model worker_model rewind undo stop workflow workflows create-workflow ultra consensus deep_research attach compact new clear resume resume-run rename delete fork approval profile trust diff cost search export agents help quit)
+             ~w(swarm goal plan review effort worker_effort model worker_model rewind undo stop workflow workflows create-workflow ultra consensus deep_research attach add-dir compact new clear resume resume-run rename delete fork approval profile trust diff cost search export agents help quit)
+  end
+
+  # pass 77 C-FEAT-12
+  test "/add-dir parses a folder and refuses a missing or odd one" do
+    assert {:ok, %{name: "add-dir", action: :add_read_root, path: "../shared lib"}} =
+             Commands.parse("/add-dir ../shared lib")
+
+    assert {:error, %{type: :missing_argument}} = Commands.parse("/add-dir")
+
+    assert {:error, %{type: :invalid_argument}} =
+             Commands.parse("/add-dir " <> String.duplicate("a", 4097))
+
+    assert Enum.find(Commands.catalogue(), &(&1.name == "add-dir")).args == "<folder>"
   end
 
   test "catalogue ranking" do

@@ -35,6 +35,8 @@ defmodule SwarmCode.Commands do
     {"consensus", "[task]", "Consensus mode; with a task, judge this one turn only"},
     {"deep_research", "[id]", "Attach a finished deep research to this message"},
     {"attach", "<image-path>", "Stage an image file for the next message"},
+    # pass 77 C-FEAT-12: a read-only extra folder for this session.
+    {"add-dir", "<folder>", "Let agents read another folder (read-only, this session)"},
     {"compact", "[focus]", "Summarise the conversation so far and continue from the summary"},
     # pass70 C7: the session basics.
     {"new", "", "Start a new conversation; this one stays saved"},
@@ -361,6 +363,14 @@ defmodule SwarmCode.Commands do
   defp parse_known(%{name: "attach"} = item, path, _) do
     if valid_text?(path, 4096) and not String.contains?(path, ["\0", "\r", "\n"]),
       do: ok(item, :attach_file, %{path: path}),
+      else: error(:invalid_argument)
+  end
+
+  defp parse_known(%{name: "add-dir"}, "", _), do: error(:missing_argument)
+
+  defp parse_known(%{name: "add-dir"} = item, path, _) do
+    if valid_text?(path, 4096) and not String.contains?(path, ["\0", "\r", "\n"]),
+      do: ok(item, :add_read_root, %{path: path}),
       else: error(:invalid_argument)
   end
 

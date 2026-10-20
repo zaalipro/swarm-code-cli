@@ -51,6 +51,8 @@ defmodule SwarmCodeCLI.Release do
                       a swarm or workflow it launched counts the same way
     --max-budget-usd X  with -p: stop the run once it and what it launched cost more than $X
     --approval MODE   with -p: read-only, auto or full for this run only
+    --add-dir DIR     let agents read another folder (read-only, this session only;
+                      repeat it, up to 8); works with the full-screen view and -p
     --image, -i PATH  with -p: attach an image (PNG, JPEG, GIF or WebP inside the
                       project folder; repeat it, up to 4)
     -o, --output-last-message FILE  with -p: also write the final answer to FILE
@@ -76,6 +78,10 @@ defmodule SwarmCodeCLI.Release do
 
   # C-FEAT-10: the images a `-p` run takes.
   @max_images 4
+
+  # C-FEAT-12: the extra read folders `--add-dir` names (the launcher exports
+  # them in SWARM_ADD_DIRS, one per line).
+  @max_add_dirs 8
 
   @type options :: %{
           mode: :tui | :plain | :prompt | :settings,
@@ -186,6 +192,7 @@ defmodule SwarmCodeCLI.Release do
 
       {:ok, options} ->
         with {:ok, options} <- headless_approval(options),
+             {:ok, options} <- add_read_roots(options),
              {:ok, options} <- read_prompt(options) do
           Headless.run(mode(options), headless_options(options))
         else
@@ -657,6 +664,27 @@ defmodule SwarmCodeCLI.Release do
   defp approval_env(value) when value in ["read_only", "auto", "full_access"], do: value
   defp approval_env(_), do: nil
 
+  # C-FEAT-12: the launcher's `--add-dir` folders (SWARM_ADD_DIRS).
+  defp add_read_roots(options) do
+    {:ok, Map.put(options, :extra_read_roots, extra_read_roots(System.get_env("SWARM_ADD_DIRS")))}
+  end
+
+  @doc """
+  C-FEAT-12: the absolute folders in `SWARM_ADD_DIRS` (one per line; blanks,
+  relative paths and everything past the eighth are dropped).
+  """
+  @spec extra_read_roots(binary() | nil) :: [Path.t()]
+  def extra_read_roots(value) when is_binary(value) do
+    value
+    |> String.split("\n", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&(&1 != "" and Path.type(&1) == :absolute))
+    |> Enum.uniq()
+    |> Enum.take(@max_add_dirs)
+  end
+
+  def extra_read_roots(_), do: []
+
   @doc false
   # The keyword `Headless.run/2` takes for the parsed `options`.
   def headless_options(options) do
@@ -669,7 +697,8 @@ defmodule SwarmCodeCLI.Release do
       max_budget_usd: Map.get(options, :max_budget_usd),
       approval_mode: Map.get(options, :approval),
       images: Map.get(options, :images) |> presence(),
-      output_file: Map.get(options, :output_file)
+      output_file: Map.get(options, :output_file),
+      extra_read_roots: Map.get(options, :extra_read_roots) |> presence()
     ]
     |> Enum.reject(fn {_, value} -> is_nil(value) end)
   end

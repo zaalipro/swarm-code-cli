@@ -24,6 +24,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     printf 'PIPED=%s\\n' "${SWARM_STDIN_PIPED-<unset>}"
     printf 'PICKER=%s\\n' "${SWARM_RESUME_PICKER-<unset>}"
     printf 'APPROVAL=%s\\n' "${SWARM_HEADLESS_APPROVAL-<unset>}"
+    printf 'ADD_DIRS=%s\\n' "$(printf '%s' "${SWARM_ADD_DIRS-<unset>}" | tr '\\n' '|')"
   } >"$STUB_LOG"
   exit "${STUB_EXIT:-0}"
   """
@@ -509,6 +510,84 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
                SwarmCodeCLI.Release.parse(
                  ["-p", "x"] ++ Enum.flat_map(1..5, &["--image", "#{&1}.png"])
                )
+    end
+  end
+
+  # C-FEAT-12: --add-dir DIR (repeatable, at most 8) exports SWARM_ADD_DIRS, the
+  # real paths one per line, for the TUI and for -p.
+  describe "--add-dir" do
+    test "two folders reach the release as real paths, one per line", context do
+      a = Path.join(context.project, "a")
+      b = Path.join(context.project, "b")
+      File.mkdir_p!(a)
+      File.mkdir_p!(b)
+
+      assert {0, _} = launch(context, ["-p", "x", "--add-dir", "a", "--add-dir=" <> b])
+
+      cwd = resolved(context.project, "-P")
+      assert stub(context)["ADD_DIRS"] == "#{cwd}/a|#{cwd}/b"
+    end
+
+    test "without the flag the variable is not set, even if the shell had one", context do
+      assert {0, _} = launch(context, ["-p", "x"], [{"SWARM_ADD_DIRS", "/elsewhere"}])
+      assert stub(context)["ADD_DIRS"] == "<unset>"
+    end
+
+    test "a file, a missing folder, a blank value or a ninth folder: exit 2", context do
+      File.write!(Path.join(context.project, "file.txt"), "x")
+
+      nine =
+        Enum.flat_map(1..9, fn n ->
+          dir = Path.join(context.project, "d#{n}")
+          File.mkdir_p!(dir)
+          ["--add-dir", dir]
+        end)
+
+      for {args, text} <- [
+            {["--add-dir", "file.txt"], "--add-dir needs a directory."},
+            {["--add-dir", "nope"], "--add-dir needs a directory."},
+            {["--add-dir", " "], "--add-dir needs a directory."},
+            {["--add-dir"], "--add-dir needs a value."},
+            {nine, "at most 8 --add-dir."}
+          ] do
+        assert {2, output} = launch(context, args), inspect(args)
+        assert output =~ text, inspect(args)
+      end
+    end
+  end
+
+  describe "--add-dir in the release" do
+    alias SwarmCodeCLI.Release
+    alias SwarmCodeCLI.Release.PersistedSession
+
+    test "SWARM_ADD_DIRS becomes absolute, unique folders, eight at most" do
+      assert Release.extra_read_roots(nil) == []
+      assert Release.extra_read_roots("") == []
+      assert Release.extra_read_roots("/a\n\nrelative\n/b\n/a\n") == ["/a", "/b"]
+
+      nine = Enum.map_join(1..9, "\n", &"/d#{&1}")
+      assert Release.extra_read_roots(nine) == Enum.map(1..8, &"/d#{&1}")
+    end
+
+    test "headless_options/1 carries them, and leaves the key out without any" do
+      assert {:ok, options} = Release.parse(["-p", "x"])
+      refute Keyword.has_key?(Release.headless_options(options), :extra_read_roots)
+
+      options = Map.put(options, :extra_read_roots, ["/a", "/b"])
+      assert Release.headless_options(options)[:extra_read_roots] == ["/a", "/b"]
+    end
+
+    test "the persisted backend child gets them as extra_read_roots" do
+      session = %{project: %{root_path: "/p", id: "pid"}}
+      env = %{"SWARM_ADD_DIRS" => "/a\n/b"}
+
+      opts = PersistedSession.backend_options(session, "cid", "epoch", env)
+      assert opts[:extra_read_roots] == ["/a", "/b"]
+      assert opts[:project_root] == "/p"
+      assert opts[:conversation_id] == "cid"
+
+      assert PersistedSession.backend_options(session, "cid", "epoch", %{})[:extra_read_roots] ==
+               []
     end
   end
 

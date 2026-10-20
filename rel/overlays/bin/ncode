@@ -49,6 +49,8 @@ With no flag it opens Home: recent work, live runs, resume (Esc continues the la
   --max-turns N     with -p: stop the run after N turns of its lead (1-200)
   --max-budget-usd X  with -p: stop the run once it costs more than $X
   --approval MODE   with -p: read-only, auto or full for this run only
+  --add-dir DIR     let agents read another folder (read-only, this session only;
+                    repeat it, up to 8); works with the full-screen view and -p
   --image, -i PATH  with -p: attach an image (PNG, JPEG, GIF or WebP inside the
                     project folder; repeat it, up to 4)
   -o, --output-last-message FILE  with -p: also write the final answer to FILE
@@ -180,6 +182,7 @@ max_budget=""
 approval=""
 images=()
 output_file=""
+add_dirs=()
 plain=0
 ndjson=0
 seen=" "
@@ -213,6 +216,15 @@ abs_path() {
 
 needs_file() {
   [[ -n "${2//[[:space:]]/}" ]] || die_usage "$1 needs a file."
+}
+
+# C-FEAT-12: --add-dir names a folder the agents may read (read-only, this
+# session); it is resolved to its real path here, relative to where the command ran.
+add_dir() {
+  local resolved
+  [[ -n "${1//[[:space:]]/}" ]] || die_usage "--add-dir needs a directory."
+  resolved=$(cd -- "$1" 2>/dev/null && pwd -P) || die_usage "--add-dir needs a directory."
+  add_dirs+=("$resolved")
 }
 
 needs_value() {
@@ -331,6 +343,8 @@ while [[ $# -gt 0 ]]; do
     --image=*) needs_file --image "${1#--image=}"; images+=("$(abs_path "${1#--image=}")") ;;
     -o | --output-last-message) needs_value "$1" $# "${2:-}"; needs_file "$1" "$2"; once -o; output_file="$(abs_path "$2")"; shift ;;
     --output-last-message=*) needs_file -o "${1#--output-last-message=}"; once -o; output_file="$(abs_path "${1#--output-last-message=}")" ;;
+    --add-dir) needs_value "$1" $# "${2:-}"; add_dir "$2"; shift ;;
+    --add-dir=*) add_dir "${1#--add-dir=}" ;;
     --plain) once --plain; plain=1 ;;
     --ndjson) once --ndjson; ndjson=1 ;;
     --)
@@ -375,6 +389,7 @@ esac
 [[ ${#images[@]} -eq 0 || $prompt_set -eq 1 ]] || die_usage "--image goes with -p."
 [[ ${#images[@]} -le 4 ]] || die_usage "at most 4 --image."
 [[ -z "$output_file" || $prompt_set -eq 1 ]] || die_usage "-o goes with -p."
+[[ ${#add_dirs[@]} -le 8 ]] || die_usage "at most 8 --add-dir."
 [[ $ndjson -eq 0 || $plain -eq 1 ]] || die_usage "--ndjson goes with --plain."
 [[ $plain -eq 0 || $prompt_set -eq 0 ]] || die_usage "-p and --plain do not go together."
 if [[ $fail_on_denied -eq 1 && $prompt_set -eq 0 && $plain -eq 0 ]]; then
@@ -436,7 +451,12 @@ if [[ $model_set -eq 1 ]]; then
 else
   unset SWARM_MODEL_OVERRIDE
 fi
-unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY SWARM_RESUME_PICKER
+unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY SWARM_RESUME_PICKER SWARM_ADD_DIRS
+# C-FEAT-12: the extra read folders, one per line, for the release to read.
+if [[ ${#add_dirs[@]} -gt 0 ]]; then
+  SWARM_ADD_DIRS=$(printf '%s\n' "${add_dirs[@]}")
+  export SWARM_ADD_DIRS
+fi
 
 # cli020 B20 (onboarding-18): something on the terminal while the VM boots;
 # the release erases it ("\r\e[2K") before its exit summary.

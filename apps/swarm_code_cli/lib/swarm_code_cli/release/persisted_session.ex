@@ -506,6 +506,23 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       :ok
   end
 
+  @doc false
+  # C-FEAT-12: the PersistedBackend child's options. `extra_read_roots` are the
+  # launcher's `--add-dir` folders (read-only, this session only).
+  @spec backend_options(map(), binary(), binary(), %{optional(binary()) => binary()}) :: keyword()
+  def backend_options(session, conversation_id, source_epoch, env \\ System.get_env()) do
+    [
+      mode: :persisted,
+      repo: SwarmCode.Domain.Repo,
+      project_root: session.project.root_path,
+      project_id: session.project.id,
+      conversation_id: conversation_id,
+      source_epoch: source_epoch,
+      first_run_notice: session[:notice] || session[:setup_notice],
+      extra_read_roots: SwarmCodeCLI.Release.extra_read_roots(Map.get(env, "SWARM_ADD_DIRS"))
+    ]
+  end
+
   defp run_ui(session, executable, opening) do
     # cli020 B10: folders a hard exit left behind go first.
     _ = SwarmCodeCLI.Release.SocketSweep.sweep()
@@ -519,14 +536,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       conversation_id = session.conversation.id
 
       backend =
-        child!(supervisor, PersistedBackend,
-          mode: :persisted,
-          repo: SwarmCode.Domain.Repo,
-          project_root: session.project.root_path,
-          project_id: session.project.id,
-          conversation_id: conversation_id,
-          source_epoch: source_epoch,
-          first_run_notice: session[:notice] || session[:setup_notice]
+        child!(
+          supervisor,
+          PersistedBackend,
+          backend_options(session, conversation_id, source_epoch)
         )
 
       path = Path.join(dir, "s")

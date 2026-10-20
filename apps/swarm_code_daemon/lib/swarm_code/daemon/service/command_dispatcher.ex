@@ -616,6 +616,11 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     })
   end
 
+  # pass 77 C-FEAT-12: `/add-dir <folder>` widens this session's read roots; the
+  # backend answers it before the dispatcher, so reaching here is a client
+  # that sent it where it cannot work.
+  defp execute(_conv, %{action: :add_read_root}, _), do: {:error, :client_only}
+
   # cli020 C11 (tui-code-14): /rename <title>, /delete, /fork.
   defp execute(conv, %{action: :rename_conversation} = cmd, _) do
     title = cmd |> Map.get(:title, "") |> to_string() |> String.trim()
