@@ -1325,7 +1325,9 @@ defmodule SwarmCodeCLI.UI.Projector.Workspace.Turns do
     "workflow_smoke_check" => "check workflow",
     "workflow_save" => "save workflow",
     "workflow_run" => "run workflow",
-    "workflow_control" => "workflow"
+    "workflow_control" => "workflow",
+    # C-FEAT-2: the skill tool reads "load skill release-notes", not the raw name.
+    "load_skill" => "load skill"
   }
 
   # The tool's verb: the first word of its title ("read mix.exs" → "read",
