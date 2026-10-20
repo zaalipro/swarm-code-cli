@@ -6,9 +6,13 @@ defmodule SwarmCode.Domain.Paths do
   Resolved when it is used, never when the release is built (pass70 B5, arch
   F8, rel F12), so it follows the running user's home:
 
-  1. `config :swarm_code_daemon, :domain_config_dir` (tests set it),
-  2. `SWARM_CODE_CONFIG_DIR` (an absolute path),
-  3. the platform directory: the desktop's own
+  1. the calling process's `:swarm_code_config_dir` (pass 77 C-ARCH-7: a test
+     that reads it in its own process sets it with `SwarmCode.Test.ConfigDir`,
+     so it needs no global state and may run `async: true`; production code
+     never sets it),
+  2. `config :swarm_code_daemon, :domain_config_dir` (tests set it),
+  3. `SWARM_CODE_CONFIG_DIR` (an absolute path),
+  4. the platform directory: the desktop's own
      `~/Library/Application Support/SwarmCode` on macOS, so the CLI and the
      app share one global dir; `$XDG_CONFIG_HOME/swarm-code` (default
      `~/.config/swarm-code`) on Linux.
@@ -16,7 +20,8 @@ defmodule SwarmCode.Domain.Paths do
 
   @spec config_dir() :: Path.t()
   def config_dir do
-    Application.get_env(:swarm_code_daemon, :domain_config_dir) ||
+    Process.get(:swarm_code_config_dir) ||
+      Application.get_env(:swarm_code_daemon, :domain_config_dir) ||
       absolute(System.get_env("SWARM_CODE_CONFIG_DIR")) ||
       platform_dir(:os.type())
   end
