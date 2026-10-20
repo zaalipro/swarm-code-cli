@@ -1564,7 +1564,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/domain/ui_state.ex",
-      "sha256": "e0422815e50794696daced6b9858240962dafa258b3270f4f35636f298c12c51",
+      "sha256": "237b2288efdc005e4b4935d6c5bcf0ac191c9f1890d0a235c4b5f6767f4a608b",
       "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
       "upstream_path": "lib/swarm_code_web/ui_state.ex",
       "upstream_sha256": "8868fa5fc4a824bb5439beb6a26e972b7e6ee9080007d740d98d383e5a9438f8"

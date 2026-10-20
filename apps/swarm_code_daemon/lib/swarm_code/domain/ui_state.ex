@@ -56,6 +56,14 @@ defmodule SwarmCode.Domain.UIState do
   @impl true
   def init(:ok) do
     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    # pass 77 D-ARCH-11: the data layer's delete notice evicts a conversation's
+    # remembered state, so a delete from any client (the CLI has no LiveView
+    # to call `delete/1`) leaves nothing behind.
+    SwarmCode.Domain.PubSub.subscribe(
+      SwarmCode.Domain.PubSub,
+      SwarmCode.Domain.Conversations.deleted_topic()
+    )
+
     {:ok, %{}}
   end
 
@@ -102,6 +110,11 @@ defmodule SwarmCode.Domain.UIState do
   def handle_info({:DOWN, _ref, :process, pid, _reason}, monitors) do
     :ets.delete(@table, {:open, pid})
     {:noreply, Map.delete(monitors, pid)}
+  end
+
+  def handle_info({:conversation_deleted, conversation_id}, monitors) do
+    delete(conversation_id)
+    {:noreply, monitors}
   end
 
   def handle_info(_message, monitors), do: {:noreply, monitors}
