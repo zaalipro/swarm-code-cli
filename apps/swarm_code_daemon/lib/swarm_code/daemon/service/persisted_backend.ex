@@ -71,6 +71,81 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     SessionConfiguration
   }
 
+  # pass 77 C-ARCH-1: the backend's state is a struct, so a misspelled key is a
+  # compile error in `init/1` and an access to a missing one cannot hide behind
+  # `Map.get/3`. Every key is set by `init/1` (`slash_extras` by the slash
+  # catalog, pass 77 C-FEAT-5).
+  defstruct [
+    :opts,
+    :roots,
+    :runs,
+    :order,
+    :watches,
+    :requests,
+    :request_order,
+    :revision,
+    :metadata,
+    :research_ids,
+    :attachment_ids,
+    :extra_read_roots,
+    :staged_removed,
+    :refresh_pending,
+    :full_pending,
+    :partial,
+    :inputs,
+    :projections,
+    :repo_monitor,
+    :streams,
+    :changes,
+    :verdicts,
+    :waiting_seen,
+    :first_run_notice,
+    :rate_limits,
+    :mcp_failed,
+    :agent_models,
+    :agent_status,
+    :background,
+    :background_tick,
+    :background_exits,
+    :diff_cache,
+    :diff_order,
+    :change_facts,
+    :facts_missing,
+    :facts_job,
+    :facts_failed,
+    :file_index,
+    :queues,
+    :queue_paused,
+    :desktop_running,
+    :vitals,
+    :elsewhere,
+    :elsewhere_timer,
+    :clipboard_slots,
+    :shell,
+    :shells,
+    :git,
+    :ledger_prune,
+    :ledger_started_at,
+    :ledger_prune_ms,
+    :ledger_timer,
+    :jobs,
+    :task_supervisor,
+    :work,
+    :settings_jobs,
+    :settings_tasks,
+    :settings_revision,
+    :settings_seen,
+    :settings_pending,
+    :settings_timer,
+    :settings_own_at,
+    :settings_session,
+    :home_month,
+    :home_revision,
+    :home_timer,
+    :home_monitors,
+    :slash_extras
+  ]
+
   @errors %{
     invalid_request: "invalid data source request",
     not_allowed: "request is not allowed",
@@ -139,7 +214,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       ledger_started_at = DateTime.utc_now()
       ledger_prune_ms = ledger_prune_ms(opts)
 
-      state = %{
+      state = %__MODULE__{
         opts: Keyword.put(opts, :project_root, root),
         # The realized root and the roots as configured: checkpoint paths are
         # recorded under whichever form the engine resolved against.
@@ -285,10 +360,19 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       send(self(), {:git_facts, :start})
       {:ok, reload(state)}
     else
-      _ -> :ignore
+      # The refusal is the shape of the failed check (`false`, `nil`, a tagged
+      # error): never the opts, which may hold prompts or paths.
+      other ->
+        Logger.error("persisted backend: init refused: " <> inspect(other, limit: 20))
+        :ignore
     end
   rescue
-    _ -> :ignore
+    e ->
+      Logger.error(
+        "persisted backend: init failed\n" <> Exception.format(:error, e, __STACKTRACE__)
+      )
+
+      :ignore
   end
 
   @impl true
@@ -576,9 +660,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # orbit int (DAEMON-F3): a live run Home listed is gone; Home hears about it.
   def handle_info({:DOWN, ref, :process, _, _}, %{home_monitors: monitors} = state)
       when is_map_key(monitors, ref),
-      do:
-        {:noreply,
-         state |> Map.put(:home_monitors, Map.delete(monitors, ref)) |> arm_home_stale()}
+      do: {:noreply, %{state | home_monitors: Map.delete(monitors, ref)} |> arm_home_stale()}
 
   # pass71 S2: a job crashed or was killed without answering.
   def handle_info({:DOWN, ref, :process, _, _}, %{jobs: jobs} = state)
@@ -862,21 +944,21 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     Enum.each(state.queues.entries, fn {_id, entry} -> cancel_queue_effects(entry) end)
     cancel_jobs(state, wire_error(:source_unavailable))
 
-    with ref when is_reference(ref) <- Map.get(state, :ledger_timer),
+    with ref when is_reference(ref) <- state.ledger_timer,
          do: Process.cancel_timer(ref)
 
-    with timer when is_reference(timer) <- Map.get(state, :home_timer),
+    with timer when is_reference(timer) <- state.home_timer,
          do: Process.cancel_timer(timer)
 
-    Enum.each(Map.get(state, :home_monitors, %{}), fn {ref, _} ->
+    Enum.each(state.home_monitors, fn {ref, _} ->
       Process.demonitor(ref, [:flush])
     end)
 
-    with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
-    ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
-    with %{task: %Task{} = task} <- Map.get(state, :git), do: Task.shutdown(task, :brutal_kill)
+    with %Task{} = task <- state.ledger_prune, do: Task.shutdown(task, :brutal_kill)
+    ClipboardInbox.close_all(state.clipboard_slots)
+    with %{task: %Task{} = task} <- state.git, do: Task.shutdown(task, :brutal_kill)
     # cli020 C15: quitting kills a running `!` command (its task traps exits).
-    with %{task: task} <- Map.get(state, :shell),
+    with %{task: task} <- state.shell,
          do: ShellEscape.stop(state.task_supervisor, task)
 
     # pass74 S1-9/S1-10: every settings job settles (a command's ledger row
@@ -1132,7 +1214,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       node_id = params["node_id"]
       interactions = run.interactions
       model = state.agent_models[node_id] || run.model
-      roots = Map.get(state, :roots, [])
+      roots = state.roots
 
       work = fn ->
         case PersistedProjection.agent_detail(conversation, run.id, node_id) do
@@ -4991,7 +5073,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
     waiting = Enum.group_by(interactions, owner)
     # Any agent's result may cite a sibling's worktree: strip them all.
-    roots = Enum.map(ns, & &1.workspace_path) ++ Map.get(state, :roots, [])
+    roots = Enum.map(ns, & &1.workspace_path) ++ state.roots
 
     agents =
       Enum.zip_with(ns, run.agents, fn n, body ->
@@ -5626,15 +5708,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "queue_paused" => MapSet.member?(state.queue_paused, conversation.id),
       "queue_revision" => queue_revision(conversation.queued || []),
       # cli020 C4: the ncode app is open on the same database.
-      "desktop_running" => Map.get(state, :desktop_running, false),
+      "desktop_running" => state.desktop_running,
       # cli020 C17: the levels the dispatcher accepts for this conversation
       # (`CommandDispatcher.efforts/2`), and who checks mission work.
       "effort_levels" => effort_levels(conversation, :chat),
       "swarm_effort_levels" => effort_levels(conversation, :swarm),
       "validator_model" => effective_model_name(conversation, :validator),
       # cli020 C22: the status line's Git facts.
-      "git_branch" => state |> Map.get(:git, %{}) |> Map.get(:branch),
-      "git_dirty" => state |> Map.get(:git, %{}) |> Map.get(:dirty)
+      "git_branch" => state.git.branch,
+      "git_dirty" => state.git.dirty
     }
   end
 
