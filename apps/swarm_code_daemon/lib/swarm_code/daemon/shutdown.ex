@@ -37,6 +37,12 @@ defmodule SwarmCode.Daemon.Shutdown do
   # What a hook that ignored its cap gets before it is shut down.
   @session_end_grace_ms 1_000
   @session_end_projects 20
+  # pass 77 X-1 (desktop pass 76 `Quit.session_end_hooks/1`): a hook past its
+  # cap is inside its tree's TERM / grace / KILL sweep, which under load outlasts
+  # the one-second grace; it gets this long to finish. Then the tasks still
+  # running are stopped, and the hook guardians are joined under one deadline.
+  @session_end_reap_ms 5_000
+  @session_end_final_ms 4_000
   # pass76: pausing workflows, stopping the runs and killing the survivors have
   # no deadline of their own; a caller allows this much beyond the phases.
   @unbounded_steps_ms 9_000
@@ -66,15 +72,13 @@ defmodule SwarmCode.Daemon.Shutdown do
   Stops everything. `opts`: `:flush_ms` (journal wait, default 10 s),
   `:teardown` (`false` keeps the supervisors, for tests), `:teardown_ms`,
   `:cleanup_ms` (the isolation-cleanup wait, default 15 s), `:session_end_ms`
-  (the cap of the `session_end` hooks, default 5 s).
+  (the cap of the `session_end` hooks, default 5 s). `:session_end_grace_ms`,
+  `:session_end_reap_ms` and `:session_end_final_ms` shorten the hooks' later
+  phases for a test; `max_ms/0` always counts the defaults.
   """
   @spec run(keyword()) :: result()
   def run(opts \\ []) do
-    step(
-      :session_end_hooks,
-      fn -> session_end_hooks(Keyword.get(opts, :session_end_ms, @session_end_ms)) end,
-      :ok
-    )
+    step(:session_end_hooks, fn -> session_end_hooks(opts) end, :ok)
 
     paused = step(:pause_workflows, &pause_workflows/0, 0)
     stopped_runs = step(:stop_runs, &stop_runs/0, [])
@@ -97,31 +101,42 @@ defmodule SwarmCode.Daemon.Shutdown do
   end
 
   @doc """
-  pass76: the longest `run/1` takes with its default deadlines (51 s): the
-  `session_end` hooks and their grace, the journal flush, the reaper and
-  cleanup wait they share, and one teardown wait per subtree. Whoever waits
-  for a quit derives its patience from this, never from a number of its own.
+  pass76: the longest `run/1` takes with its default deadlines (60 s): the
+  `session_end` hooks, their grace, the reap wait and the guardians' final
+  deadline (pass 77 X-1), the journal flush, the reaper and cleanup wait they
+  share, and one teardown wait per subtree. Whoever waits for a quit derives
+  its patience from this, never from a number of its own.
   """
   @spec max_ms() :: pos_integer()
   def max_ms do
-    @session_end_ms + @session_end_grace_ms + @flush_ms + @cleanup_ms +
-      length(@teardown) * @teardown_ms
+    @session_end_ms + @session_end_grace_ms + @session_end_reap_ms + @session_end_final_ms +
+      @flush_ms + @cleanup_ms + length(@teardown) * @teardown_ms
   end
 
   @doc """
-  pass76: how long a caller waits for `run/1` before it gives up on it (60 s):
+  pass76: how long a caller waits for `run/1` before it gives up on it (69 s):
   `max_ms/0` plus a margin for the steps that have no deadline of their own.
   """
   @spec budget_ms() :: pos_integer()
   def budget_ms, do: max_ms() + @unbounded_steps_ms
 
-  # cli020 A'4 (competitors-10): the desktop's `Quit.session_end_hooks/1` at
-  # 7b8f379f, run before the runs stop (contract A'4). Each trusted project
-  # this session opened runs its `session_end` hooks once, concurrently under
-  # `Hooks.TaskSupervisor`; each hook's timeout is capped at `cap_ms` (its
-  # tree is reaped there) and whatever has not answered `cap_ms + 1 s` later
-  # is shut down. A quit never fails on a hook.
-  defp session_end_hooks(cap_ms) do
+  # cli020 A'4 (competitors-10): the desktop's `Quit.session_end_hooks/1`, run
+  # before the runs stop (contract A'4); pass 77 X-1 brings the tail of its
+  # pass-76 version. Each trusted project this session opened runs its
+  # `session_end` hooks once, concurrently under `Hooks.TaskSupervisor`; each
+  # hook's timeout is capped at `cap_ms` (its tree is reaped there). Whatever
+  # has not answered `cap_ms + 1 s` later gets `@session_end_reap_ms` more to
+  # finish reaping. Then the tasks still running are stopped first, under the
+  # lock a hook opens and guards its port with (no later hook of a sequential
+  # list can start, none is cut between its port and its guardian), and every
+  # hook guardian that exists afterwards is joined under one deadline; the trees
+  # of those still running are KILLed by their recorded OS pids. No `ps` runs
+  # after the cap. A quit never fails on a hook.
+  defp session_end_hooks(opts) do
+    cap_ms = Keyword.get(opts, :session_end_ms, @session_end_ms)
+    grace_ms = Keyword.get(opts, :session_end_grace_ms, @session_end_grace_ms)
+    reap_ms = Keyword.get(opts, :session_end_reap_ms, @session_end_reap_ms)
+    final_ms = Keyword.get(opts, :session_end_final_ms, @session_end_final_ms)
     supervisor = SwarmCode.Domain.Hooks.TaskSupervisor
 
     if Process.whereis(supervisor) do
@@ -136,12 +151,63 @@ defmodule SwarmCode.Daemon.Shutdown do
           end)
         end
 
-      tasks
-      |> Task.yield_many(cap_ms + @session_end_grace_ms)
-      |> Enum.each(fn {task, answer} -> answer || Task.shutdown(task, :brutal_kill) end)
+      left =
+        tasks
+        |> Task.yield_many(cap_ms + grace_ms)
+        |> unanswered()
+        |> Task.yield_many(reap_ms)
+        |> unanswered()
+
+      guards =
+        SwarmCode.Domain.OSProcess.exclusive_spawn(20, fn ->
+          Enum.each(left, &Task.shutdown(&1, :brutal_kill))
+          SwarmCode.Domain.OSProcess.tracked_guards()
+        end)
+
+      join_guardians(guards, final_ms)
     end
 
     :ok
+  rescue
+    error ->
+      Logger.warning("quit: session_end hooks failed: #{Exception.message(error)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("quit: session_end hooks failed: #{inspect({kind, reason}, limit: 20)}")
+      :ok
+  end
+
+  defp unanswered(results),
+    do: Enum.flat_map(results, fn {task, answer} -> if answer, do: [], else: [task] end)
+
+  # Waits for every guardian in `guards` (`[{pid, os_pid}]`) to finish reaping
+  # its tree, for at most `final_ms` in all; the trees of those
+  # still running then are KILLed by pid.
+  defp join_guardians([], _final_ms), do: :ok
+
+  defp join_guardians(guards, final_ms) do
+    pending = Map.new(guards, fn {pid, os_pid} -> {Process.monitor(pid), os_pid} end)
+    timer = Process.send_after(self(), :session_end_join_deadline, final_ms)
+    left = await_guardians(pending)
+    Process.cancel_timer(timer)
+
+    receive do
+      :session_end_join_deadline -> :ok
+    after
+      0 -> :ok
+    end
+
+    SwarmCode.Domain.OSProcess.kill_now(Map.values(left))
+  end
+
+  defp await_guardians(pending) when map_size(pending) == 0, do: pending
+
+  defp await_guardians(pending) do
+    receive do
+      {:DOWN, ref, :process, _pid, _reason} -> await_guardians(Map.delete(pending, ref))
+      :session_end_join_deadline -> pending
+    end
   end
 
   # The projects this session touched: opened (`Projects.touch/1`, the saved

@@ -14,11 +14,12 @@ defmodule SwarmCode.Daemon.Pass76ShutdownBudgetTest do
   end
 
   test "the budget is the phases' sum and a margin for the steps with no deadline" do
-    # session_end hooks 5 s + 1 s grace, journal flush 10 s, cleanups 15 s,
-    # four teardown waits of 5 s. A phase that grows moves this and the
-    # signal watchdog's deadline with it; read this figure when it does.
-    assert Shutdown.max_ms() == 51_000
-    assert Shutdown.budget_ms() == 60_000
+    # session_end hooks 5 s + 1 s grace + 5 s reap + 4 s guardians' final
+    # deadline (pass 77 X-1), journal flush 10 s, cleanups 15 s, four teardown
+    # waits of 5 s. A phase that grows moves this and the signal watchdog's
+    # deadline with it; read this figure when it does.
+    assert Shutdown.max_ms() == 60_000
+    assert Shutdown.budget_ms() == 69_000
   end
 
   test "a quit stops a run that is mid-call: its row ends stopped, not running", c do
