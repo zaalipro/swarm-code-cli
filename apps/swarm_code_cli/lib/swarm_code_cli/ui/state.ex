@@ -293,6 +293,28 @@ defmodule SwarmCodeCLI.UI.State do
 
   def dirty?(state), do: Drafts.dirty?(state.drafts) or FieldEditors.dirty?(state.field_editors)
 
+  @typedoc "The surface that owns the keys (C-ARCH-8): see `surface/1`."
+  @type surface :: :hint | {:layer, term()} | :settings | :home | :overlay | :shell
+
+  @doc """
+  The one surface that owns the keys, from the nullable surface fields, in the
+  one written precedence order (the order `Keymap.Context.of/1` reads them):
+  hint mode (it opens over a request card, so over a layer), then the top
+  layer, then the settings layer, then Home, then the agent overlay, else the
+  shell. Reducer guards and the keymap ask this instead of each re-deriving
+  the order from `hint`, `layers`, `settings`, `home` and `overlay`.
+  """
+  @spec surface(t() | map()) :: surface()
+  def surface(%{hint: %{}}), do: :hint
+  def surface(%{layers: [layer | _]}), do: {:layer, layer}
+
+  def surface(%{settings: settings}) when is_struct(settings, SwarmCodeCLI.UI.Settings.Layer),
+    do: :settings
+
+  def surface(%{home: home}) when is_struct(home, SwarmCodeCLI.UI.Home), do: :home
+  def surface(%{overlay: %{}}), do: :overlay
+  def surface(_state), do: :shell
+
   # orbit D9: Home's own composer, one draft for the whole session. While Home
   # is open it covers the agent overlay, so its key comes first.
   def current_draft_key(%{home: %{focus: :composer}, source_epoch: epoch}) when is_binary(epoch),

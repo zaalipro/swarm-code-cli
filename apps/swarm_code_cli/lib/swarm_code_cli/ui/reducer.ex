@@ -3008,14 +3008,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # header shows them and Ctrl-N reaches them. orbit D19: they wait under Home
   # too (the dot and "Ctrl-N go" carry them); the step that closes Home is
   # one of its own, so the card opens as Home goes.
-  defp auto_open?(
-         %{layers: [], lifecycle: :running, hint: nil, overlay: nil, settings: nil, home: nil} =
-           state,
-         action
-       ) do
-    (match?({:data, %{kind: kind}} when kind != :response, action) or
-       action in [:close_top_layer, :boot] or match?({:navigate, _}, action) or
-       match?({:home, _}, action)) and
+  defp auto_open?(%{lifecycle: :running} = state, action) do
+    # C-ARCH-8: no hint, layer, settings, Home or overlay is in front.
+    State.surface(state) == :shell and
+      (match?({:data, %{kind: kind}} when kind != :response, action) or
+         action in [:close_top_layer, :boot] or match?({:navigate, _}, action) or
+         match?({:home, _}, action)) and
       state.focus in ["composer", "main", "inspector"] and
       Layout.for_state(state).mutations_visible?
   end
