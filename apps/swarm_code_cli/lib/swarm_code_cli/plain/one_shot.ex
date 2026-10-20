@@ -321,14 +321,19 @@ defmodule SwarmCodeCLI.Plain.OneShot do
        })
        when is_binary(id) do
     case outcome do
-      %{status: :accepted, identifiers: []} ->
+      # pass 77 C-BUG-8: only an outcome that says it started or steered a run
+      # is followed. Any other accepted answer (a `/rename`, a `/stop` with
+      # nothing running, a queued prompt) names the conversation or nothing
+      # and starts no run: it is the whole result.
+      %{status: :accepted, disposition: disposition, identifiers: [_ | _] = ids}
+      when disposition in [:started, :steered] ->
+        runs = Enum.take(ids, 8)
+        %{state | phase: :running, runs: runs, known: MapSet.new(runs)}
+
+      %{status: :accepted} ->
         # A slash command answers at once and starts nothing.
         text = if outcome.feedback, do: outcome.feedback.text, else: ""
         finish(reconcile(state, "command", text), 0)
-
-      %{status: :accepted, identifiers: ids} ->
-        runs = Enum.take(ids, 8)
-        %{state | phase: :running, runs: runs, known: MapSet.new(runs)}
 
       _ ->
         finish_with(
