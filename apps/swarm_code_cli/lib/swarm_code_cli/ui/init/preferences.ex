@@ -50,13 +50,18 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
     palette: "palette"
   }
 
-  # The registry's bounds (`core/settings/registry/terminal.ex`).
-  @ranges %{
-    paste_collapse_lines: 0..200,
-    wheel_lines: 1..10,
-    notice_seconds: 2..30,
-    exit_transcript: 0..20
+  # C-ARCH-12: the registry's bounds and defaults, read from its entries
+  # (`core/settings/registry/terminal.ex`) so the file layer, the launcher and
+  # `Reducer.TerminalPrefs` can not drift from them.
+  @registry_keys %{
+    paste_collapse_lines: "terminal.paste_collapse_lines",
+    wheel_lines: "terminal.wheel_lines",
+    notice_seconds: "terminal.notice_seconds",
+    exit_transcript: "terminal.exit_transcript"
   }
+  @ranges Map.new(@registry_keys, fn {key, registry_key} ->
+            {key, SwarmCode.Settings.Registry.range(registry_key)}
+          end)
   @hint_letters "sfghjklwertuiop"
 
   @typedoc """
@@ -103,12 +108,12 @@ defmodule SwarmCodeCLI.UI.Init.Preferences do
       agent_summaries?: true,
       notify: :auto,
       title?: true,
-      paste_collapse_lines: 8,
-      wheel_lines: 3,
-      notice_seconds: 6,
+      paste_collapse_lines: SwarmCode.Settings.Registry.default("terminal.paste_collapse_lines"),
+      wheel_lines: SwarmCode.Settings.Registry.default("terminal.wheel_lines"),
+      notice_seconds: SwarmCode.Settings.Registry.default("terminal.notice_seconds"),
       hint_letters: @hint_letters,
       reduced_motion?: false,
-      exit_transcript: 3,
+      exit_transcript: SwarmCode.Settings.Registry.default("terminal.exit_transcript"),
       palette: :carbon
     }
 
