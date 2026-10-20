@@ -2025,9 +2025,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
         state
 
       key ->
-        draft = Drafts.fetch(state.drafts, key)
-        editor = %{draft.editor | anchor: nil}
-        %{state | drafts: Drafts.put(state.drafts, %{draft | editor: editor})}
+        # C-BUG-15: a composer that was never edited has no entry and so no
+        # anchor to drop; putting a fresh draft would raise at the store limit.
+        if Map.has_key?(state.drafts.entries, key) do
+          draft = Drafts.fetch(state.drafts, key)
+          editor = %{draft.editor | anchor: nil}
+          %{state | drafts: Drafts.put(state.drafts, %{draft | editor: editor})}
+        else
+          state
+        end
     end
   end
 

@@ -197,6 +197,30 @@ defmodule SwarmCodeCLI.UI.VimTest do
       assert text(state) == "hello"
     end
 
+    test "C-BUG-15: leaving VISUAL in a never-edited composer at the draft limit does not raise" do
+      state = boot() |> press("i") |> press({:key, :escape})
+      key = State.current_draft_key(state)
+      refute Map.has_key?(state.drafts.entries, key)
+
+      drafts =
+        Enum.reduce(1..state.drafts.max_drafts, state.drafts, fn n, drafts ->
+          other = {"other-#{n}", :main}
+          {:ok, editor} = Editor.apply(Editor.new(), {:insert, "unsent #{n}"})
+          Drafts.put(drafts, SwarmCodeCLI.UI.Draft.new(other, editor))
+        end)
+
+      state = %{state | drafts: drafts}
+      assert map_size(state.drafts.entries) == state.drafts.max_drafts
+
+      state = state |> press("v")
+      assert state.vim.mode == :visual
+
+      state = press(state, {:key, :escape})
+      assert state.vim.mode == :normal
+      assert map_size(state.drafts.entries) == state.drafts.max_drafts
+      refute Map.has_key?(state.drafts.entries, key)
+    end
+
     test "yy then p puts the line below" do
       state = boot() |> press("i") |> type("hello") |> press({:key, :escape})
       state = state |> press("y") |> press("y")
