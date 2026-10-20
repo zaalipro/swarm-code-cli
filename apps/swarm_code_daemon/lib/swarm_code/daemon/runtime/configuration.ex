@@ -2,7 +2,8 @@ defmodule SwarmCode.Daemon.Runtime.Configuration do
   @moduledoc "Builds an ephemeral runtime configuration from environment values."
 
   alias SwarmCode.Providers.Provider
-  alias SwarmCode.Tools.Path, as: ProjectPath
+  # C-ARCH-5: the product path's confinement, not the dev live runtime's copy.
+  alias SwarmCode.Domain.Tools.Path, as: ProjectPath
 
   @doc "Translate launcher environment variables into ephemeral `Run` options."
   @spec from_env(map(), String.t()) :: {:ok, keyword()} | {:error, term()}

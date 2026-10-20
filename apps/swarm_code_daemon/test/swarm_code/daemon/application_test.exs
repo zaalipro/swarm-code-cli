@@ -5,7 +5,15 @@ defmodule SwarmCode.Daemon.ApplicationTest do
   alias SwarmCode.Providers.Provider
   alias SwarmCode.Test.LoopbackHTTP, as: HTTP
 
+  # C-ARCH-5: the dev live runtime's supervisor is not part of the product.
+  test "the application starts the domain runtime and no dev run supervisor" do
+    assert Process.whereis(SwarmCode.Domain.Runtime)
+    assert Process.whereis(RunSupervisor) == nil
+  end
+
   test "application startup supports a real default-effort request without test-owned capability state" do
+    start_supervised!(RunSupervisor)
+
     server =
       HTTP.start(fn socket, request, _turn ->
         assert Jason.decode!(request.body)["reasoning_effort"] == "medium"
@@ -30,6 +38,7 @@ defmodule SwarmCode.Daemon.ApplicationTest do
   end
 
   test "daemon-owned coding run continues after its submitting process detaches" do
+    start_supervised!(RunSupervisor)
     test_owner = self()
 
     server =
