@@ -424,6 +424,64 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     end
   end
 
+  # C-FEAT-9: `ncode update` runs the hosted installer; the tests point
+  # NCODE_INSTALL_URL at a local script.
+  describe "update" do
+    test "--yes downloads the installer and runs it", context do
+      dir = Path.dirname(context.log)
+      marker = Path.join(dir, "installer-ran")
+
+      File.write!(
+        Path.join(dir, "fake.sh"),
+        "#!/bin/sh\necho ran > \"" <> marker <> "\"\n"
+      )
+
+      assert {0, _} =
+               launch(context, ["update", "--yes"], [
+                 {"NCODE_INSTALL_URL", "file://" <> Path.join(dir, "fake.sh")}
+               ])
+
+      assert File.read!(marker) == "ran\n"
+      refute File.exists?(context.log)
+    end
+
+    test "a failing download is the command's status", context do
+      dir = Path.dirname(context.log)
+
+      assert {code, _} =
+               launch(context, ["update", "--yes"], [
+                 {"NCODE_INSTALL_URL", "file://" <> Path.join(dir, "missing.sh")}
+               ])
+
+      assert code != 0
+    end
+
+    test "without --yes and without a terminal it is a usage error", context do
+      assert {2, output} = launch(context, ["update"])
+      assert output =~ "ncode: ncode update needs --yes without a terminal. Run 'ncode --help'."
+    end
+
+    test "anything but --yes is a usage error and runs nothing", context do
+      dir = Path.dirname(context.log)
+      marker = Path.join(dir, "installer-ran")
+      File.write!(Path.join(dir, "fake.sh"), "#!/bin/sh\necho ran > \"" <> marker <> "\"\n")
+      env = [{"NCODE_INSTALL_URL", "file://" <> Path.join(dir, "fake.sh")}]
+
+      for args <- [["update", "--bogus"], ["update", "--yes", "x"], ["update", "-y"]] do
+        assert {2, output} = launch(context, args, env), inspect(args)
+        assert output =~ "update takes --yes only."
+      end
+
+      refute File.exists?(marker)
+    end
+
+    test "--help lists it, in the launcher and in the release", context do
+      assert {0, help} = launch(context, ["--help"])
+      assert help =~ "ncode update [--yes]"
+      assert SwarmCodeCLI.Release.usage() =~ "ncode update [--yes]"
+    end
+  end
+
   describe "the presenter" do
     test "--plain [--ndjson] evaluates the plain presenter for the named directory", context do
       dir = Path.join(context.project, "sub")

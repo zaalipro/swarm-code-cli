@@ -20,6 +20,7 @@ usage() {
              [-p PROMPT [--json] [--fail-on-denied]] [--plain [--ndjson]]
        ncode settings [QUERY] [--dir DIR]
        ncode config COMMAND [ARGS]     (ncode config help lists them)
+       ncode update [--yes]            install the latest ncode CLI
        ncode help | version | doctor
 
 Opens the saved session for DIR (default: the current directory).
@@ -200,6 +201,30 @@ needs_value() {
   [[ $2 -ge 2 && "$3" != "--" ]] || die_usage "$1 needs a value."
 }
 
+# C-FEAT-9: `ncode update [--yes]` downloads and runs the hosted installer
+# (it checks the download's SHA-256). NCODE_INSTALL_URL points the download
+# elsewhere; it exists for the tests and is not in --help.
+update_cli() {
+  local yes=0 answer=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) yes=1 ;;
+      *) die_usage "update takes --yes only." ;;
+    esac
+    shift
+  done
+  if [[ $yes -eq 0 ]]; then
+    [[ -t 0 ]] || die_usage "ncode update needs --yes without a terminal."
+    printf '%s' 'This downloads and runs the ncode installer from https://code.llmotions.com/install.sh (it checks the download'\''s SHA-256). Continue? [y/N] ' >&2
+    read -r answer || true
+    case "$answer" in
+      y | Y) ;;
+      *) echo "ncode: update cancelled." >&2; return 1 ;;
+    esac
+  fi
+  curl -fsSL "${NCODE_INSTALL_URL:-https://code.llmotions.com/install.sh}" | sh
+}
+
 # pass74 S1-13/S1-14: `settings` and `config` as the first word are the
 # subcommands; a folder of that name opens with ./settings or -- settings.
 settings_mode=0
@@ -211,6 +236,7 @@ if [[ $# -gt 0 ]]; then
     help) usage; exit 0 ;;
     version) version; exit 0 ;;
     doctor) shift; set -- config doctor "$@" ;;
+    update) shift; update_cli "$@"; exit $? ;;
   esac
 fi
 if [[ $# -gt 0 && "$1" == "config" ]]; then

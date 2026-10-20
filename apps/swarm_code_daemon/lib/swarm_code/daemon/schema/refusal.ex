@@ -20,8 +20,8 @@ defmodule SwarmCode.Daemon.Schema.Refusal do
       :schema_incompatible,
       false,
       "This ncode database was upgraded by a newer ncode app than this ncode supports.",
-      "Install the ncode CLI that matches your ncode app (ncode --version shows this one: " <>
-        version() <> "); the database was not changed."
+      "Run: ncode update (then run ncode again). This ncode is " <>
+        version() <> "; the database was not changed."
     )
   end
 

@@ -1,6 +1,7 @@
 defmodule SwarmCode.Daemon.Schema.RefusalTest do
   # cli020 A4 (tui-code-1): a database a newer desktop migrated names the CLI
-  # version to replace, so the person knows which build they are running.
+  # version, so the person knows which build they are running; C-FEAT-9: the
+  # action is the one command that replaces it.
   use ExUnit.Case, async: true
 
   alias SwarmCode.Daemon.Schema.Refusal
@@ -16,8 +17,8 @@ defmodule SwarmCode.Daemon.Schema.RefusalTest do
     assert error.message =~ "newer ncode app"
 
     assert error.action ==
-             "Install the ncode CLI that matches your ncode app (ncode --version shows this one: " <>
-               vsn <> "); the database was not changed."
+             "Run: ncode update (then run ncode again). This ncode is " <>
+               vsn <> "; the database was not changed."
 
     assert error.action =~ "0.2.2"
   end

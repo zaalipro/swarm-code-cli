@@ -735,7 +735,7 @@ defmodule SwarmCode.Daemon.FoundationGateTest do
     assert {:error, error} = FoundationGate.prepare(opts)
     assert error.code == :schema_incompatible
     assert error.message =~ "newer ncode app"
-    assert error.action =~ "Install the ncode CLI that matches your ncode app"
+    assert error.action =~ "Run: ncode update"
     assert File.ls!(Path.join(Path.dirname(fixture), "backups")) == []
     assert database_state(fixture) == before
     assert_reacquirable!(opts)

@@ -22,6 +22,7 @@ defmodule SwarmCodeCLI.Release do
                [-p PROMPT [--json] [--fail-on-denied]] [--plain [--ndjson]]
          ncode settings [QUERY] [--dir DIR]
          ncode config COMMAND [ARGS]     (ncode config help lists them)
+         ncode update [--yes]            install the latest ncode CLI
          ncode help | version | doctor
 
   Opens the saved session for DIR (default: the current directory).
