@@ -10,10 +10,14 @@ defmodule SwarmCodeCLI.UI.Reducer.HistorySearch do
   prompt into the draft as one undoable edit, Esc closes.
 
   Stash: one per draft key (`state.stashes`); `{:stash_draft}` puts the draft
-  aside, `{:restore_stash}` swaps the stash and the draft.
+  aside, `{:restore_stash}` swaps the stash and the draft. A stash holds the
+  draft's *expanded* text (C-BUG-13): a collapsed paste's payload lives in the
+  draft, which a send clears, so the placeholder alone would be lost. A draft
+  over the 256 KiB message bound is refused with a notice and nothing changes.
   """
 
-  alias SwarmCodeCLI.UI.State
+  alias SwarmCodeCLI.UI.{Drafts, Editor, State}
+  alias SwarmCodeCLI.UI.Draft.Pastes
   alias SwarmCodeCLI.UI.Reducer.Remote
 
   @debounce_ms 150
@@ -126,26 +130,33 @@ defmodule SwarmCodeCLI.UI.Reducer.HistorySearch do
 
   def pick(state), do: {state, []}
 
+  @too_large_words "The draft is too large to stash (over 256 KiB)."
+
   @doc "Puts the draft aside (one stash per draft key)."
   def stash(state) do
     key = State.current_draft_key(state)
-    text = SwarmCodeCLI.UI.Keymap.draft_text(state)
 
     cond do
       key == nil ->
         {state, []}
 
-      String.trim(text) == "" ->
+      String.trim(SwarmCodeCLI.UI.Keymap.draft_text(state)) == "" ->
         {%{state | notice: {:command_feedback, "Nothing to stash."}}, []}
 
       true ->
-        {state, effects} = SwarmCodeCLI.UI.Reducer.replace_text(state, key, "")
+        case expanded_text(state, key) do
+          {:ok, expanded} ->
+            {state, effects} = SwarmCodeCLI.UI.Reducer.replace_text(state, key, "")
 
-        {%{
-           state
-           | stashes: Map.put(state.stashes, key, text),
-             notice: {:command_feedback, "Draft stashed · Ctrl-P Restore stash"}
-         }, effects}
+            {%{
+               state
+               | stashes: Map.put(state.stashes, key, expanded),
+                 notice: {:command_feedback, "Draft stashed · Ctrl-P Restore stash"}
+             }, effects}
+
+          {:error, :too_large} ->
+            {%{state | notice: {:command_feedback, @too_large_words}}, []}
+        end
     end
   end
 
@@ -155,19 +166,34 @@ defmodule SwarmCodeCLI.UI.Reducer.HistorySearch do
 
     case key && Map.fetch(state.stashes, key) do
       {:ok, stashed} ->
-        current = SwarmCodeCLI.UI.Keymap.draft_text(state)
-
-        stashes =
-          if String.trim(current) == "",
-            do: Map.delete(state.stashes, key),
-            else: Map.put(state.stashes, key, current)
-
-        {state, effects} = SwarmCodeCLI.UI.Reducer.replace_text(state, key, stashed)
-
-        {%{state | stashes: stashes, notice: {:command_feedback, "Stash restored"}}, effects}
+        swap(state, key, stashed)
 
       _ ->
         {%{state | notice: {:command_feedback, "No stash to restore."}}, []}
     end
+  end
+
+  defp swap(state, key, stashed) do
+    blank? = String.trim(SwarmCodeCLI.UI.Keymap.draft_text(state)) == ""
+
+    with {:ok, stashes} <- stashes_after_swap(state, key, blank?) do
+      {state, effects} = SwarmCodeCLI.UI.Reducer.replace_text(state, key, stashed)
+      {%{state | stashes: stashes, notice: {:command_feedback, "Stash restored"}}, effects}
+    else
+      {:error, :too_large} -> {%{state | notice: {:command_feedback, @too_large_words}}, []}
+    end
+  end
+
+  # The current draft takes the stash's place, as its expanded text.
+  defp stashes_after_swap(state, key, true), do: {:ok, Map.delete(state.stashes, key)}
+
+  defp stashes_after_swap(state, key, false) do
+    with {:ok, expanded} <- expanded_text(state, key),
+         do: {:ok, Map.put(state.stashes, key, expanded)}
+  end
+
+  defp expanded_text(state, key) do
+    draft = Drafts.fetch(state.drafts, key)
+    Pastes.expand(Editor.text(draft.editor), draft.pastes)
   end
 end
