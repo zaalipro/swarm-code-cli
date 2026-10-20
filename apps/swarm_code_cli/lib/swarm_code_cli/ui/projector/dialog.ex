@@ -1888,10 +1888,15 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   end
 
   # cli020 E7: `/help` lists the commands too (the `/` list's rows: the
-  # client's own and the service's), one to a line.
+  # client's own and the service's, and C-FEAT-1/8 the project's custom
+  # commands and workflows), one to a line.
   defp help_commands(width, state, policy) do
     rows =
-      for item <- SwarmCodeCLI.UI.SlashPalette.catalogue("/"),
+      for item <-
+            SwarmCodeCLI.UI.SlashPalette.catalogue(
+              "/",
+              SwarmCodeCLI.UI.SlashPalette.extras(state)
+            ),
           do: {String.trim("/" <> item.name <> " " <> (item.args || "")), item.desc || ""}
 
     key_width =

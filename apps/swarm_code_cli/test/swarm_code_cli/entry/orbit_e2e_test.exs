@@ -215,6 +215,24 @@ defmodule SwarmCodeCLI.Release.OrbitE2ETest do
     end
   end
 
+  defp slash_extras_settled!(backend, left \\ 500) do
+    extras = :sys.get_state(backend).slash_extras
+
+    cond do
+      extras.task == nil and extras.items != nil ->
+        :ok
+
+      left == 0 ->
+        flunk("the command list never settled")
+
+      true ->
+        receive do
+        after
+          20 -> slash_extras_settled!(backend, left - 1)
+        end
+    end
+  end
+
   defp next_delta(client, kind) do
     receive do
       {:swarm_code_ui_data, _, receipt, %Delivery{kind: :delta, body: %Delta{kind: ^kind}} = d} ->
@@ -237,6 +255,9 @@ defmodule SwarmCodeCLI.Release.OrbitE2ETest do
     {:ok, session} = SessionSelection.open(c.root_a)
     stack = stack!(c, session, :wire)
     assert {:ok, "orbit"} = DataSource.bind_owner(stack.client, self(), "orbit")
+    # C-FEAT-1/8: the project's command list is the backend's own launch task;
+    # it settles (one metadata revision) before the revisions below are read.
+    slash_extras_settled!(stack.backend)
 
     shell = %Watch{
       watch_ref: "shell",
@@ -314,13 +335,20 @@ defmodule SwarmCodeCLI.Release.OrbitE2ETest do
     assert delta.revision == :sys.get_state(stack.backend).revision
     refute_receive {:swarm_code_ui_data, _, _, %Delivery{body: %Delta{kind: :home_stale}}}, 800
 
-    # A second burst is the next home revision while the watch's revision has
-    # not moved: the two disagree (2 against 1), which the codec's
-    # `body_revision?/2` would refuse (closing the session) but for Home's
-    # exemption.
+    # The next burst is the next home revision while the watch's revision has
+    # not moved much: the two disagree, which the codec's `body_revision?/2`
+    # would refuse (closing the session) but for Home's exemption. The
+    # backend's revision is 2 once the command list has settled (C-FEAT-1/8),
+    # so a burst in between puts the home revision (3) apart from it.
     for _ <- 1..3, do: send(stack.backend, {:waiting_changed})
 
-    assert %Delivery{body: %Delta{body: %DTO.HomeStale{revision: 2}} = second} =
+    assert %Delivery{body: %Delta{body: %DTO.HomeStale{revision: 2}}} =
+             next_delta(stack.client, :home_stale)
+
+    refute_receive {:swarm_code_ui_data, _, _, %Delivery{body: %Delta{kind: :home_stale}}}, 800
+    for _ <- 1..3, do: send(stack.backend, {:waiting_changed})
+
+    assert %Delivery{body: %Delta{body: %DTO.HomeStale{revision: 3}} = second} =
              next_delta(stack.client, :home_stale)
 
     assert second.revision == :sys.get_state(stack.backend).revision
@@ -330,7 +358,7 @@ defmodule SwarmCodeCLI.Release.OrbitE2ETest do
     # The next overview reflects it.
     again = request("home-5", {:home_overview, 6, 12, 131_072}, :home_overview)
     assert :ok = DataSource.query(stack.client, again)
-    assert %DTO.HomeOverview{state: :ready, revision: 2} = answer(stack.client, "home-5")
+    assert %DTO.HomeOverview{state: :ready, revision: 3} = answer(stack.client, "home-5")
     refute_received {:swarm_code_ui_closed, _, _}
   end
 

@@ -283,7 +283,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {state, []}
 
       key ->
-        {state, replaced} = replace_draft(state, key, "/" <> name)
+        {state, replaced} = replace_draft(state, key, "/" <> SlashPalette.plain_name(name))
 
         case Keymap.draft_send(state) do
           {:ok, action} ->

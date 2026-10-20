@@ -28,7 +28,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       swarm_effort_effective: nil,
       swarm_effort_source: nil,
       scheduled_effort_default: nil,
-      local_zone: nil
+      local_zone: nil,
+      slash_extras: %{"custom" => [], "workflows" => []}
     ],
     fields: [
       conversation_id: :id,
@@ -83,7 +84,10 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       # cli022 int (F1): Settings' scheduled effort and the Mac's zone, the
       # defaults a new scheduled task shows.
       scheduled_effort_default: {:optional, {:text, 32}},
-      local_zone: {:optional, {:text, 64}}
+      local_zone: {:optional, {:text, 64}},
+      # C-FEAT-1/8: the project's custom commands and workflows, for the `/`
+      # popup and /help (an older daemon sends none).
+      slash_extras: {:dto, SwarmCodeCLI.UI.DataSource.DTO.SlashExtras}
     ],
     defaults: [
       conversation_id: nil,
@@ -118,6 +122,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceMetadata do
       swarm_effort_effective: nil,
       swarm_effort_source: nil,
       scheduled_effort_default: nil,
-      local_zone: nil
+      local_zone: nil,
+      slash_extras: %SwarmCodeCLI.UI.DataSource.DTO.SlashExtras{}
     ]
 end

@@ -88,7 +88,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :swarm_effort_effective,
       :swarm_effort_source,
       :scheduled_effort_default,
-      :local_zone
+      :local_zone,
+      :slash_extras
     ],
     DTO.WorkspaceMetadata => [
       :project,
@@ -117,7 +118,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :swarm_effort_effective,
       :swarm_effort_source,
       :scheduled_effort_default,
-      :local_zone
+      :local_zone,
+      :slash_extras
     ],
     DTO.ShellSnapshot => [:rate_limits, :vitals, :elsewhere],
     # cli020 C8/C9/C18: structured command answers.

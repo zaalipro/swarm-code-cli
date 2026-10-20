@@ -565,7 +565,7 @@ defmodule SwarmCodeCLI.UI.Projector.Composer do
         name = String.replace_prefix(token, "/", "")
 
         command =
-          if SlashPalette.known?(name),
+          if SlashPalette.known?(name, SlashPalette.extras(state)),
             do: tint(:accent, state, [:bold]),
             else: tint(:text_muted, state)
 
