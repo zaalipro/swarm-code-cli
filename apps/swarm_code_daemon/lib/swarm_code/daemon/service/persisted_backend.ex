@@ -1374,8 +1374,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
            QuestionProjection.selection(item, p["answers"], p["custom_text"] || ""),
          index when is_integer(index) <-
            QuestionProjection.index(p["node_id"], p["expected_revision"], p["interaction_id"]),
-         :ok <-
-           RunServer.answer_question(run.id, p["node_id"], index, indices, p["custom_text"] || "") do
+         :ok <- answer_question(run, item, p, index, indices) do
       {accepted(id, [run.id]), refresh(state)}
     else
       {:error, :invalid_request} -> {reject(id, :invalid_request), state}
@@ -4224,6 +4223,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           pending
           |> Enum.filter(&(&1.run_id == row.id))
           |> Enum.flat_map(&pending_interaction(&1, run, state))
+          |> Kernel.++(workflow_gate(row, run, state))
 
         approval = Enum.find(interactions, &(&1["kind"] == "approval"))
 
@@ -4405,6 +4405,77 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:ok, temp, if(transcript_slot?, do: tb, else: rb), if(transcript_slot?, do: ta, else: ra)}
     end
   end
+
+  # pass 77 C-VER-1: the answer of a workflow's `await_user` gate (see
+  # `workflow_gate/3`) is the typed text, else the chosen options' labels; it
+  # resumes the run. Any other question goes to its RunServer.
+  defp answer_question(%{kind: "workflow"} = run, %{"node_id" => node_id} = item, p, _, indices)
+       when node_id == run.id do
+    custom = String.trim(p["custom_text"] || "")
+
+    answer =
+      if custom != "",
+        do: custom,
+        else:
+          indices
+          |> Enum.map(&get_in(item, ["question", "options", Access.at(&1), "label"]))
+          |> Enum.join(", ")
+
+    case SwarmCode.Domain.FeatureCatalog.control_workflow(run.id, :resume, answer: answer) do
+      {:ok, _} -> :ok
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  defp answer_question(run, _item, p, index, indices),
+    do: RunServer.answer_question(run.id, p["node_id"], index, indices, p["custom_text"] || "")
+
+  # pass 77 C-VER-1: a workflow parked on `await_user` holds its question on the
+  # workflow row, not in the engine's question table, so no pending interaction
+  # names it. It is projected as a one-question interaction whose id is the run
+  # (`node_id` = the run id): `question.answer` resumes the run with the answer
+  # (`execute/4`), the way the desktop's gate card does.
+  defp workflow_gate(%{kind: "workflow", status: "waiting_user"} = row, run, state) do
+    case SwarmCode.Domain.Workflows.get_run(row.id) do
+      %{gate_question: question} = wf when is_binary(question) and question != "" ->
+        revision = stamp(wf.updated_at)
+
+        base = %{
+          "id" => row.id,
+          "run_id" => run.id,
+          "node_id" => row.id,
+          "conversation_id" => state.opts[:conversation_id],
+          "kind" => "question",
+          "expected_revision" => revision,
+          "state" => "pending",
+          "question" => nil,
+          "approval" => nil,
+          "allowed_actions" => [],
+          "urgency" => "normal",
+          "deadline" => 0,
+          "created_at" => revision
+        }
+
+        SwarmCode.Daemon.Service.QuestionProjection.rows(
+          base,
+          [
+            %{
+              question: question,
+              options: Enum.map(wf.gate_options || [], &%{label: &1}),
+              multiple: false,
+              index: 0,
+              total: 1
+            }
+          ],
+          %{agent_id: nil, requested_at: nil}
+        )
+
+      _no_gate ->
+        []
+    end
+  end
+
+  defp workflow_gate(_row, _run, _state), do: []
 
   defp pending_interaction(p, run, state) do
     details = RunServer.pending_interactions(run.id)
