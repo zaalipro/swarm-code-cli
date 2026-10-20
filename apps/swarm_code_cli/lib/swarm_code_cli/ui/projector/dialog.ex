@@ -1383,7 +1383,6 @@ defmodule SwarmCodeCLI.UI.Projector.Dialog do
   # the title shows it, where "NO RESULTS" alone never said why.
   defp switcher_title(">approvals:" <> typed), do: "Approvals: " <> typed
   defp switcher_title(">" <> query), do: titled("Actions", query)
-  defp switcher_title("@" <> query), do: titled("Projects", query)
   # cli020 E9: the hits of the last `/search` (C8), titled by its words.
   defp switcher_title("?" <> query), do: titled("Search results", query)
 

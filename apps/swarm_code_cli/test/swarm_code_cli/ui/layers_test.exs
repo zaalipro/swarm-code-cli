@@ -22,7 +22,21 @@ defmodule SwarmCodeCLI.UI.LayersTest do
     # `#` lists conversations and researches; runs are Ctrl-R's (pass70 Q10).
     assert Switcher.rank(query.("#review"), entries) == []
     assert Enum.map(Switcher.rank(query.(">review"), entries), & &1.id) == ["a"]
+    # C-FEAT-16: `@` is not a prefix (no entry is a project or a repository):
+    # the query is plain text, matched like any other.
     assert Switcher.rank(query.("@review"), entries) == []
+
+    at_entries = [
+      struct(Switcher.Entry,
+        id: "at",
+        kind: :action,
+        label: "Open @ailogic notes",
+        target: {:local, :back}
+      )
+      | entries
+    ]
+
+    assert Enum.map(Switcher.rank(query.("@ail"), at_entries), & &1.id) == ["at"]
     assert Switcher.repair_selection("r", 0, entries) == "r"
     assert Switcher.repair_selection("gone", 1, entries) == "a"
     assert Switcher.repair_selection("gone", 1, []) == "query"

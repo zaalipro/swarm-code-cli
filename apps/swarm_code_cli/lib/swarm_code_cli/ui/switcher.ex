@@ -46,9 +46,6 @@ defmodule SwarmCodeCLI.UI.Switcher do
 
   @kinds [
     :command,
-    :workflow,
-    :project,
-    :repository,
     :conversation,
     :research,
     :run,
@@ -508,8 +505,7 @@ defmodule SwarmCodeCLI.UI.Switcher do
     dispatch ++ runs ++ agents ++ interactions
   end
 
-  defp prefix("/" <> query), do: {[:command, :workflow], query}
-  defp prefix("@" <> query), do: {[:project, :repository], query}
+  defp prefix("/" <> query), do: {[:command], query}
   # cli020 E9: the hits of the last `/search` (C8), each opening its conversation.
   defp prefix("?" <> query), do: {[:search], query}
   # `#` is the resume list: conversations and researches. Runs have their own
