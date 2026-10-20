@@ -203,7 +203,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
               SessionConfiguration.overlay(conv),
               cmd.prompt,
               attachments(opts),
-              [research_ids: research_ids(opts)] ++ approval(opts)
+              [research_ids: research_ids(opts)] ++ chat_opts(opts)
             )
 
       started(conv, cmd.name, result)
@@ -251,7 +251,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
               SessionConfiguration.overlay(conv),
               message,
               [],
-              [prompt: args[:prompt], goal_id: goal.id] ++ approval(opts)
+              [prompt: args[:prompt], goal_id: goal.id] ++ chat_opts(opts)
             )
         end
 
@@ -377,7 +377,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         %{SessionConfiguration.overlay(conv) | mode: "plan"},
         cmd.task,
         attachments(opts),
-        [research_ids: research_ids(opts)] ++ approval(opts)
+        [research_ids: research_ids(opts)] ++ chat_opts(opts)
       )
     )
   end
@@ -400,7 +400,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         },
         cmd.task,
         attachments(opts),
-        [research_ids: research_ids(opts)] ++ approval(opts)
+        [research_ids: research_ids(opts)] ++ chat_opts(opts)
       )
     )
   end
@@ -415,7 +415,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           "/create-workflow " <> cmd.prompt,
           attachments(opts),
           [prompt: cmd.prompt, command: :create_workflow, research_ids: research_ids(opts)] ++
-            approval(opts)
+            chat_opts(opts)
         )
       )
     end
@@ -430,7 +430,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           SessionConfiguration.overlay(conv),
           @review_prompt,
           attachments(opts),
-          [research_ids: research_ids(opts)] ++ approval(opts)
+          [research_ids: research_ids(opts)] ++ chat_opts(opts)
         )
       )
 
@@ -1217,6 +1217,14 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       mode -> [approval_mode: mode]
     end
   end
+
+  # pass 77 C-BUG-12: a chat turn also carries the session overlay (`--model`,
+  # `NCODE_EFFORT`) as a function, so a turn the engine chains after an
+  # automatic compaction reloads the conversation and applies it again. The
+  # engine reads it from the options of a chat turn only; a swarm start does
+  # not take it.
+  defp chat_opts(opts),
+    do: approval(opts) ++ [conversation_overlay: &SessionConfiguration.overlay/1]
 
   defp research(id) do
     case Integer.parse(id) do

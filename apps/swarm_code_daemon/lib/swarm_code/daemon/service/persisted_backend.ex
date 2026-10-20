@@ -1729,7 +1729,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           SessionConfiguration.overlay(Conversations.get!(state.opts[:conversation_id])),
           text,
           attachments,
-          [research_ids: state.research_ids] ++ approval_opts(state)
+          chat_turn_opts(state, research_ids: state.research_ids)
         )
       end
 
@@ -1744,6 +1744,16 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       mode -> [approval_mode: mode]
     end
   end
+
+  # pass 77 C-BUG-12: the options of every chat turn this session starts: the
+  # caller's own, the session's approval mode and the session overlay as a
+  # function (a turn the engine chains after an automatic compaction applies it
+  # to the conversation it reloads).
+  defp chat_turn_opts(state, extra),
+    do: extra ++ approval_opts(state) ++ [conversation_overlay: &SessionConfiguration.overlay/1]
+
+  @doc false
+  def chat_turn_opts_for_test(state, extra \\ []), do: chat_turn_opts(state, extra)
 
   defp send_command(state, id, params) do
     text = params["text"]
@@ -2040,7 +2050,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp pop_head(state, conversation_id, generation) do
     case Conversations.pop_queued(conversation_id) do
       {:ok, text, conversation} ->
-        case start_queued(conversation, text, approval_opts(state)) do
+        case start_queued(conversation, text, state) do
           {:ok, _} ->
             queues = QueueState.reset(state.queues, conversation_id)
             state = refresh_queue(%{state | queues: queues}, conversation_id)
@@ -2195,14 +2205,15 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: %{state | queue_paused: MapSet.delete(state.queue_paused, state.opts[:conversation_id])}
 
   # cli020 fix S1: a queued item starts with the session's `--approval` mode
-  # like a send does (`approval`: `approval_opts/1`, [] outside `ncode -p`).
-  defp start_queued(conversation, text, approval) do
+  # like a send does (`approval_opts/1`, [] outside `ncode -p`); a prompt also
+  # carries the session overlay (pass 77 C-BUG-12, `chat_turn_opts/2`).
+  defp start_queued(conversation, text, state) do
     safe_start(fn ->
       if command_name(text) != nil do
         CommandDispatcher.dispatch(
           conversation.id,
           text,
-          [research_ids: [], attachments: []] ++ approval
+          [research_ids: [], attachments: []] ++ approval_opts(state)
         )
       else
         # A prompt is never dropped: any failure puts it back to be retried.
@@ -2210,7 +2221,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
                SessionConfiguration.overlay(conversation),
                text,
                [],
-               approval
+               chat_turn_opts(state, [])
              ) do
           {:ok, _} = ok -> ok
           {:error, _} -> {:error, :operation_failed}
