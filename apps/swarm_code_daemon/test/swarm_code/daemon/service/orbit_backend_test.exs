@@ -792,6 +792,25 @@ defmodule SwarmCode.Daemon.Service.OrbitBackendTest do
       assert_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 3_000
     end
 
+    # pass 77 C-ARCH-10: no monitor is involved, only the status notice.
+    test "a run of another conversation changing status arms it", c do
+      other = conversation!(c.project, "Other work", ~U[2026-10-01 00:00:01.000000Z])
+
+      assert {:ok, _run} =
+               Conversations.create_run(%{
+                 conversation_id: other.id,
+                 kind: "chat",
+                 status: "running",
+                 started_at: DateTime.utc_now()
+               })
+
+      assert_receive {:service_delta, _, "shell", %{"kind" => "home_stale"} = delta}, 3_000
+      assert delta["body"] == %{"revision" => 1}
+      assert %{home_monitors: monitors} = :sys.get_state(c.backend)
+      assert monitors == %{}
+      refute_receive {:service_delta, _, "shell", %{"kind" => "home_stale"}}, 500
+    end
+
     test "conversation.new, conversation.open and project.update each arm it", c do
       other = conversation!(c.project, "Other work", ~U[2026-10-01 00:00:01.000000Z])
 

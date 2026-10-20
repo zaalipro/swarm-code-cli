@@ -676,8 +676,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
        |> schedule_refresh()}
 
   # pass76: any conversation's run changed status.
+  # pass 77 C-ARCH-10: Home also hears it. `arm_home_stale/1` is a debounce, so
+  # a burst is one push; the `home_monitors` stay for a run process that dies
+  # without a status write.
   def handle_info({:run_status, _conversation_id, _status}, state),
-    do: {:noreply, arm_elsewhere(state)}
+    do: {:noreply, state |> arm_elsewhere() |> arm_home_stale()}
 
   # The timer names its own ref: a replaced one that still delivers is stale.
   def handle_info({:timeout, ref, :elsewhere_due}, %{elsewhere_timer: {ref, kind}} = state),
