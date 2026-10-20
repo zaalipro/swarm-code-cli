@@ -51,6 +51,9 @@ defmodule SwarmCodeCLI.Release do
                       a swarm or workflow it launched counts the same way
     --max-budget-usd X  with -p: stop the run once it and what it launched cost more than $X
     --approval MODE   with -p: read-only, auto or full for this run only
+    --image, -i PATH  with -p: attach an image (PNG, JPEG, GIF or WebP inside the
+                      project folder; repeat it, up to 4)
+    -o, --output-last-message FILE  with -p: also write the final answer to FILE
     --plain           line-by-line presenter for pipes, CI and SSH (type `help`)
     --ndjson          with --plain: one JSON record per line
     --help, -h        this text
@@ -70,6 +73,9 @@ defmodule SwarmCodeCLI.Release do
 
   # The prompt's size is the composer's: one paste.
   @max_prompt_bytes 262_144
+
+  # C-FEAT-10: the images a `-p` run takes.
+  @max_images 4
 
   @type options :: %{
           mode: :tui | :plain | :prompt | :settings,
@@ -227,6 +233,8 @@ defmodule SwarmCodeCLI.Release do
       max_turns: nil,
       max_budget_usd: nil,
       approval: nil,
+      images: [],
+      output_file: nil,
       seen: MapSet.new()
     }
 
@@ -333,6 +341,19 @@ defmodule SwarmCodeCLI.Release do
       "--fail-on-denied" ->
         once(parsed, :fail_on_denied, rest, &%{&1 | fail_on_denied?: true})
 
+      # C-FEAT-10: -p takes images (repeatable) and an output file.
+      "--image=" <> path ->
+        image(parsed, path, rest)
+
+      flag when flag in ["--image", "-i"] ->
+        value(flag, rest, fn path, rest -> image(parsed, path, rest) end)
+
+      "--output-last-message=" <> path ->
+        output_file(parsed, path, rest)
+
+      flag when flag in ["-o", "--output-last-message"] ->
+        value(flag, rest, fn path, rest -> output_file(parsed, path, rest) end)
+
       # cli020 B23 (competitors-4): the other headless flags.
       "--output-format=" <> v ->
         b23(parsed, :output_format, v, rest)
@@ -360,6 +381,18 @@ defmodule SwarmCodeCLI.Release do
       directory ->
         directory(parsed, directory, rest)
     end
+  end
+
+  defp image(parsed, path, rest) do
+    if String.trim(path) == "",
+      do: {:error, "--image needs a file."},
+      else: flags(rest, %{parsed | images: [path | parsed.images]})
+  end
+
+  defp output_file(parsed, path, rest) do
+    if String.trim(path) == "",
+      do: {:error, "-o needs a file."},
+      else: once(parsed, :output_file, rest, &%{&1 | output_file: path})
   end
 
   defp b23_key("output_format"), do: :output_format
@@ -402,6 +435,7 @@ defmodule SwarmCodeCLI.Release do
 
   defp flag_name(:prompt), do: "-p"
   defp flag_name(:fail_on_denied), do: "--fail-on-denied"
+  defp flag_name(:output_file), do: "-o"
   defp flag_name(:output_format), do: "--output-format"
   defp flag_name(:max_turns), do: "--max-turns"
   defp flag_name(:max_budget_usd), do: "--max-budget-usd"
@@ -420,6 +454,15 @@ defmodule SwarmCodeCLI.Release do
 
       parsed.fail_on_denied? and parsed.prompt == nil and not parsed.plain? ->
         {:error, "--fail-on-denied goes with -p or --plain."}
+
+      parsed.images != [] and parsed.prompt == nil ->
+        {:error, "--image goes with -p."}
+
+      length(parsed.images) > @max_images ->
+        {:error, "at most #{@max_images} --image."}
+
+      parsed.output_file != nil and parsed.prompt == nil ->
+        {:error, "-o goes with -p."}
 
       parsed.model != nil and String.trim(parsed.model) == "" ->
         {:error, "--model needs a model name."}
@@ -461,7 +504,9 @@ defmodule SwarmCodeCLI.Release do
            fail_on_denied: parsed.fail_on_denied?,
            max_turns: parsed.max_turns && String.to_integer(parsed.max_turns),
            max_budget_usd: parsed.max_budget_usd && budget_value(parsed.max_budget_usd),
-           approval: approval_value(parsed.approval)
+           approval: approval_value(parsed.approval),
+           images: parsed.images |> Enum.reverse() |> Enum.map(&Path.expand/1),
+           output_file: parsed.output_file && Path.expand(parsed.output_file)
          }}
     end
   end
@@ -622,10 +667,15 @@ defmodule SwarmCodeCLI.Release do
       fail_on_denied: Map.get(options, :fail_on_denied) == true || nil,
       max_turns: Map.get(options, :max_turns),
       max_budget_usd: Map.get(options, :max_budget_usd),
-      approval_mode: Map.get(options, :approval)
+      approval_mode: Map.get(options, :approval),
+      images: Map.get(options, :images) |> presence(),
+      output_file: Map.get(options, :output_file)
     ]
     |> Enum.reject(fn {_, value} -> is_nil(value) end)
   end
+
+  defp presence(list) when list in [nil, []], do: nil
+  defp presence(list), do: list
 
   defp version do
     Application.load(:swarm_code_cli)

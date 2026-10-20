@@ -424,6 +424,94 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     end
   end
 
+  # C-FEAT-10: -p takes --image PATH (repeatable) and -o FILE; both reach the
+  # release as absolute paths, resolved where the command ran.
+  describe "images and the output file" do
+    test "-p passes absolute paths for --image (repeated) and -o", context do
+      assert {0, _} =
+               launch(context, [
+                 "-p",
+                 "x",
+                 "--image",
+                 "a.png",
+                 "--image=sub/b.png",
+                 "-o",
+                 "out.txt"
+               ])
+
+      cwd = resolved(context.project, "-P")
+      args = stub(context)["ARGS"]
+
+      assert args =~ "[--image] [#{cwd}/a.png] [--image] [#{cwd}/sub/b.png]"
+      assert args =~ "[--output-last-message] [#{cwd}/out.txt]"
+    end
+
+    test "an absolute path is kept as it is", context do
+      assert {0, _} =
+               launch(context, ["-p", "x", "-i", "/tmp/c.png", "--output-last-message=/tmp/o"])
+
+      args = stub(context)["ARGS"]
+      assert args =~ "[--image] [/tmp/c.png]"
+      assert args =~ "[--output-last-message] [/tmp/o]"
+    end
+
+    test "without -p, with a fifth image, a blank or a repeated -o: exit 2", context do
+      five = Enum.flat_map(1..5, &["--image", "#{&1}.png"])
+
+      for {args, text} <- [
+            {["--image", "a.png"], "--image goes with -p."},
+            {["-o", "out.txt"], "-o goes with -p."},
+            {["-p", "x"] ++ five, "at most 4 --image."},
+            {["-p", "x", "--image", " "], "--image needs a file."},
+            {["-p", "x", "-o", "a", "-o", "b"], "-o is given twice."}
+          ] do
+        assert {2, output} = launch(context, args), inspect(args)
+        assert output =~ text, inspect(args)
+      end
+
+      refute File.exists?(context.log)
+    end
+
+    test "four images are accepted", context do
+      four = Enum.flat_map(1..4, &["--image", "#{&1}.png"])
+      assert {0, _} = launch(context, ["-p", "x"] ++ four)
+    end
+
+    test "the release parses them into options and headless_options/1" do
+      assert {:ok, options} =
+               SwarmCodeCLI.Release.parse([
+                 "-p",
+                 "x",
+                 "--image",
+                 "/tmp/a.png",
+                 "-i",
+                 "/tmp/b.png",
+                 "-o",
+                 "/tmp/out.txt"
+               ])
+
+      assert options.images == ["/tmp/a.png", "/tmp/b.png"]
+      assert options.output_file == "/tmp/out.txt"
+      headless = SwarmCodeCLI.Release.headless_options(options)
+      assert headless[:images] == ["/tmp/a.png", "/tmp/b.png"]
+      assert headless[:output_file] == "/tmp/out.txt"
+
+      assert {:ok, bare} = SwarmCodeCLI.Release.parse(["-p", "x"])
+      assert bare.images == []
+      bare_headless = SwarmCodeCLI.Release.headless_options(bare)
+      refute Keyword.has_key?(bare_headless, :images)
+      refute Keyword.has_key?(bare_headless, :output_file)
+
+      assert {:error, "--image goes with -p."} = SwarmCodeCLI.Release.parse(["--image", "a"])
+      assert {:error, "-o goes with -p."} = SwarmCodeCLI.Release.parse(["-o", "a"])
+
+      assert {:error, "at most 4 --image."} =
+               SwarmCodeCLI.Release.parse(
+                 ["-p", "x"] ++ Enum.flat_map(1..5, &["--image", "#{&1}.png"])
+               )
+    end
+  end
+
   # C-FEAT-9: `ncode update` runs the hosted installer; the tests point
   # NCODE_INSTALL_URL at a local script.
   describe "update" do
