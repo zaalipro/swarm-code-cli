@@ -605,6 +605,21 @@ defmodule SwarmCode.Domain.FeatureCatalog do
     |> Enum.reverse()
   end
 
+  # pass 77 X-2 (the CLI's analog of the desktop fix): a workflow row offers
+  # only what its status allows. `Workflows.control/3` takes Pause on a running
+  # run, Resume on a paused, waiting, interrupted or stopped one, Stop on a
+  # live one; a failed or finished run offers nothing (a failed run is not
+  # resumable: Retry failed is a different command).
+  @doc false
+  @spec workflow_actions(String.t() | nil) :: [atom()]
+  def workflow_actions("running"), do: [:pause, :stop]
+
+  def workflow_actions(status) when status in ["paused", "waiting_user", "interrupted"],
+    do: [:resume, :stop]
+
+  def workflow_actions("stopped"), do: [:resume]
+  def workflow_actions(_failed_done_or_unknown), do: []
+
   defp query_rows(:workflows, ctx, _opts) do
     definitions =
       Enum.map(Workflows.list(ctx.project), fn w ->
@@ -635,21 +650,6 @@ defmodule SwarmCode.Domain.FeatureCatalog do
 
     {:ok, definitions ++ runs}
   end
-
-  # pass 77 X-2 (the CLI's analog of the desktop fix): a workflow row offers
-  # only what its status allows. `Workflows.control/3` takes Pause on a running
-  # run, Resume on a paused, waiting, interrupted or stopped one, Stop on a
-  # live one; a failed or finished run offers nothing (a failed run is not
-  # resumable: Retry failed is a different command).
-  @doc false
-  @spec workflow_actions(String.t() | nil) :: [atom()]
-  def workflow_actions("running"), do: [:pause, :stop]
-
-  def workflow_actions(status) when status in ["paused", "waiting_user", "interrupted"],
-    do: [:resume, :stop]
-
-  def workflow_actions("stopped"), do: [:resume]
-  def workflow_actions(_failed_done_or_unknown), do: []
 
   defp query_rows(:research, ctx, _opts) do
     rows = Research.list(if(ctx.project, do: [project_id: ctx.project.id], else: []))
