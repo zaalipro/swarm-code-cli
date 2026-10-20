@@ -198,8 +198,10 @@ the other app out of the shared database.
 ### Using `ncode`
 
 ```text
-ncode [DIR] [--new | --continue | --resume ID] [--model M]
-      [-p PROMPT [--json]] [--plain [--ndjson]] [--help] [--version]
+ncode [DIR] [--new | --continue | --resume ID] [--model M] [--add-dir DIR]
+      [-p PROMPT [--json] [--image PATH] [-o FILE]] [--plain [--ndjson]] [--help] [--version]
+ncode update [--yes]
+ncode acp
 ```
 
 - With no flag ncode opens Home over the latest conversation (Esc continues
@@ -217,14 +219,46 @@ ncode [DIR] [--new | --continue | --resume ID] [--model M]
   end instead: `conversation_id`, `run_id`, `state`, `reason`, `text`, `error`,
   `question`, `denied`, `runs` (every run followed: `id`, `kind`, `state`, `title`, `parent_run_id`,
   `launched`, `error`), `exit_code`; `state` is that of the first run that did not finish.
+- `-p … --image PATH` attaches an image to the prompt (PNG, JPEG, GIF or WebP
+  inside the project folder; repeat it, up to 4) and `-o FILE` (`--output-last-message`)
+  also writes the final answer to `FILE`. Relative paths are the ones of the
+  directory the command ran in. A run whose answer cannot be read in full exits `1`
+  with the reason `answer_incomplete`, and prints the partial text.
+- `--add-dir DIR` lets the agents read another folder, read-only and for this
+  session only (repeat it, up to 8; it works with the full-screen view and with
+  `-p`). `/add-dir <folder>` adds one while ncode runs. Agents read files there by
+  their absolute path; edits and commands stay in the project folder.
+- `/btw <question>` asks a follow-up about the last finished run: it is threaded
+  under that run in the transcript, with the run's result (a workflow's summary)
+  in context, and it refuses while a turn is running or when nothing has finished.
+- `ncode update [--yes]` downloads the hosted installer
+  (`https://code.llmotions.com/install.sh`, which checks the SHA-256 of what it
+  downloads) and runs it. On a terminal it asks first; without one it needs
+  `--yes`. A database from a newer ncode is refused with "Run: ncode update".
+- `ncode acp` is an [Agent Client Protocol](https://agentclientprotocol.com) (v1)
+  agent on stdin and stdout, for editors such as Zed: text prompts, answers
+  streamed as they are written, and cancel (`session/cancel`). One prompt runs at
+  a time; images, `mcpServers` and `loadSession` are not supported. Approvals
+  follow the project's approval mode like `-p`: what would need a person is denied.
+  Logs go to `cli.log`, never to stdout.
+- Closing the terminal (SIGHUP) with runs still going does not stop them: they
+  keep going without a screen until they finish or wait for you (an approval or a
+  question), and then ncode quits. Ctrl-C still asks "Stop N live runs?" and
+  SIGTERM still stops them.
+- A workflow's `await_user` gate shows as a question card in the full-screen view
+  and can be answered there and with the feature commands; under `-p` it ends the
+  run with exit `1` and the reason `question_asked` (the question is in the
+  summary). Typing `/` lists the custom commands, the workflows and the builtin
+  `/init` along with the builtins.
 - `--plain` is the line presenter for pipes, CI and SSH (one command per line,
   `help` lists them); it is chosen by itself when stdin or stdout is not a
   terminal. `--ndjson` prints one JSON record per line.
 - Exit codes: `0` done, `1` the run (or one it launched) failed or was stopped,
   or a workflow is paused, `2` usage, `3` startup refused (another instance holds
   the database, no provider, an incompatible schema: one line says which), `129`
-  and `143` closed by SIGHUP or SIGTERM (the live runs are stopped and the session
-  closes first; a second signal a second or more later halts at once).
+  and `143` closed by SIGHUP or SIGTERM (SIGTERM stops the live runs and the session
+  closes first; SIGHUP lets them finish first, as above; a second signal a second or
+  more later halts at once).
 
 ```sh
 ncode -p "summarise the open TODOs in lib/" > todos.md
@@ -347,7 +381,9 @@ and `/resume-run` have daemon execution mappings; `/new` (`/clear`), `/resume`
 (the picker), `/approval`, `/trust`, `/queue`, `/panel`, `/diff`, `/theme`,
 `/mouse`, `/help` and `/quit` are answered by the client.
 `/attach <image-path>` stages a confined project image for the next saved
-message; the attachment is consumed when that message starts.
+message; the attachment is consumed when that message starts. `/btw <question>`
+(a follow-up under the last finished run) is a daemon command; `/add-dir <folder>`
+is answered by the session itself.
 Advanced flows still require full end-to-end acceptance. The unsaved launcher
 supports ordinary coding prompts and local workflow/research library navigation.
 
@@ -358,6 +394,25 @@ actions, and correlated responses. `/goal` presents the conversation goal;
 `/workflows`, `/deep_research`, and `/rewind` open their corresponding libraries.
 Use PgUp/PgDn or Home/End to read long goal reports. The unsaved launcher reports
 persisted features unavailable because it has no Domain Repo.
+
+### Hooks and the sandbox (desktop pass 77)
+
+These two arrive with the desktop's pass-77 code (the synced domain), so they
+work once the CLI is built from that sync.
+
+- A tool hook (`pre_tool_use`, `post_tool_use` in `.swarm_code/config.json`, run
+  only in a trusted project) gets the call in its environment, bounded and with
+  secrets redacted: `NCODE_TOOL_INPUT` (the arguments as JSON, the first 8 KB),
+  `NCODE_TOOL_COMMAND` (a `run_command` command) and `NCODE_TOOL_PATH` (a file
+  tool's path); `post_tool_use` also gets `NCODE_TOOL_OK` (`1` or `0`) and
+  `NCODE_TOOL_OUTPUT` (the result text, the first 4 KB). `post_tool_use` is
+  informational: its output never changes the call.
+- `"sandbox": "workspace-write"` in `.swarm_code/config.json` is an opt-in
+  sandbox for the commands the model runs (`run_command` only; macOS, through
+  Seatbelt): writes stay inside the project folder and the temp folders, and the network is off
+  unless the project is in full access. A sandbox that cannot be set up refuses
+  the command instead of running it unsandboxed. Any other value is reported,
+  never read as "off".
 
 ## Settings
 

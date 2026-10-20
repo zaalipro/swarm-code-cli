@@ -49,7 +49,7 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | Real unsaved session | `scripts/dev/run_live_session.sh` |
 | Headless session, one command per line on stdin | `scripts/dev/run_plain_session.sh [--ndjson]` |
 | Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `ncode` |
-| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [-p PROMPT [--json]] [--plain [--ndjson]]`; the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9); `-p --json` and stream-json name the cause of a non-zero exit in `reason` (`Release.Reasons`, pass 76) |
+| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [--add-dir DIR] [-p PROMPT [--json] [--image PATH] [-o FILE]] [--plain [--ndjson]]`, `bin/ncode update [--yes]` (runs the hosted installer; `NCODE_INSTALL_URL` points it elsewhere for tests) and `bin/ncode acp` (`Release.Acp`, an Agent Client Protocol v1 agent over stdio: stdout is the protocol, logs go to `cli.log`; each prompt is one `Headless.run` stream-json turn whose group leader is an in-memory IO server); the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9); `-p --json` and stream-json name the cause of a non-zero exit in `reason` (`Release.Reasons`, pass 76) |
 | Settings (pass 74) | `ncode settings [QUERY]` opens the layer (`/settings`, F2); `ncode config help` lists the headless commands (`list/get/set/reset/keys/path/records/record/secret --stdin/search/mcp/export/import/doctor`) |
 | Re-derive the desktop domain | `mise exec -- mix swarm_code.provenance.sync --ref <desktop sha>` (read-only `git` on `~/dev/swarm-code` or `$SWARM_CODE_UPSTREAM`); `--check` verifies (in precommit) |
 | Re-pin a hand-edited ledger file outside the sync mappings | `mise exec -- mix swarm_code.provenance.repin <path> …` |
@@ -146,8 +146,17 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   `UI.Input` → `Keymap` (one table, `Keymap.Bindings`) → `Action`. `SafeText` and `Width`
   (Unicode 17 tables) gate every string that reaches the terminal. Sibling presenters: `Plain.*`
   (append-only stdin/stdout), `Companion.*` (localhost web mirror served from `priv/companion`),
-  `Demo.*` (synthetic fixtures), `Release` (packaged entry point). `scripts/dev/*_session.exs`
-  are the launchers that wire daemon, data source and renderer together.
+  `Demo.*` (synthetic fixtures), `Release` (packaged entry point). `Fake.*`, `Demo.*`,
+  `UI.Fixtures` and the `swarm_code.demo.*` Mix tasks are compiled for `:dev` and `:test` only
+  (`apps/swarm_code_cli/mix.exs`, `elixirc_paths(:prod)`; nothing else in `lib` may name them,
+  the prod compile proves it: `MIX_ENV=prod mix compile --warnings-as-errors`, then `rm -rf
+  _build/prod`). `scripts/dev/*_session.exs` are the launchers that wire daemon, data source
+  and renderer together; `run_live_session.sh` is dev-only (a weaker tool policy than ncode,
+  not the product path) and `Daemon.Runtime.RunSupervisor` is started by its tests, not by
+  the application.
+  `app_boundary` (pass 77, C-ARCH-6): `r1019_app_boundary_test.exs` in the daemon's tests pins
+  which test files cross between the daemon and the CLI app; a new crossing test belongs in the
+  release app.
 
 Invariants that the code base defends and tests pin:
 
@@ -216,7 +225,13 @@ and its entry dropped with the sync tooling's writer
 never by hand; `verify` and `sync --check` must pass after. When two branches both change the
 ledger or a recorded patch, take one side of `extracted-files.json` and the `.diff`, then re-run
 `sync --ref <pinned sha>` and `repin` on the union of the frozen paths both sides changed
-(`git checkout --ours` drops the other side's non-conflicting repins too). `third_party/` and `vendor/exqlite` are pinned copies checked
+(`git checkout --ours` drops the other side's non-conflicting repins too).
+**Desktop-first fixes** (pass 77, C-ARCH-4): a bug in a synced (mapped) file is fixed in the
+desktop first and then synced; a CLI patch is only for CLI-specific behaviour. Map the
+desktop's DB-free regression tests for patched files into `sync-rules.json`'s test mapping, so
+the next sync runs them against the patch. `mix swarm_code.provenance.drift` also lists every
+ledger entry (the web-lineage ports such as `command_dispatcher.ex` from `workspace_live.ex`
+included) whose upstream file changed since the commit it was synced from. `third_party/` and `vendor/exqlite` are pinned copies checked
 by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --check` and
 `verify_terminal_port_licenses.py`. Hex deps are pinned with `==` and
 `deps.unlock --check-unused` is a gate: do not add packages casually.
@@ -327,7 +342,7 @@ by `scripts/dev/sync_unicode_width.exs --check`, `sync_unicode_variants.py --che
   snapshot that would not fit its byte limit falls back to 2 KB items (pass 71).
 - The plain launcher closes at stdin EOF, so hold stdin open to see a model reply.
 - Settings (pass 74, `docs/research/2026-09-25-cli74-settings-outcome.md`): the catalogue is
-  `SwarmCode.Settings.Registry` in core (171 entries: key, section, home layer
+  `SwarmCode.Settings.Registry` in core (180 entries: key, section, home layer
   `global|project|conversation|cli`, type, default, synonyms); a new setting is a registry entry
   plus its section's row, and `c74_acceptance_test.exs` (A3) fails until it is on its page once.
   The daemon side is `SwarmCode.Daemon.Service.Settings.*` (`Router`, one handler per area,
@@ -473,7 +488,7 @@ Headless and release (lane B):
   `auto`/`full` in an untrusted project before it writes the message, in the launcher's
   words); `/compact` has no tools, so no approval to carry.
 - **Exit codes:** 0 done, 1 failed, 2 usage, 3 refused, 4 changed elsewhere (`ncode config`),
-  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`). Exit 3 covers a held
+  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`). A SIGHUP with live runs no longer stops them: `Release.Detach` keeps the VM up, headless, until no run is progressing (every live run is waiting for a person) and then closes the normal way, with the exit-summary skipped (the terminal is gone); `Signals.hold_deadline/1` holds the watchdog's close deadline for that wait and `release_deadline/1` restarts it, and a second signal still halts at once. SIGTERM and Ctrl-C stop the runs as before. Exit 3 covers a held
   lease, the open desktop, an untrusted `--approval`, no provider and every schema refusal; in
   `-p --json` the `reason` field says which, the exit code and the sentence stay as they are.
   A signal hands the session its normal close and waits for it up to `Signals.deadline_ms/0`
