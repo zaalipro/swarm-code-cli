@@ -191,6 +191,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         stop_reason: nil,
         announced: MapSet.new(),
         details: [],
+        # pass 77 C-BUG-9: an own query (the completion read, a detail page)
+        # is asked a second time once; `retried` names those asked again
+        # (`:completion`, `{:detail, id, offset}`), and `incomplete?` is set
+        # when one still did not answer: the exit is then 1, never a quiet 0
+        # with half an answer.
+        retried: MapSet.new(),
+        incomplete?: false,
         sequence: 0
       }
 
@@ -952,6 +959,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp own_response(state, :completion, %DTO.WorkspaceSnapshot{state: :idle} = snapshot) do
     # The snapshot can show a run launched since the read model last heard.
+    state = %{state | retried: MapSet.delete(state.retried, :completion)}
     known = state.known
     state = follow(state, snapshot.runs)
     ids = tracked(state)
@@ -979,7 +987,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     end
   end
 
-  defp own_response(state, :completion, _), do: conclude(state, run_summaries(state))
+  # A failed or late completion read is asked once more; asked twice, the
+  # answer is incomplete.
+  defp own_response(state, :completion, _) do
+    if MapSet.member?(state.retried, :completion),
+      do: conclude(%{state | incomplete?: true}, run_summaries(state)),
+      else: query_completion(%{state | retried: MapSet.put(state.retried, :completion)})
+  end
 
   defp own_response(state, {:detail, id, ref, runs}, %DTO.DetailWindow{state: :idle} = window) do
     state = write_answer(state, id, window.text)
@@ -989,8 +1003,17 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       else: next_detail(state, runs)
   end
 
-  defp own_response(state, {:detail, _, _, runs}, _) do
-    next_detail(say(state, "the rest of the answer could not be read."), runs)
+  # The page that failed was not written, so the text so far ends at its offset.
+  defp own_response(state, {:detail, id, ref, runs}, _) do
+    offset = byte_size(Map.get(state.texts, id, ""))
+    key = {:detail, id, offset}
+
+    if MapSet.member?(state.retried, key) do
+      state = say(%{state | incomplete?: true}, "the rest of the answer could not be read.")
+      next_detail(state, runs)
+    else
+      query_detail(%{state | retried: MapSet.put(state.retried, key)}, id, ref, offset, runs)
+    end
   end
 
   defp read_answers(state, snapshot, runs) do
@@ -1055,7 +1078,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       Process.send_after(self(), {:own_deadline, id}, @own_deadline_ms)
       %{state | sequence: sequence, own: Map.put(state.own, id, purpose)}
     else
-      _ -> conclude(%{state | sequence: sequence}, run_summaries(state))
+      _ -> conclude(%{state | sequence: sequence, incomplete?: true}, run_summaries(state))
     end
   end
 
@@ -1073,10 +1096,24 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       Enum.all?(runs, &(&1.state == :done)) ->
         state = Enum.reduce(followed_runs(state, runs), state, &say(&2, run_words(state, &1)))
 
-        # cli020 B3: `--fail-on-denied` fails a done run that had denials.
-        if state.fail_on_denied? and state.denied != [],
-          do: finish_with(state, :denied, 1),
-          else: finish(state, 0)
+        cond do
+          # pass 77 C-BUG-9: the runs are done, but part of the answer could
+          # not be read (the partial text is already printed).
+          state.incomplete? ->
+            finish_with(
+              state,
+              :answer_incomplete,
+              1,
+              "the run finished, but its answer could not be read in full."
+            )
+
+          # cli020 B3: `--fail-on-denied` fails a done run that had denials.
+          state.fail_on_denied? and state.denied != [] ->
+            finish_with(state, :denied, 1)
+
+          true ->
+            finish(state, 0)
+        end
 
       true ->
         # Every run that did not finish is named, in order, and so is every

@@ -47,6 +47,7 @@ defmodule SwarmCodeCLI.Release.Reasons do
     conversation_busy: "conversation_busy",
     prompt_not_sent: "prompt_not_sent",
     run_not_started: "run_not_started",
+    answer_incomplete: "answer_incomplete",
     # How a run ended, or why this process stopped it.
     run_failed: "run_failed",
     run_stopped: "run_stopped",

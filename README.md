@@ -281,6 +281,7 @@ Exit `1`, the session or the run failed:
 | `prompt_not_sent` | The prompt was refused (for example `/settings` needs the full-screen view). |
 | `conversation_busy` | The conversation still has a turn running; use `--new`. |
 | `run_not_started` | The prompt started no run. |
+| `answer_incomplete` | The run finished, but its answer could not be read in full (the partial text is printed). |
 | `run_failed` | A run, or one it launched, failed. |
 | `run_stopped` | A run was stopped by someone else. |
 | `run_interrupted` | A run was interrupted. |
