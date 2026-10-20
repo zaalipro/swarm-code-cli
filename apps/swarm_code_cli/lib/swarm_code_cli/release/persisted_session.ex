@@ -31,6 +31,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   alias SwarmCode.Daemon.FoundationGate.BootConfig
   alias SwarmCode.Daemon.Service.{PersistedBackend, SessionConfiguration, SessionSelection}
   alias SwarmCodeCLI.Companion
+  alias SwarmCodeCLI.Release.{Detach, Signals}
   alias SwarmCodeCLI.UI.{Capabilities, Init, SessionRuntime, Size}
   alias SwarmCodeCLI.UI.DataSource.Daemon
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
@@ -302,8 +303,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     status =
       case result do
         {:ok, {:ok, outcome, summary}} ->
-          print_summary(summary)
-          outcome_status(outcome)
+          # C-FEAT-3: after a hang-up that kept runs going the terminal is
+          # gone, so there is nothing to print the summary on.
+          unless summary[:detached], do: print_summary(summary)
+          outcome_status(outcome, summary[:detached] == true)
 
         {:ok, {:error, failure}} ->
           clear_starting_line(test_boot)
@@ -334,12 +337,36 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       do: IO.puts(:stderr, "ncode (dev) — conversation #{session.conversation.id}")
 
     {outcome, current} = run_ui(session, executable, opts[:opening])
+    detached? = detach(outcome)
     shown = %{session | conversation: %{session.conversation | id: current}}
     # Read the summary while storage and the runs are still up, then stop them.
     summary = query_worker(fn -> summary(shown, started_at) end)
     stopped = stop_live_runs()
-    {:ok, outcome, Map.merge(summary, %{stopped: stopped, notice: session[:notice]})}
+
+    {:ok, outcome,
+     Map.merge(summary, %{stopped: stopped, notice: session[:notice], detached: detached?})}
   end
+
+  # C-FEAT-3: a hang-up with runs still progressing lets them finish headless
+  # (or reach a question only a person can answer) before the normal close.
+  # The signal watchdog's deadline is held for the wait. Ctrl-C and SIGTERM
+  # close at once, as before.
+  defp detach({:signal, :sighup}) do
+    if Detach.progressing?() do
+      Signals.hold_deadline()
+      Detach.await()
+      Signals.release_deadline()
+      true
+    else
+      false
+    end
+  catch
+    kind, reason ->
+      Logger.error("detach failed: #{Exception.format(kind, reason)}")
+      false
+  end
+
+  defp detach(_outcome), do: false
 
   # Starts storage, selects and configures the session, runs `fun`, and always
   # closes the owned runtime. `fun` returns `{:ok, outcome, summary}`.
@@ -665,14 +692,21 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             end
 
           {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
-            Logger.error("terminal owner stopped: #{inspect(reason)}")
+            # C-FEAT-3: the terminal port dies with the same hang-up that
+            # sends SIGHUP; the signal may be a moment behind the port.
+            if hangup_signal?() do
+              Logger.info("closing on sighup (the terminal owner stopped first)")
+              {:signal, :sighup}
+            else
+              Logger.error("terminal owner stopped: #{inspect(reason)}")
 
-            {:failed,
-             failure(
-               @exit_failure,
-               "The terminal stopped responding, so ncode closed.",
-               "Run ncode again; your conversation is saved."
-             )}
+              {:failed,
+               failure(
+                 @exit_failure,
+                 "The terminal stopped responding, so ncode closed.",
+                 "Run ncode again; your conversation is saved."
+               )}
+            end
 
           {:shutdown_signal, signal} when signal in [:sigterm, :sighup] ->
             Logger.info("closing on #{signal}")
@@ -704,6 +738,16 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         _ ->
           :ok
       end
+    end
+  end
+
+  @hangup_grace_ms 200
+
+  defp hangup_signal? do
+    receive do
+      {:shutdown_signal, :sighup} -> true
+    after
+      @hangup_grace_ms -> false
     end
   end
 
@@ -1289,14 +1333,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp color?,
     do: System.get_env("NO_COLOR") in [nil, ""] and :prim_tty.isatty(:stdout) == true
 
-  defp outcome_status(:ok), do: 0
+  defp outcome_status(:ok, _detached?), do: 0
 
-  defp outcome_status({:signal, signal}) do
-    say(:stderr, "ncode: " <> SwarmCodeCLI.Release.Signals.words(signal))
-    SwarmCodeCLI.Release.Signals.exit_code(signal)
+  defp outcome_status({:signal, signal}, detached?) do
+    say(:stderr, "ncode: " <> Signals.words(signal, detached?))
+    Signals.exit_code(signal)
   end
 
-  defp outcome_status({:failed, failure}), do: report(failure)
+  defp outcome_status({:failed, failure}, _detached?), do: report(failure)
 
   ## Failures
 
