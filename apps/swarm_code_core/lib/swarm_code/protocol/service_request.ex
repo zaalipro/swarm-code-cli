@@ -65,6 +65,75 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   @request_keys [:__struct__, :operation, :params, :timeout_ms]
   @scope_keys [:__struct__, :kind, :id, :generation]
 
+  # C-ARCH-9: the capability each operation needs, in one place. The daemon's
+  # connection checks it against the grants of the connection; the terminal
+  # client checks the same table before it writes a request, so the two sides
+  # cannot drift apart. `run_control` depends on its action.
+  @capabilities %{
+    query: :query,
+    feature_query: :query,
+    agent_detail: :query,
+    detail: :detail,
+    feature_command: :feature_command,
+    question_answer: :question_answer,
+    dispatch_send: :dispatch_send,
+    run_steer: :run_steer,
+    approval_resolve: :approval_resolve,
+    # pass74 S1-5: both settings operations ride the `settings` capability.
+    settings_query: :settings,
+    settings_command: :settings,
+    # cli020 C1: the conversation's queue.
+    queue_resume: :queue,
+    queue_edit: :queue,
+    run_retry: :run_retry,
+    history_search: :history,
+    # orbit S4: Home's overview and the conversation search.
+    home_overview: :home,
+    conversation_search: :home,
+    rewind_apply: :rewind,
+    rewind_turns: :rewind,
+    shell_stop: :shell,
+    shell_run: :shell,
+    attachment_attach: :attachment,
+    attachment_slot: :attachment,
+    watch: :watch,
+    ack: :watch,
+    unwatch: :watch,
+    resync: :watch,
+    conversation_open: :conversation_open,
+    conversation_list: :conversation_list,
+    conversation_new: :conversation_new,
+    mark_seen: :mark_seen,
+    project_update: :project_update
+  }
+  @run_control_capabilities %{
+    "pause" => :run_pause,
+    "continue" => :run_continue,
+    "stop" => :run_stop
+  }
+
+  @doc """
+  The capability `operation` needs, given its `params` (`run_control` depends
+  on its `"action"`), or nil for an operation that needs none this table knows
+  (`cancel`, an unknown action): a connection grants nothing for nil.
+  """
+  @spec capability(atom(), map()) :: atom() | nil
+  def capability(:run_control, params) when is_map(params),
+    do: Map.get(@run_control_capabilities, params["action"])
+
+  def capability(operation, _params) when is_atom(operation),
+    do: Map.get(@capabilities, operation)
+
+  @doc """
+  `capability/2` for a request as it goes on the wire (`"op"` and the params
+  beside it).
+  """
+  @spec capability_for_wire(term()) :: atom() | nil
+  def capability_for_wire(%{"op" => op} = wire) when is_binary(op),
+    do: op |> decode_operation() |> capability(wire)
+
+  def capability_for_wire(_wire), do: nil
+
   @doc "Validate a parsed service request body in its typed envelope scope."
   @spec decode(term(), Scope.t() | nil) :: {:ok, t()} | {:error, Error.t()}
   def decode(body, scope) when is_map(body) do
