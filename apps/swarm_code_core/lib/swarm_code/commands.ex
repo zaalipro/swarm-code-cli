@@ -37,6 +37,9 @@ defmodule SwarmCode.Commands do
     {"attach", "<image-path>", "Stage an image file for the next message"},
     # pass 77 C-FEAT-12: a read-only extra folder for this session.
     {"add-dir", "<folder>", "Let agents read another folder (read-only, this session)"},
+    # pass 77 C-FEAT-7: a follow-up threaded under the last finished run.
+    {"btw", "<question>",
+     "Ask about the last finished run (threaded under it, with its result in context)"},
     {"compact", "[focus]", "Summarise the conversation so far and continue from the summary"},
     # pass70 C7: the session basics.
     {"new", "", "Start a new conversation; this one stays saved"},
@@ -363,6 +366,14 @@ defmodule SwarmCode.Commands do
   defp parse_known(%{name: "attach"} = item, path, _) do
     if valid_text?(path, 4096) and not String.contains?(path, ["\0", "\r", "\n"]),
       do: ok(item, :attach_file, %{path: path}),
+      else: error(:invalid_argument)
+  end
+
+  defp parse_known(%{name: "btw"}, "", _), do: error(:missing_argument)
+
+  defp parse_known(%{name: "btw"} = item, text, _) do
+    if valid_text?(text, @max_text),
+      do: ok(item, :reply_run, %{text: text}),
       else: error(:invalid_argument)
   end
 
