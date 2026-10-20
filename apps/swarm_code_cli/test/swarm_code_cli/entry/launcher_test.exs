@@ -556,6 +556,30 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     end
   end
 
+  # C-FEAT-13: `ncode acp` goes straight to the release's ACP entry.
+  describe "acp" do
+    test "evaluates the ACP entry and nothing else", context do
+      assert {0, ""} = launch(context, ["acp"], [{"SWARM_CONVERSATION", @conversation}])
+      log = stub(context)
+
+      assert log["ARGS"] == "[eval] [SwarmCodeCLI.Release.main(System.argv())] [acp]"
+      assert log["CONVERSATION"] == "<unset>"
+      assert log["TUI"] == "<unset>"
+    end
+
+    test "takes no arguments", context do
+      assert {2, output} = launch(context, ["acp", "--verbose"])
+      assert output =~ "acp takes no arguments."
+      refute File.exists?(context.log)
+    end
+
+    test "the release routes it and lists it in its usage" do
+      assert SwarmCodeCLI.Release.usage() =~ "ncode acp"
+      assert {:module, _} = Code.ensure_loaded(SwarmCodeCLI.Release.Acp)
+      assert function_exported?(SwarmCodeCLI.Release.Acp, :main, 1)
+    end
+  end
+
   describe "--add-dir in the release" do
     alias SwarmCodeCLI.Release
     alias SwarmCodeCLI.Release.PersistedSession

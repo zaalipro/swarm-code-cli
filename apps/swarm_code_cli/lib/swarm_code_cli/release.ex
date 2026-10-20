@@ -23,6 +23,7 @@ defmodule SwarmCodeCLI.Release do
          ncode settings [QUERY] [--dir DIR]
          ncode config COMMAND [ARGS]     (ncode config help lists them)
          ncode update [--yes]            install the latest ncode CLI
+         ncode acp                       Agent Client Protocol agent over stdio (for editors)
          ncode help | version | doctor
 
   Opens the saved session for DIR (default: the current directory).
@@ -106,6 +107,8 @@ defmodule SwarmCodeCLI.Release do
 
   @doc "Runs the command line and halts the VM with its exit code."
   def main(["tui"]), do: SwarmCodeCLI.Release.PersistedSession.run()
+  # C-FEAT-13: `ncode acp`, an Agent Client Protocol agent over stdio.
+  def main(["acp"]), do: SwarmCodeCLI.Release.Acp.main([])
 
   def main(args) when is_list(args) do
     # cli020 B2: the headless output and the prompt on stdin are UTF-8 whatever

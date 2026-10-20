@@ -21,6 +21,7 @@ usage() {
        ncode settings [QUERY] [--dir DIR]
        ncode config COMMAND [ARGS]     (ncode config help lists them)
        ncode update [--yes]            install the latest ncode CLI
+       ncode acp                       Agent Client Protocol agent over stdio (for editors)
        ncode help | version | doctor
 
 Opens the saved session for DIR (default: the current directory).
@@ -267,6 +268,16 @@ if [[ $# -gt 0 ]]; then
     version) version; exit 0 ;;
     doctor) shift; set -- config doctor "$@" ;;
     update) shift; update_cli "$@"; exit $? ;;
+    # C-FEAT-13: an Agent Client Protocol agent on stdin and stdout. Nothing
+    # else may reach stdout; the provider settings load as for -p.
+    acp)
+      shift
+      [[ $# -eq 0 ]] || die_usage "acp takes no arguments."
+      # shellcheck source=/dev/null
+      . "$root/bin/load_provider_env.sh"
+      unset SWARM_MODEL_OVERRIDE SWARM_CONVERSATION SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN \
+        SWARM_SETTINGS_ONLY SWARM_RESUME_PICKER SWARM_ADD_DIRS
+      exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' acp ;;
   esac
 fi
 if [[ $# -gt 0 && "$1" == "config" ]]; then

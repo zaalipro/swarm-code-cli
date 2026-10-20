@@ -170,6 +170,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   @doc """
+  C-FEAT-13: sends the VM's logs to the private cli.log (and off the console)
+  before a session opens, for an entry such as `ncode acp` whose stdout belongs
+  to a protocol. `with_saved_session/2` does the same for every prompt.
+  """
+  @spec route_logs() :: :ok
+  def route_logs, do: route_logger!(log_path(nil))
+
+  @doc """
   pass74 S1-14: the foundation-only boot of `ncode config` — the log file,
   the lease and the verified migrations (guarded storage); no session
   selection, no provider resolution, no boot recovery, no daemon socket.
