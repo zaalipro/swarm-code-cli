@@ -1612,7 +1612,7 @@
     {
       "classification": "source",
       "destination": "apps/swarm_code_daemon/lib/swarm_code/daemon/service/command_dispatcher.ex",
-      "sha256": "b9c2d0c458743f1dc12a1ef85a1e90bf61919b7cc832aa62441af5f18565f522",
+      "sha256": "e6e0b59d4e1864c86d41a157c56f157be06dc903734e82bef3b4f9dd896f6e1e",
       "upstream_commit": "fb1b4ff82354ac8ff2e82d4f6516121fd55ff212",
       "upstream_path": "lib/swarm_code_web/live/workspace_live.ex",
       "upstream_sha256": "5b081d749d362ab34b1838acede8e593d64aa83c42f93a5865f7d4d2483dd4b9"
