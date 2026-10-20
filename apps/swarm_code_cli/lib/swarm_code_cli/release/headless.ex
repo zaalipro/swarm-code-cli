@@ -174,7 +174,9 @@ defmodule SwarmCodeCLI.Release.Headless do
                project_id: session.project.id,
                conversation_id: session.conversation.id,
                source_epoch: source_epoch,
-               approval_mode: approval
+               approval_mode: approval,
+               # pass 77 C-FEAT-12: `--add-dir` folders, read-only for this run.
+               extra_read_roots: Keyword.get(options, :extra_read_roots, [])
              ),
            {:ok, _service} <-
              child(supervisor, SwarmCode.Daemon.Service,

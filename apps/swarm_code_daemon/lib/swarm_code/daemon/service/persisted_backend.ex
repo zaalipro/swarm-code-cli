@@ -153,6 +153,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         metadata: nil,
         research_ids: [],
         attachment_ids: staged_attachments,
+        # pass 77 C-FEAT-12: extra read-only folders of this session (`--add-dir`,
+        # `/add-dir`): real paths, in memory only, passed to every chat turn.
+        extra_read_roots: validate_roots(List.wrap(opts[:extra_read_roots]), root),
         # cli020 C2: a staged image's file was gone at this send.
         staged_removed: false,
         refresh_pending: false,
@@ -1024,7 +1027,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       params["attachment_refs"] != [] or state.attachment_ids != [] ->
         {refuse(id, :attachments_not_queued), state}
 
-      turn_runs(state.opts[:conversation_id]) == [] ->
+      turn_runs(state.opts[:conversation_id]) == [] or command_name(params["text"]) == "add-dir" ->
         execute(
           %{operation: :dispatch_send, params: %{params | "action" => "send"}},
           scope,
@@ -1044,6 +1047,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     command = command_name(text)
 
     cond do
+      # pass 77 C-FEAT-12: a session setting, never a turn: it works at once.
+      command == "add-dir" ->
+        add_read_root(state, id, text)
+
       command in @waits_for_turn and turn_runs(conversation_id) != [] ->
         enqueue(state, id, text)
 
@@ -1749,7 +1756,44 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # function (a turn the engine chains after an automatic compaction applies it
   # to the conversation it reloads).
   defp chat_turn_opts(state, extra),
-    do: extra ++ approval_opts(state) ++ [conversation_overlay: &SessionConfiguration.overlay/1]
+    do:
+      extra ++
+        approval_opts(state) ++
+        [conversation_overlay: &SessionConfiguration.overlay/1] ++ extra_roots_opts(state)
+
+  # pass 77 C-FEAT-12: the session's extra read-only folders, when it has any.
+  defp extra_roots_opts(%{extra_read_roots: []}), do: []
+  defp extra_roots_opts(%{extra_read_roots: roots}), do: [extra_read_roots: roots]
+
+  @max_extra_roots 8
+
+  # The real path of an extra read-only folder, or :error: absolute, an
+  # existing directory, not "/" and not the project itself (already readable).
+  defp extra_root(path, root) when is_binary(path) do
+    with :absolute <- Path.type(path),
+         true <- File.dir?(path),
+         {:ok, real} <- SwarmCode.Domain.Tools.Path.real_path(path),
+         true <- real != "/" and real != root do
+      {:ok, real}
+    else
+      _ -> :error
+    end
+  end
+
+  defp extra_root(_path, _root), do: :error
+
+  # The unique valid folders, at most @max_extra_roots of them; the others are dropped.
+  defp validate_roots(paths, root) do
+    paths
+    |> Enum.flat_map(fn path ->
+      case extra_root(path, root) do
+        {:ok, real} -> [real]
+        :error -> []
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.take(@max_extra_roots)
+  end
 
   @doc false
   def chat_turn_opts_for_test(state, extra \\ []), do: chat_turn_opts(state, extra)
@@ -1881,6 +1925,42 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   # pass73 T3/T8: a prompt or a conversation-level command waits for the
   # running turn on the conversation's own queue; it starts when that ends.
+  # pass 77 C-FEAT-12: `/add-dir <folder>` adds a read-only folder to this
+  # session (in memory; the next chat turn can read it with the file tools).
+  defp add_read_root(state, id, text) do
+    root = state.opts[:project_root]
+
+    arg =
+      case String.split(String.trim(text), ~r/\s+/u, parts: 2) do
+        [_command, arg] -> String.trim(arg)
+        _ -> ""
+      end
+
+    with {:arg, true} <- {:arg, arg != ""},
+         {:ok, dir} <- extra_root(Path.expand(arg, root), root),
+         {:room, true} <-
+           {:room,
+            dir in state.extra_read_roots or length(state.extra_read_roots) < @max_extra_roots} do
+      roots = Enum.uniq(state.extra_read_roots ++ [dir])
+      words = "Read-only folder added for this session: " <> dir
+      {accepted(id, [], notice("Folders", words)), %{state | extra_read_roots: roots}}
+    else
+      {:arg, false} ->
+        words = "/add-dir needs a folder, for example /add-dir ../docs."
+        {refuse(id, {:missing_argument, words}, text), state}
+
+      {:room, false} ->
+        words = "At most #{@max_extra_roots} extra folders can be added to a session."
+        {refuse(id, {:invalid_argument, words}, text), state}
+
+      :error ->
+        words =
+          "That is not a folder this session can add: it must exist, and not be / or the project."
+
+        {refuse(id, {:invalid_argument, words}, text), state}
+    end
+  end
+
   defp enqueue(state, id, text) do
     conversation_id = state.opts[:conversation_id]
 
