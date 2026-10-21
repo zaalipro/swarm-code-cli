@@ -10,17 +10,25 @@ defmodule SwarmCodeCLI.Release.Acp do
   conversation its first prompt creates; each later prompt continues that
   conversation. `mcpServers` and `loadSession` are not supported.
 
-  A prompt is one `ncode -p --output-format stream-json` turn
-  (`Release.Headless.run/2`) run in a worker process whose standard output is
-  an in-memory IO server, so the records the one-shot writes come back here as
-  lines, never on the real stdout. `TEXT <run>/<node> <text>` records of the
-  first node (the run's lead) become `agent_message_chunk` updates and
-  `REASONING` records `agent_thought_chunk` ones; a node record is either a
-  delta or a snapshot of the text so far, so only the part not yet sent goes
-  out. The `{"type": "summary"}` record ends the turn. The reply is sent when
-  the worker has finished closing, because the next turn reopens the same
-  storage. One prompt runs at a time, whatever the session, for the same
-  reason.
+  A prompt is one `ncode -p --json` turn (`Release.Headless.run/2`) run in a
+  worker process whose standard output is an in-memory IO server, so what the
+  one-shot writes never reaches the real stdout. The turn's assistant text and
+  reasoning reach this loop as typed events from the one-shot itself
+  (`Plain.OneShot`'s `sink`, review 1019 RC-1/RC-2): the bytes it appends to the
+  current turn's answer, never the transcript's older items or the user's own
+  message, and never the presenter's record framing. They become
+  `agent_message_chunk` and `agent_thought_chunk` updates unchanged. The
+  turn's summary ends it (the object the one-shot also writes to its output: a
+  session that never started writes only that). The reply is sent when the
+  worker has finished closing, because the next turn reopens the same storage.
+  One prompt runs at a time, whatever the session, for the same reason.
+
+  Standard input is read in bounded chunks (`collect/3`): a line past
+  `@max_line` bytes is skipped as it arrives, never held, and answered with an
+  error. The reader hands the loop one message at a time and reads the next
+  only when the loop has handled it, so a slow loop leaves the rest in the
+  pipe. A message passes `SwarmCode.Protocol.JsonLimits` (size, depth, count)
+  before it is dispatched.
 
   Approvals follow the project's approval mode like `-p` does: a prompt that
   needs one is denied and reported in the turn's text.
@@ -31,6 +39,7 @@ defmodule SwarmCodeCLI.Release.Acp do
   @protocol_version 1
   @max_line 1_048_576
   @max_prompt 262_144
+  @capture_max 65_536
   # EOF on stdin: how long the running prompt gets to stop before it is killed.
   @close_ms 90_000
 
@@ -76,20 +85,39 @@ defmodule SwarmCodeCLI.Release.Acp do
     serve(state)
   end
 
+  # One message at a time: the reader waits for the loop's credit after each one.
   defp read_lines(input, owner, ref) do
-    case read_line(input) do
-      line when is_binary(line) ->
-        send(owner, {:acp_in, ref, line})
-        read_lines(input, owner, ref)
+    device = if input == :stdio, do: Process.group_leader(), else: input
+    read_loop(device, owner, ref)
+  end
 
-      _eof ->
+  defp read_loop(device, owner, ref) do
+    case read_line(device) do
+      {:ok, line} ->
+        send(owner, {:acp_in, ref, line})
+        await_credit(ref)
+        read_loop(device, owner, ref)
+
+      :too_long ->
+        send(owner, {:acp_too_long, ref})
+        await_credit(ref)
+        read_loop(device, owner, ref)
+
+      :eof ->
         send(owner, {:acp_eof, ref})
     end
   end
 
-  defp read_line(input) do
-    case IO.read(input, :line) do
-      line when is_binary(line) -> line
+  defp await_credit(ref) do
+    receive do
+      {:acp_credit, ^ref} -> :ok
+    end
+  end
+
+  defp read_line(device) do
+    case :io.request(device, {:get_until, :unicode, ~c"", __MODULE__, :collect, [@max_line]}) do
+      {:ok, line} when is_binary(line) -> {:ok, line}
+      :too_long -> :too_long
       _eof_or_error -> :eof
     end
   rescue
@@ -98,10 +126,62 @@ defmodule SwarmCodeCLI.Release.Acp do
     :exit, _ -> :eof
   end
 
+  @doc false
+  # The `get_until` callback of the IO protocol (it runs inside the IO server, so it
+  # must not raise): called with each chunk the device has, `[]` first and `:eof` at the
+  # end. A line is collected up to `limit` bytes; past that its bytes are only counted
+  # (`{:skip, n}`) until its newline, and the result is `:too_long`.
+  def collect([], data, limit), do: collect({:take, 0, []}, data, limit)
+
+  def collect({:take, 0, _acc}, :eof, _limit), do: {:done, :eof, :eof}
+
+  def collect({:take, _n, acc}, :eof, _limit),
+    do: {:done, {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}, :eof}
+
+  def collect({:skip, _n}, :eof, _limit), do: {:done, :too_long, :eof}
+
+  def collect({:take, n, acc}, data, limit) do
+    text = IO.chardata_to_string(data)
+
+    case :binary.split(text, "\n") do
+      [line, rest] ->
+        total = n + byte_size(line)
+
+        if total > limit,
+          do: {:done, :too_long, String.to_charlist(rest)},
+          else:
+            {:done, {:ok, IO.iodata_to_binary(Enum.reverse([line | acc]))},
+             String.to_charlist(rest)}
+
+      [_no_newline] ->
+        total = n + byte_size(text)
+        if total > limit, do: {:more, {:skip, total}}, else: {:more, {:take, total, [text | acc]}}
+    end
+  rescue
+    _ -> {:done, :eof, :eof}
+  end
+
+  def collect({:skip, n}, data, _limit) do
+    text = IO.chardata_to_string(data)
+
+    case :binary.split(text, "\n") do
+      [_line, rest] -> {:done, :too_long, String.to_charlist(rest)}
+      [_no_newline] -> {:more, {:skip, n + byte_size(text)}}
+    end
+  rescue
+    _ -> {:done, :eof, :eof}
+  end
+
   defp serve(%{ref: ref} = state) do
     receive do
       {:acp_in, ^ref, line} ->
-        state |> handle_line(line) |> serve()
+        state |> handle_line(line) |> credit() |> serve()
+
+      {:acp_too_long, ^ref} ->
+        state
+        |> reply_error(nil, @invalid_request, "that message is too long")
+        |> credit()
+        |> serve()
 
       {:acp_eof, ^ref} ->
         close(state)
@@ -111,16 +191,23 @@ defmodule SwarmCodeCLI.Release.Acp do
     end
   end
 
-  ## Requests
-
-  defp handle_line(state, line) when byte_size(line) > @max_line do
-    reply_error(state, nil, @invalid_request, "that message is too long")
+  # The message is handled: the reader may deliver the next one.
+  defp credit(%{reader: reader, ref: ref} = state) do
+    send(reader, {:acp_credit, ref})
+    state
   end
+
+  ## Requests
 
   defp handle_line(state, line) do
     case String.trim(line) do
-      "" -> state
-      text -> text |> Jason.decode() |> handle_message(state)
+      "" ->
+        state
+
+      text ->
+        text
+        |> SwarmCode.Protocol.JsonLimits.decode(max_bytes: @max_line)
+        |> handle_message(state)
     end
   end
 
@@ -135,6 +222,9 @@ defmodule SwarmCodeCLI.Release.Acp do
 
   # A response to a request this agent never sent, or something else: ignored.
   defp handle_message({:ok, _other}, state), do: state
+
+  defp handle_message({:error, %{code: :json_too_large}}, state),
+    do: reply_error(state, nil, @invalid_request, "that message is too long")
 
   defp handle_message({:error, _}, state),
     do: reply_error(state, nil, @parse_error, "that is not JSON")
@@ -228,13 +318,22 @@ defmodule SwarmCodeCLI.Release.Acp do
     io = spawn(fn -> capture(owner, ref, "") end)
     run_prompt = state.run_prompt
 
-    options = [project_root: info.cwd, conversation: info.conversation, output: io]
+    # The one-shot sends its typed events here itself, in order (one sender), so the
+    # summary event comes after every text event.
+    sink = fn event -> send(owner, {:acp_sink, ref, event}) end
+
+    options = [
+      project_root: info.cwd,
+      conversation: info.conversation,
+      output: io,
+      sink: sink
+    ]
 
     {pid, monitor} =
       spawn_monitor(fn ->
         # The one-shot and everything it starts write to the group leader.
         Process.group_leader(self(), io)
-        run_prompt.({:prompt, text, :stream_json}, options)
+        run_prompt.({:prompt, text, :json}, options)
       end)
 
     worker = %{
@@ -246,8 +345,9 @@ defmodule SwarmCodeCLI.Release.Acp do
       session: session,
       cancelled?: false,
       summary: nil,
-      lead: nil,
-      sent: %{message: "", thought: ""}
+      # What went out as the answer, newest first, and whether an attempt restarted.
+      sent: [],
+      restarted?: false
     }
 
     %{state | worker: worker}
@@ -293,9 +393,18 @@ defmodule SwarmCodeCLI.Release.Acp do
   defp put(chars, owner, ref, buffer) do
     text = buffer <> IO.chardata_to_string(chars)
     {lines, rest} = split_lines(text)
-    Enum.each(lines, &send(owner, {:acp_line, ref, &1}))
-    rest
+    Enum.each(lines, &send_line(owner, ref, &1))
+    # A line is only worth keeping while it can still be a small object.
+    if byte_size(rest) > @capture_max, do: "", else: rest
   end
+
+  # The only thing taken from the output is the summary object of a session that never
+  # started (a small one); a turn's own summary arrives as an event, so a longer line is
+  # not kept.
+  defp send_line(owner, ref, line) when byte_size(line) <= @capture_max,
+    do: send(owner, {:acp_line, ref, line})
+
+  defp send_line(_owner, _ref, _line), do: :ok
 
   defp split_lines(text) do
     parts = String.split(text, "\n")
@@ -304,8 +413,12 @@ defmodule SwarmCodeCLI.Release.Acp do
 
   ## What the worker says
 
+  defp handle_worker(%{worker: %{ref: ref} = worker} = state, {:acp_sink, ref, event}) do
+    %{state | worker: sink_event(state, worker, event)}
+  end
+
   defp handle_worker(%{worker: %{ref: ref} = worker} = state, {:acp_line, ref, line}) do
-    %{state | worker: worker_line(state, worker, line)}
+    %{state | worker: worker_line(worker, line)}
   end
 
   defp handle_worker(
@@ -319,55 +432,46 @@ defmodule SwarmCodeCLI.Release.Acp do
   # Anything else (a late line of a finished prompt, a stray message).
   defp handle_worker(state, _message), do: state
 
-  defp worker_line(state, worker, line) do
-    case Jason.decode(line) do
-      {:ok, %{"type" => "summary"} = summary} ->
-        %{worker | summary: summary}
+  # The one-shot's typed events (`Plain.OneShot`): the bytes of the turn's answer and
+  # reasoning as they were appended. Nothing is inferred from text.
+  defp sink_event(state, worker, {:text, _message, chunk}) when is_binary(chunk) do
+    update(state, worker.session, :message, chunk)
+    %{worker | sent: [chunk | worker.sent]}
+  end
 
-      {:ok, %{"stream" => "stdout", "text" => text}} when is_binary(text) ->
-        stream_record(state, worker, text)
+  # An attempt cannot be taken back from the client: the new one follows the old, and the
+  # summary's text no longer extends what went out.
+  defp sink_event(state, worker, {:text_restart, _message}) do
+    update(state, worker.session, :message, "\n\n")
+    %{worker | restarted?: true}
+  end
+
+  defp sink_event(state, worker, {:reasoning, _message, chunk}) when is_binary(chunk) do
+    update(state, worker.session, :thought, chunk)
+    worker
+  end
+
+  defp sink_event(state, worker, {:reasoning_restart, _message}) do
+    update(state, worker.session, :thought, "\n\n")
+    worker
+  end
+
+  defp sink_event(_state, worker, {:summary, %{} = summary}), do: %{worker | summary: summary}
+  defp sink_event(_state, worker, _event), do: worker
+
+  # What a one-shot that never reached its own summary printed: the object of a session
+  # that could not start (`Headless.json_failure/4`). The event's summary wins.
+  defp worker_line(%{summary: nil} = worker, line) do
+    case Jason.decode(line) do
+      {:ok, %{"exit_code" => code} = summary} when is_integer(code) ->
+        %{worker | summary: summary}
 
       _other ->
         worker
     end
   end
 
-  defp stream_record(state, worker, "TEXT " <> record),
-    do: stream_text(state, worker, :message, record)
-
-  defp stream_record(state, worker, "REASONING " <> record),
-    do: stream_text(state, worker, :thought, record)
-
-  defp stream_record(_state, worker, _record), do: worker
-
-  # `<run>/<node> [(preview; detail …) ]<text>`. Only the first node seen (the
-  # run's lead) is streamed.
-  defp stream_text(state, worker, kind, record) do
-    case String.split(record, " ", parts: 2) do
-      [key, rest] ->
-        if worker.lead in [nil, key] do
-          text = String.replace(rest, ~r/^\(preview; detail [^)]*\) /, "")
-          {fresh, sent} = advance(worker.sent[kind], text)
-          if fresh != "", do: update(state, worker.session, kind, fresh)
-          %{worker | lead: key, sent: Map.put(worker.sent, kind, sent)}
-        else
-          worker
-        end
-
-      _ ->
-        worker
-    end
-  end
-
-  # A node record is a delta or a snapshot of the text so far: only what has
-  # not gone out yet is new.
-  defp advance(sent, text) do
-    cond do
-      text == "" or text == sent -> {"", sent}
-      String.starts_with?(text, sent) -> {String.replace_prefix(text, sent, ""), text}
-      true -> {text, sent <> text}
-    end
-  end
+  defp worker_line(worker, _line), do: worker
 
   defp update(state, session, kind, text) do
     name = if kind == :message, do: "agent_message_chunk", else: "agent_thought_chunk"
@@ -405,12 +509,22 @@ defmodule SwarmCodeCLI.Release.Acp do
     end
   end
 
-  # The summary carries the whole answer: send what the stream missed.
+  # The summary carries the whole answer, which is exactly what the events appended: if it
+  # is longer (a path that did not report), send the rest. After a restart the client has
+  # both attempts and nothing is added.
+  defp catch_up(_state, %{restarted?: true}, _summary), do: :ok
+
   defp catch_up(state, worker, %{"text" => text}) when is_binary(text) do
-    sent = worker.sent.message
+    sent = worker.sent |> Enum.reverse() |> IO.iodata_to_binary()
 
     if byte_size(text) > byte_size(sent) and String.starts_with?(text, sent),
-      do: update(state, worker.session, :message, String.replace_prefix(text, sent, ""))
+      do:
+        update(
+          state,
+          worker.session,
+          :message,
+          binary_part(text, byte_size(sent), byte_size(text) - byte_size(sent))
+        )
   end
 
   defp catch_up(_state, _worker, _summary), do: :ok

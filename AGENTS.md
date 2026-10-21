@@ -49,7 +49,7 @@ command below says otherwise. Native builds also need `cc` (C11), `python3`, and
 | Real unsaved session | `scripts/dev/run_live_session.sh` |
 | Headless session, one command per line on stdin | `scripts/dev/run_plain_session.sh [--ndjson]` |
 | Release / install | `scripts/dev/build_release.sh` → `_build/prod/rel/swarm_code_cli`; `scripts/install.sh` installs `ncode` |
-| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [--add-dir DIR] [-p PROMPT [--json] [--image PATH] [-o FILE]] [--plain [--ndjson]]`, `bin/ncode update [--yes]` (runs the hosted installer; `NCODE_INSTALL_URL` points it elsewhere for tests) and `bin/ncode acp` (`Release.Acp`, an Agent Client Protocol v1 agent over stdio: stdout is the protocol, logs go to `cli.log`; each prompt is one `Headless.run` stream-json turn whose group leader is an in-memory IO server); the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9); `-p --json` and stream-json name the cause of a non-zero exit in `reason` (`Release.Reasons`, pass 76) |
+| Packaged entry points | `bin/ncode [DIR] [--new\|--continue\|--resume ID] [--model M] [--add-dir DIR] [-p PROMPT [--json] [--image PATH] [-o FILE]] [--plain [--ndjson]]`, `bin/ncode update [--yes]` (runs the hosted installer; `NCODE_INSTALL_URL` points it elsewhere for tests) and `bin/ncode acp` (`Release.Acp`, an Agent Client Protocol v1 agent over stdio: stdout is the protocol, logs go to `cli.log`; each prompt is one `Headless.run` `--json` turn whose group leader is an in-memory IO server and whose answer is the one-shot's own typed `sink` events; stdin is read in bounded chunks, one message at a time); the launcher validates flags in bash (usage exits 2 before any VM), the TUI is `bin/swarm_code_cli start` with `SWARM_RELEASE_TUI=1`, `-p`/`--plain` are `bin/swarm_code_cli eval 'SwarmCodeCLI.Release.main(System.argv())' …`; `-p` starts a new conversation unless `-c`/`--resume`/`SWARM_CONVERSATION` names one (pass 71). Exit codes 0 done, 1 failed, 2 usage, 3 startup refused, 4 changed elsewhere (`ncode config`), 129 SIGHUP, 143 SIGTERM (cli020 B9); `-p --json` and stream-json name the cause of a non-zero exit in `reason` (`Release.Reasons`, pass 76) |
 | Settings (pass 74) | `ncode settings [QUERY]` opens the layer (`/settings`, F2); `ncode config help` lists the headless commands (`list/get/set/reset/keys/path/records/record/secret --stdin/search/mcp/export/import/doctor`) |
 | Re-derive the desktop domain | `mise exec -- mix swarm_code.provenance.sync --ref <desktop sha>` (read-only `git` on `~/dev/swarm-code` or `$SWARM_CODE_UPSTREAM`); `--check` verifies (in precommit) |
 | Re-pin a hand-edited ledger file outside the sync mappings | `mise exec -- mix swarm_code.provenance.repin <path> …` |
@@ -111,8 +111,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `86f0d083` (desktop pass
-  77 integration, branch `r1019/Dint`, CLI review 1019; merge it into desktop `main` without squashing, the CLI pins this sha; before it `68bc97cd`, pass 76, `2552de92`, `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `3c53871d` (desktop pass
+  77 final, branch `r1019/Dint`, CLI review 1019; merge it into desktop `main` without squashing, the CLI pins this sha; before it `86f0d083`, the integration commit, `68bc97cd`, pass 76, `2552de92`, `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
   `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
@@ -185,7 +185,7 @@ Invariants that the code base defends and tests pin:
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
   (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
   (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `68bc97cd` (desktop pass 76, no
-  migration), then to `86f0d083` (desktop pass 77, no migration); its schema contract is
+  migration), then to `86f0d083` and `3c53871d` (desktop pass 77, no migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
   `20261016000002`, `20261017000004` and `20261018000001` itself after the verified backup.
@@ -488,7 +488,7 @@ Headless and release (lane B):
   `auto`/`full` in an untrusted project before it writes the message, in the launcher's
   words); `/compact` has no tools, so no approval to carry.
 - **Exit codes:** 0 done, 1 failed, 2 usage, 3 refused, 4 changed elsewhere (`ncode config`),
-  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`). A SIGHUP with live runs no longer stops them: `Release.Detach` keeps the VM up, headless, until no run is progressing (every live run is waiting for a person) and then closes the normal way, with the exit-summary skipped (the terminal is gone); `Signals.hold_deadline/1` holds the watchdog's close deadline for that wait and `release_deadline/1` restarts it, and a second signal still halts at once. SIGTERM and Ctrl-C stop the runs as before. Exit 3 covers a held
+  129 SIGHUP, 143 SIGTERM (`Release.Signals`; SIGINT stays under `+Bd`). A SIGHUP with live runs no longer stops them: `Release.Detach` keeps the VM up, headless, until no run is progressing (every live run is waiting for a person or paused by hand, and no compaction chain is pending) and then closes the normal way, with the exit-summary skipped (the terminal is gone); `Signals.hold_deadline/1` holds the watchdog's close deadline for that wait and `release_deadline/1` restarts it, and a second signal still halts at once. SIGTERM and Ctrl-C stop the runs as before. Exit 3 covers a held
   lease, the open desktop, an untrusted `--approval`, no provider and every schema refusal; in
   `-p --json` the `reason` field says which, the exit code and the sentence stay as they are.
   A signal hands the session its normal close and waits for it up to `Signals.deadline_ms/0`
@@ -588,7 +588,7 @@ The pass's brief is `docs/superpowers/plans/2026-10-08-cli-0.2.1/00_brief.md` (r
 0.2.0 contract), its lane notes are in `notes/{K,B,C,U}.md`, the outcome is the "CLI 0.2.1"
 section of `docs/research/2026-10-07-cli020-outcome.md`.
 
-- Domain (pass 76): synced to desktop `68bc97cd`, since review 1019 to `86f0d083` (see the
+- Domain (pass 76): synced to desktop `68bc97cd`, since review 1019 to `3c53871d` (see the
   lineage above and "Review 1019 (pass 77) facts"); the K7 notes below describe an earlier pin.
 - Domain (K7): synced to desktop `a93d6d8e` (desktop pass 74 = desktop 0.2.2's engine, no
   migration). Every model without a configured `context_window` has a 1,000,000-token window
@@ -687,12 +687,12 @@ of `docs/research/2026-10-07-cli020-outcome.md`. No desktop change, no sync, no 
 
 The review's kept findings are in the desktop repo's `.claude/specs/77_review_1019/` (git-ignored);
 lanes C1, C2 and C3 were merged into one branch and the domain re-synced to desktop `86f0d083`
-(desktop pass 77, no migration).
+(desktop pass 77, no migration), then to the final `3c53871d` by the fix round below.
 
-- Pin: `provenance/sync-rules.json` pins `86f0d083`; the sha is in
+- Pin: `provenance/sync-rules.json` pins `3c53871d`; the sha is in
   `Governance.Provenance`'s `@adaptation_pins` with a `SOURCE_AUTHORIZATION.md` addendum (a new
   pin needs both, or `verify` reports every entry as "not pinned to the audit baseline"). The
-  recorded patches are the same 14 as at pass 76.
+  recorded patches are the 14 of pass 76 and one on the synced `workflows/pass76_host_read_test.exs` (its source scan names the CLI's path).
 - New synced files: `engine/notifier.ex` (+ `notifier/noop.ex`), `engine/queue_drain.ex`,
   `tools/load_skill.ex`, `tools/sandbox.ex`, and `priv/commands/init.md` through a new
   `priv/commands/` mapping (the built-in command tier, `Commands.builtin_dir/0` on
@@ -720,3 +720,37 @@ lanes C1, C2 and C3 were merged into one branch and the domain re-synced to desk
   copy of the desktop's `chat.ex` parser) fills `$ARGUMENTS` and `$1`-`$9` in one pass with the
   desktop's `Commands.split_args/1` rules; keep it in step with `Domain.Commands.expand/2` and
   repin it after an edit.
+
+### Review 1019 fix round (after the integration)
+
+The reviewers' findings on the integration (RC-1 to RC-13) are fixed on the same branch.
+
+- Re-sync to the desktop's final `3c53871d` (queue drain, sandbox, `load_skill`, read tools,
+  MCP client); the mapping also carries the earlier safety and resource regressions
+  (`tools/pass76_command_safety`, `tools/polish74_bo2_command_safety`,
+  `engine/polish74_c_e1_tool_images`, `llm/pass76_transport`, `workflows/pass76_host_read`,
+  `workflows/pass76_smoke_admission`, `workflows/pass76_watchdog`) and the desktop's
+  `test/support/loopback_http.ex` (as `SwarmCode.Domain.Test.LoopbackHTTP`).
+  `llm/pass76_cooldown_test.exs` needs Bypass (a desktop test dependency this repository does
+  not carry), so it is not mapped: `llm/r1019_gate_cooldown_test.exs` is its equivalent on the
+  loopback fixture.
+- ACP (`Release.Acp`): the answer is the one-shot's own typed events (`OneShot`'s `sink` option:
+  `{:text, id, chunk}`, `{:text_restart, id}`, `{:reasoning, id, chunk}`, `{:summary, map}`, all
+  from the one process, so in order), not the presenter's records; the current turn's assistant
+  items only, never the user's message or older history. Input is read with the IO protocol's
+  `get_until` and `Acp.collect/3` (a line past 1 MiB is only counted, never held), one message at
+  a time (the reader waits for the loop's credit), and every message passes `JsonLimits`. The real
+  round trip is `r1019_acp_headless_test.exs`.
+- Detach: a run paused by hand (`paused`, `waiting_user`) is not progressing, and a pending
+  compaction chain is (`LiveRuns.any_chain?/0`).
+- `/workflow resume` answers a `started` outcome naming the resumed run, so `-p` waits for it.
+- Slash-launched chat turns (`/plan`, `/review`, `/goal`, custom commands, queued ones, `/btw`)
+  get the same options as a prompt: `chat_opts/1` carries approval, the session overlay and the
+  extra read roots, and the dispatcher's option check admits `:extra_read_roots`.
+- Held queue prompts (`Service.QueueRecovery`): a stopping backend journals what it still holds
+  (`<config dir>/queue-recovery/<conversation id>.json`, mode 0600, atomic replace) and tries to
+  store it; the next backend start finishes the journal. At-least-once, and only for a graceful
+  stop (not a killed VM). The once-only "ncode keeps it" warning is not reset by a failed
+  put-back (`QueueState.keep_held/3`). The slash listing task is owned and bounded.
+- Rewind: `state.rewind` is a map `request_id => origin`, so overlapping `rewind.turns` and
+  `rewind.apply` requests each answer to their own composer.

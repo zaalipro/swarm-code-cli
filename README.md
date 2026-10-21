@@ -242,8 +242,8 @@ ncode acp
   follow the project's approval mode like `-p`: what would need a person is denied.
   Logs go to `cli.log`, never to stdout.
 - Closing the terminal (SIGHUP) with runs still going does not stop them: they
-  keep going without a screen until they finish or wait for you (an approval or a
-  question), and then ncode quits. Ctrl-C still asks "Stop N live runs?" and
+  keep going without a screen until they finish, wait for you (an approval or a
+  question) or are paused, and then ncode quits. Ctrl-C still asks "Stop N live runs?" and
   SIGTERM still stops them.
 - A workflow's `await_user` gate shows as a question card in the full-screen view
   and can be answered there and with the feature commands; under `-p` it ends the
@@ -402,7 +402,7 @@ persisted features unavailable because it has no Domain Repo.
 ### Hooks and the sandbox (desktop pass 77)
 
 These two come with the desktop's pass-77 code (the synced domain, desktop
-`86f0d083`).
+`3c53871d`).
 
 - A tool hook (`pre_tool_use`, `post_tool_use` in `.swarm_code/config.json`, run
   only in a trusted project) gets the call in its environment, bounded and with

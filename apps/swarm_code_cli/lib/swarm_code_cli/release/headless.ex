@@ -35,8 +35,10 @@ defmodule SwarmCodeCLI.Release.Headless do
 
   Options: `project_root` (default `SWARM_PROJECT_ROOT`, else the current
   directory), `conversation` (`"latest"`, `"new"` or a conversation id;
-  default `SWARM_CONVERSATION`, else latest) and `model` (a session override,
-  exported as `SWARM_MODEL_OVERRIDE` for the provider configuration).
+  default `SWARM_CONVERSATION`, else latest), `model` (a session override,
+  exported as `SWARM_MODEL_OVERRIDE` for the provider configuration) and `sink`,
+  an arity-1 function that hears the prompt's assistant text and reasoning as
+  typed events (`Plain.OneShot`, review 1019 RC-1).
   """
   @spec run(mode(), keyword()) :: 0 | 1 | 2 | 3 | 129 | 143
   def run(mode, options \\ []) do
@@ -205,7 +207,9 @@ defmodule SwarmCodeCLI.Release.Headless do
           # `-o`, the file the final answer is also written to.
           images: Keyword.get(options, :images, []),
           output_file: expand_output_file(Keyword.get(options, :output_file)),
-          output: Keyword.get(options, :output, :standard_io)
+          output: Keyword.get(options, :output, :standard_io),
+          # review 1019 RC-1: the typed events of the turn (`ncode acp`).
+          sink: Keyword.get(options, :sink)
         )
       else
         _ ->

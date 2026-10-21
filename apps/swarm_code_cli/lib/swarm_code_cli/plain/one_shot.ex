@@ -77,7 +77,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   Runs the turn to its end and returns the exit code.
 
   Options: `data_source`, `source_epoch`, `conversation_id`, `prompt`, and
-  optionally `format` (`:text` | `:json`), `output` and `error` (IO devices),
+  optionally `format` (`:text` | `:json`), `output` and `error` (IO devices), `sink`
+  (an arity-1 function that hears the turn's assistant text and reasoning as typed
+  events, see `emit/2`),
   `progress` (tool lines on `error`), `clock` (a zero-arity millisecond clock),
   `launch_pending?` (`run_id -> boolean`: does the run still have a launch to
   make; none by default) and `recheck_ms` (how often that is asked again).
@@ -144,6 +146,10 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         progress?: Keyword.get(options, :progress, false) == true,
         clock: Keyword.get(options, :clock, fn -> System.system_time(:millisecond) end),
         observer: Keyword.get(options, :observer),
+        # Review 1019 RC-1/RC-2: a caller that wants the turn's typed events (`ncode acp`).
+        sink: sink_option(Keyword.get(options, :sink)),
+        sink_last: nil,
+        thoughts: %{},
         # cli020 B3: `--fail-on-denied`, and the folder the hint names.
         fail_on_denied?: Keyword.get(options, :fail_on_denied, false) == true,
         project_root: Keyword.get(options, :project_root),
@@ -440,6 +446,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     state
     |> print_answer(answer_items(state))
+    |> print_thoughts()
     |> announce_tools()
     |> count_blocked(ReadModel.items(state.ui.read_model, :workspace))
     |> answer_interactions()
@@ -703,6 +710,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         state
 
       true ->
+        state = emit(state, {:text_restart, id})
         state = say(state, "the answer restarted.")
         # The new attempt starts on a line of its own in the output too.
         if state.format == :text and state.mid_line?, do: write(state.output, "\n")
@@ -714,6 +722,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp write_answer(state, _id, ""), do: state
 
   defp write_answer(state, id, chunk) do
+    state = emit_text(state, id, chunk)
     texts = Map.update(state.texts, id, chunk, &(&1 <> chunk))
 
     if state.format == :text do
@@ -733,6 +742,68 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       %{state | texts: texts, last_written: id}
     end
   end
+
+  # -- the typed events of the turn (review 1019 RC-1/RC-2) -------------------
+
+  # The caller's `sink` (an arity-1 function, called in this process) hears the current
+  # turn's assistant text and reasoning exactly as this process settles them, never the
+  # transcript's older items or a user message (`answer_items/1` takes the assistant items
+  # of the tracked runs only):
+  #
+  #   {:text, message_id, chunk}      the bytes appended to the answer, a "\n\n" first when it
+  #                                   is a later message (the summary's `text` is their concatenation)
+  #   {:text_restart, message_id}     the message's attempt restarted; its text starts again
+  #   {:reasoning, message_id, chunk} the bytes appended to the message's reasoning
+  #   {:reasoning_restart, message_id}
+  #   {:summary, map}                 once, last: the summary object the format writes
+  defp sink_option(sink) when is_function(sink, 1), do: sink
+  defp sink_option(_other), do: nil
+
+  defp emit(%{sink: nil} = state, _event), do: state
+
+  defp emit(%{sink: sink} = state, event) do
+    safely(fn -> sink.(event) end)
+    state
+  end
+
+  defp emit_text(%{sink: nil} = state, _id, _chunk), do: state
+
+  defp emit_text(state, id, chunk) do
+    separator = if state.sink_last not in [nil, id], do: "\n\n", else: ""
+    emit(%{state | sink_last: id}, {:text, id, separator <> chunk})
+  end
+
+  defp print_thoughts(%{sink: nil} = state), do: state
+
+  defp print_thoughts(state),
+    do: Enum.reduce(answer_items(state), state, &thought(&2, &1.id, &1.reasoning))
+
+  defp thought(state, id, text) when is_binary(text) and text != "" do
+    known = Map.get(state.thoughts, id, "")
+
+    cond do
+      text == known ->
+        state
+
+      String.starts_with?(text, known) ->
+        chunk = binary_part(text, byte_size(known), byte_size(text) - byte_size(known))
+        state |> emit({:reasoning, id, chunk}) |> put_thought(id, text)
+
+      # A shorter text is the same reasoning cut to a preview.
+      String.starts_with?(known, text) ->
+        state
+
+      true ->
+        state
+        |> emit({:reasoning_restart, id})
+        |> emit({:reasoning, id, text})
+        |> put_thought(id, text)
+    end
+  end
+
+  defp thought(state, _id, _text), do: state
+
+  defp put_thought(state, id, text), do: %{state | thoughts: Map.put(state.thoughts, id, text)}
 
   defp announce_tools(%{progress?: false} = state), do: state
 
@@ -1244,14 +1315,16 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         else: state
 
     message = message || state.error_text
+    summary = summary(state, code, message, reason)
+    # The last event of the turn, from this same process, so after every text event.
+    state = emit(state, {:summary, summary})
 
     case state.format do
       :json ->
-        write(state.output, [Jason.encode!(summary(state, code, message, reason)), "\n"])
+        write(state.output, [Jason.encode!(summary), "\n"])
 
       :stream_json ->
-        summary = Map.put(summary(state, code, message, reason), "type", "summary")
-        write(state.output, [Jason.encode!(summary), "\n"])
+        write(state.output, [Jason.encode!(Map.put(summary, "type", "summary")), "\n"])
 
       :text ->
         if state.mid_line?, do: write(state.output, "\n")
