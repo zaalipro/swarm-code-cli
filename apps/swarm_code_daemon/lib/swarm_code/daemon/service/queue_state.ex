@@ -54,6 +54,10 @@ defmodule SwarmCode.Daemon.Service.QueueState do
   def held(entry), do: entry.held
   def release(state, id), do: update(state, id, &%{&1 | held: [], warned: false})
 
+  # Review 1019 RC-13: what is still held after a put-back that stored some of it. The user was
+  # told once already, so the warning stays spent until `release/2` (everything stored again).
+  def keep_held(state, id, texts), do: update(state, id, &%{&1 | held: texts})
+
   # Whether the user has been told about a held prompt already (once per hold).
   def warn(state, id) do
     case entry(state, id) do

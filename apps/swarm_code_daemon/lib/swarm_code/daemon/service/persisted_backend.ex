@@ -66,6 +66,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     HomeOverview,
     LiveRuns,
     PersistedProjection,
+    QueueRecovery,
     QueueState,
     Rewind,
     SessionConfiguration
@@ -178,6 +179,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          {:ok, ^root} <- SwarmCode.Domain.Tools.Path.real_path(project_root),
          true <- File.dir?(root) do
       :ok = CommandLedger.ensure!()
+      # Review 1019 RC-3: prompts a stopped backend held and could not store are stored now.
+      :ok = QueueRecovery.restore()
       # pass71 S2: `terminate/2` must run on a supervisor shutdown so it can
       # kill the running jobs and settle their callers.
       Process.flag(:trap_exit, true)
@@ -277,7 +280,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         facts_job: nil,
         # C-FEAT-1/8: the project's custom commands and workflows, listed by one
         # owned task at launch for the terminal's `/` popup and /help.
-        slash_extras: %{task: nil, items: nil, pending: false},
+        slash_extras: %{task: nil, items: nil, pending: false, timer: nil},
         facts_failed: MapSet.new(),
         file_index: nil,
         # Queue ownership follows the conversation, not the selected view.
@@ -632,6 +635,17 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       ),
       do: {:noreply, slash_extras_done(state, nil)}
 
+  # Review 1019 RC-11: the listing is bounded like the Git facts are.
+  def handle_info(
+        {:slash_extras_timeout, ref},
+        %{slash_extras: %{task: %Task{ref: ref} = task}} = state
+      ) do
+    Task.shutdown(task, :brutal_kill)
+    {:noreply, slash_extras_done(state, nil)}
+  end
+
+  def handle_info({:slash_extras_timeout, _ref}, state), do: {:noreply, state}
+
   def handle_info({:git_timeout, ref}, %{git: %{task: %Task{ref: ref} = task}} = state) do
     Task.shutdown(task, :brutal_kill)
     {:noreply, git_done(state, nil, nil)}
@@ -964,6 +978,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @impl true
   def terminate(_, state) do
     Enum.each(state.queues.entries, fn {_id, entry} -> cancel_queue_effects(entry) end)
+    keep_held_prompts(state)
     cancel_jobs(state, wire_error(:source_unavailable))
 
     with ref when is_reference(ref) <- state.ledger_timer,
@@ -979,6 +994,12 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     with %Task{} = task <- state.ledger_prune, do: Task.shutdown(task, :brutal_kill)
     ClipboardInbox.close_all(state.clipboard_slots)
     with %{task: %Task{} = task} <- state.git, do: Task.shutdown(task, :brutal_kill)
+    # Review 1019 RC-11: the command and workflow listing stops with its owner.
+    with %{task: %Task{} = task} <- state.slash_extras, do: Task.shutdown(task, :brutal_kill)
+
+    with %{timer: timer} when is_reference(timer) <- state.slash_extras,
+         do: Process.cancel_timer(timer)
+
     # cli020 C15: quitting kills a running `!` command (its task traps exits).
     with %{task: task} <- state.shell,
          do: ShellEscape.stop(state.task_supervisor, task)
@@ -2205,7 +2226,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         {:ok, state}
 
       held ->
-        case put_back(Enum.reverse(held), conversation_id) do
+        case QueueRecovery.store(conversation_id, held) do
           [] ->
             queues =
               state.queues
@@ -2215,22 +2236,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
             {:ok, %{state | queues: queues}}
 
           rest ->
-            queues = QueueState.release(state.queues, conversation_id)
-            queues = Enum.reduce(rest, queues, &QueueState.hold(&2, conversation_id, &1))
-            {:retry, %{state | queues: queues}}
+            # RC-13: the once-only warning is not spent again by a failed put-back.
+            {:retry, %{state | queues: QueueState.keep_held(state.queues, conversation_id, rest)}}
         end
-    end
-  end
-
-  # `reversed` is last-first; the texts that could not be stored come back in
-  # queue order. A conversation that is gone has nothing left to wait for.
-  defp put_back([], _conversation_id), do: []
-
-  defp put_back([text | earlier] = reversed, conversation_id) do
-    case Conversations.requeue_head(conversation_id, text) do
-      {:ok, _} -> put_back(earlier, conversation_id)
-      {:error, :not_found} -> []
-      {:error, _busy} -> Enum.reverse(reversed)
     end
   end
 
@@ -2497,6 +2505,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          do: cancel_queue_effects(entry)
 
     %{state | queues: QueueState.remove(state.queues, conversation_id)}
+  end
+
+  # Review 1019 RC-3: a held prompt is the only copy of an accepted message, so a stopping
+  # backend journals it and tries to store it again (`QueueRecovery`); the next start finishes
+  # what the database refused.
+  defp keep_held_prompts(state) do
+    for {conversation_id, entry} <- state.queues.entries,
+        texts = QueueState.held(entry),
+        texts != [],
+        do: QueueRecovery.hand_over(conversation_id, texts)
+
+    :ok
   end
 
   defp cancel_queue_effects(entry) do
@@ -5748,6 +5768,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   @slash_extras_empty %{"custom" => [], "workflows" => []}
   @slash_extras_max 200
+  @slash_extras_bound_ms 5_000
 
   defp slash_extras_items(%{slash_extras: %{items: %{} = items}}), do: items
   defp slash_extras_items(_state), do: @slash_extras_empty
@@ -5763,7 +5784,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         {:slash_extras, slash_extras_for(conversation_id)}
       end)
 
-    %{state | slash_extras: %{extras | task: task, pending: false}}
+    timer = Process.send_after(self(), {:slash_extras_timeout, task.ref}, @slash_extras_bound_ms)
+    %{state | slash_extras: %{extras | task: task, timer: timer, pending: false}}
   rescue
     _ -> state
   end
@@ -5774,7 +5796,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # once more if another request came in meanwhile, and send the metadata
   # delta when the list changed (no reload of the projection, as for Git).
   defp slash_extras_done(%{slash_extras: extras} = state, items) do
-    state = %{state | slash_extras: %{extras | task: nil, items: items || extras.items}}
+    if extras.timer, do: Process.cancel_timer(extras.timer)
+
+    state = %{
+      state
+      | slash_extras: %{extras | task: nil, timer: nil, items: items || extras.items}
+    }
+
     state = if extras.pending, do: slash_extras_job(state), else: state
 
     case state.metadata do
