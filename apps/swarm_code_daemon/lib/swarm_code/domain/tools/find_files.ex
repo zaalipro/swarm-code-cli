@@ -78,10 +78,12 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
   end
 
   defp search(pattern, args, ctx, progress) do
-    with {:ok, start} <- Path.resolve(ctx.project_root, args["path"] || ".") do
+    with {:ok, start} <- Path.resolve_read(ctx, args["path"] || ".") do
       if File.dir?(start) do
         progress.(50, "searching")
-        root = ctx.project_root
+        # pass 77 C-FEAT-12: the walk is confined to the root `start` lies in (the
+        # project, or an extra read-only root); names print relative to the project.
+        root = Path.read_root(ctx, start)
         limit = limit(args)
 
         # spec 70 C4: use rg --files when available. spec 74 ARCHITECTURE-19:
@@ -92,10 +94,10 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
             case rg_find(pattern, start, root, args, limit, ctx) do
               {:ok, top} -> {:ok, top}
               :timeout -> :timeout
-              :fallback -> {:ok, elixir_find(pattern, start, root, args, limit)}
+              :fallback -> {:ok, elixir_find(pattern, start, root, args, limit, ctx)}
             end
           else
-            {:ok, elixir_find(pattern, start, root, args, limit)}
+            {:ok, elixir_find(pattern, start, root, args, limit, ctx)}
           end
 
         case result do
@@ -115,13 +117,13 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
   # spec 70 C4: the original Elixir-based Path.walk, extracted for fallback.
   # spec 74 EFFICIENCY-51: one pass into the same bounded top-K as the rg path
   # (no relative-path list, no filtered list, no sort of every match).
-  defp elixir_find(pattern, start, root, args, limit) do
+  defp elixir_find(pattern, start, root, args, limit, ctx) do
     keep? = matcher(pattern)
 
     root
     |> Path.walk(start, walk_opts(pattern, args))
     |> Enum.reduce(top_new(limit), fn abs, top ->
-      rel = Path.relative(root, abs)
+      rel = Path.relative(ctx.project_root, abs)
       if keep?.(rel), do: top_add(top, rel), else: top
     end)
     |> top_result()
@@ -154,7 +156,7 @@ defmodule SwarmCode.Domain.Tools.FindFiles do
       abs = Elixir.Path.expand(line)
 
       if String.starts_with?(abs, root <> "/") or abs == root do
-        rel = Path.relative(root, abs)
+        rel = Path.relative(ctx.project_root, abs)
         if keep?.(rel), do: top_add(top, rel), else: top
       else
         top

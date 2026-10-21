@@ -57,6 +57,8 @@ defmodule SwarmCodeCLI.UI.Projector.Inspector.Ops do
   def family("write"), do: {:write_mark, :success}
   def family("spawn_agent"), do: {:agent_sub, :run_swarm}
   def family("spawn"), do: {:agent_sub, :run_swarm}
+  # C-FEAT-2: loading a skill reads files, like a read.
+  def family("load_skill"), do: {:ops_mark, :info}
   def family(_other), do: {:dot_small, :text_muted}
 
   @doc "One row per operation, the newest `height` of them, each `width` cells or fewer."

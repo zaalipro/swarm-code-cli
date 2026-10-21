@@ -116,15 +116,21 @@ defmodule SwarmCode.Domain.LSP do
         {:ok, pid}
 
       {:error, {:not_installed, exe}} ->
-        {:error, "#{exe} is not installed — install it or set lsp_servers in Settings"}
+        {:error, not_installed(exe)}
 
       {:error, {{:not_installed, exe}, _}} ->
-        {:error, "#{exe} is not installed — install it or set lsp_servers in Settings"}
+        {:error, not_installed(exe)}
 
       {:error, reason} ->
         {:error, "could not start LSP client: #{inspect(reason)}"}
     end
   end
+
+  # pass 77 D-FEAT-7: names the form that exists (Settings → Limits → Language servers).
+  defp not_installed(exe),
+    do:
+      "#{exe} is not installed — install it so it is on the PATH ncode sees, " <>
+        "or set its command in Settings → Limits → Language servers"
 
   # spec 74 BUGS-17: a supervisor that is restarting (or gone) exits the
   # caller; that is an answer for the tool, never an exit through `Operation`.

@@ -15,6 +15,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
     "detail_window" => {:detail_window, DTO.DetailWindow},
     "library_snapshot" => {:library_snapshot, DTO.LibrarySnapshot},
     "conversation_list" => {:conversation_list, DTO.ConversationList},
+    # orbit §3.1.1: Home's overview.
+    "home_overview" => {:home_overview, DTO.HomeOverview},
     "agent_detail" => {:agent_detail, DTO.AgentDetail}
   }
 
@@ -86,7 +88,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :swarm_effort_effective,
       :swarm_effort_source,
       :scheduled_effort_default,
-      :local_zone
+      :local_zone,
+      :slash_extras
     ],
     DTO.WorkspaceMetadata => [
       :project,
@@ -115,7 +118,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
       :swarm_effort_effective,
       :swarm_effort_source,
       :scheduled_effort_default,
-      :local_zone
+      :local_zone,
+      :slash_extras
     ],
     DTO.ShellSnapshot => [:rate_limits, :vitals, :elsewhere],
     # cli020 C8/C9/C18: structured command answers.
@@ -393,6 +397,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
 
   # pass74 §3.4.4: a settings update carries the settings revision, not the watch's.
   defp body_revision?(%DTO.SettingsUpdate{}, _expected), do: true
+
+  # orbit §3.2: a `home_stale` body names the backend's home revision, which is
+  # not the delta's own watch revision (the body is an invalidation, not a fact
+  # of the watch's sequence), so the two need not agree.
+  defp body_revision?(%DTO.HomeStale{}, _expected), do: true
   defp body_revision?(%{revision: revision}, expected), do: revision == expected
   defp body_revision?(_, _), do: true
 
@@ -428,7 +437,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
               :settings_task,
               :desktop_running,
               :vitals,
-              :elsewhere
+              :elsewhere,
+              :home_stale
             ],
        do: true
 
@@ -531,6 +541,28 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon.Codec do
          "op" => "conversation.list",
          "cursor" => cursor,
          "page_size" => size,
+         "byte_limit" => bytes
+       }}
+
+  # orbit §3.1.1: Home's overview; the daemon takes the project from its own context.
+  defp request_body({:home_overview, projects, per_project, bytes}),
+    do:
+      {:ok,
+       %{
+         "op" => "home.overview",
+         "projects" => projects,
+         "per_project" => per_project,
+         "byte_limit" => bytes
+       }}
+
+  # orbit §3.1.2: the project's conversations whose title or prompts hold the query.
+  defp request_body({:conversation_search, query, limit, bytes}),
+    do:
+      {:ok,
+       %{
+         "op" => "conversation.search",
+         "query" => query,
+         "limit" => limit,
          "byte_limit" => bytes
        }}
 

@@ -1,5 +1,13 @@
 defmodule SwarmCodeCLI.UI.SlashPalette do
-  @moduledoc "Pure builtin command completion. Suggestions never execute or dispatch a command."
+  @moduledoc """
+  Pure command completion. Suggestions never execute or dispatch a command.
+
+  The list is the client's own commands, the core registry's, and (C-FEAT-1/8)
+  the project's custom commands and workflows the daemon names in the
+  workspace metadata (`extras/1`; names, descriptions and an args flag, never
+  bodies). Those rows are completed and run through `{:dynamic, name}` actions,
+  which the action layer checks by shape and the reducer against the rows.
+  """
 
   alias SwarmCode.Commands
   alias SwarmCodeCLI.UI.{Drafts, Editor, SlashArgs, State}
@@ -21,6 +29,8 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       desc: "How much agents may do without asking"
     },
     %{name: "trust", args: "", desc: "Trust this project: read its AGENTS.md and allow edits"},
+    # orbit: Home, the startup dashboard (Alt-O).
+    %{name: "home", args: "", desc: "Open Home: recent work, live runs, resume"},
     %{
       name: "panel",
       args: "[full|compact|hidden|summaries on|off]",
@@ -99,22 +109,63 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   # Names the client answers that no catalogue lists (`Keymap.local_command/1`).
   @quiet ~w(exit conversations config prefs)
 
+  @no_extras %{custom: [], workflows: []}
+
   @doc """
   cli021 B4: whether `name` (without the slash) is a command the composer
-  draws in the command colour: the client's own, the core registry's and the
-  worker commands' hidden old names. A project's custom commands and
-  workflows are the daemon's to know, so they read as unknown here.
+  draws in the command colour: the client's own, the core registry's, the
+  worker commands' hidden old names and, given the daemon's `extras/1`, the
+  project's custom commands and workflows (without them those read as unknown).
   """
-  @spec known?(term()) :: boolean()
-  def known?(name) when is_binary(name) do
+  @spec known?(term(), map()) :: boolean()
+  def known?(name, extras \\ @no_extras)
+
+  def known?(name, extras) when is_binary(name) do
     name = String.downcase(name)
     canonical = SlashArgs.canonical(name)
 
     canonical in @local_names or canonical in @quiet or
-      Enum.any?(Commands.catalogue("/" <> canonical), &(&1.name == canonical))
+      Enum.any?(Commands.catalogue("/" <> canonical, options(extras)), &(&1.name == canonical))
   end
 
-  def known?(_name), do: false
+  def known?(_name, _extras), do: false
+
+  @doc """
+  The project's custom commands and workflows the daemon listed in the
+  workspace metadata (`DTO.SlashExtras`); empty before the first snapshot and
+  from an older daemon.
+  """
+  @spec extras(map()) :: map()
+  def extras(state) do
+    case Map.get(state.read_model.snapshots, :workspace) do
+      %{slash_extras: %{custom: custom, workflows: workflows}}
+      when is_list(custom) and is_list(workflows) ->
+        %{custom: custom, workflows: workflows}
+
+      _ ->
+        @no_extras
+    end
+  end
+
+  # `Commands.catalogue/2` options for `extras`. The core drops a custom entry
+  # without a body, and the daemon never sends one: the body here only tells
+  # whether the command takes arguments (its `<args>` hint).
+  defp options(%{custom: custom, workflows: workflows}) do
+    [
+      custom:
+        for(
+          entry <- custom,
+          do: %{
+            name: entry.name,
+            description: entry.description,
+            body: if(entry.args, do: "$ARGUMENTS", else: "(custom command)")
+          }
+        ),
+      workflows: for(entry <- workflows, do: %{name: entry.name, description: entry.description})
+    ]
+  end
+
+  defp options(_extras), do: []
 
   @doc "Rows of the popup above the composer (pass 70 E5); `visible(state, rows())`."
   def rows, do: @rows
@@ -125,11 +176,30 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
       (name in @local_names or Enum.any?(Commands.catalogue(), &(&1.name == name)))
   end
 
+  @doc """
+  What a completion or run action carries for the highlighted row `name`: the
+  name itself for the client's and the core's commands, `{:dynamic, name}` for
+  a project's custom command or workflow (the action layer cannot know those;
+  it checks their shape, and `complete/2` the listed rows).
+  """
+  @spec action_name(binary()) :: binary() | {:dynamic, binary()}
+  def action_name(name), do: if(valid_name?(name), do: name, else: {:dynamic, name})
+
+  @doc "The plain command name of an action's `name` (see `action_name/1`)."
+  @spec plain_name(binary() | {:dynamic, binary()}) :: binary()
+  def plain_name({:dynamic, name}), do: name
+  def plain_name(name), do: name
+
+  @doc "Whether `name` is shaped like a custom command or workflow name (at most 64 bytes)."
+  @spec dynamic_name?(term()) :: boolean()
+  def dynamic_name?(name),
+    do: is_binary(name) and Regex.match?(~r/\A[A-Za-z0-9_.-]{1,64}\z/, name)
+
   @doc "Suggestions only apply to the entire first token, with the caret at its end."
   def entries(state) do
     case context(state) do
       nil -> arg_entries(state)
-      {_key, query} -> catalogue(query)
+      {_key, query} -> catalogue(query, extras(state))
     end
   end
 
@@ -253,8 +323,8 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   The service's commands and the client's own for `query` (`"/"`, `"/re"`):
   best match first, the client's first among equals, each name once.
   """
-  def catalogue(query) do
-    remote = Commands.catalogue(query)
+  def catalogue(query, extras \\ @no_extras) do
+    remote = Commands.catalogue(query, options(extras))
     flagged = for item <- remote, Map.get(item, :client) == true, into: %{}, do: {item.name, item}
     needle = query |> String.trim_leading("/") |> String.downcase()
 
@@ -372,7 +442,7 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
 
   defp command_enter(state) do
     with {_key, query} <- context(state),
-         items when items != [] <- catalogue(query),
+         items when items != [] <- catalogue(query, extras(state)),
          name = query |> String.trim_leading("/") |> String.downcase(),
          false <- name != "" and Enum.any?(items, &(&1.name == name)),
          %{name: selected} = item <- selected(state) do
@@ -392,6 +462,9 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
     args = Map.get(item, :args) || ""
 
     cond do
+      # A workflow starts agents: Enter completes `/name ` (arguments, or a
+      # second Enter) instead of running it from a prefix match.
+      Map.get(item, :kind) == :workflow -> false
       String.trim(args) == "" -> true
       String.contains?(args, "<") -> false
       name in @wants_text -> false
@@ -403,7 +476,9 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
 
   @doc "Replace only the current matching draft, as one undoable editor replacement."
   def complete(state, name) do
-    with true <- valid_name?(name),
+    name = plain_name(name)
+
+    with true <- valid_name?(name) or dynamic_name?(name),
          {key, _} <- context(state),
          true <- Enum.any?(entries(state), &(&1.name == name)),
          draft <- Drafts.fetch(state.drafts, key),
@@ -441,6 +516,9 @@ defmodule SwarmCodeCLI.UI.SlashPalette do
   # opened by itself (`Keymap.typing_under_card?/1`), so its `/com` lists,
   # completes and runs `/compact` as it does without the card.
   defp gate?(%{focus: "composer", layers: []}), do: true
+
+  # orbit U9: Home's composer is a composer too, whatever the shell has focused.
+  defp gate?(%{home: %{focus: :composer}, layers: []}), do: true
 
   defp gate?(%{layers: [{:approval, _} | _]} = state),
     do: SwarmCodeCLI.UI.Keymap.typing_under_card?(state)

@@ -4,7 +4,8 @@ defmodule SwarmCode.Daemon.Service.SessionSelection do
   alias SwarmCode.Domain.{Conversations, Projects, Repo}
   alias SwarmCode.Domain.Conversations.Conversation
   alias SwarmCode.Domain.Projects.Project
-  alias SwarmCode.Tools.Path, as: ProjectPath
+  # C-ARCH-5: the product path's confinement, not the dev live runtime's copy.
+  alias SwarmCode.Domain.Tools.Path, as: ProjectPath
 
   @doc "Resume the latest ordinary conversation, create a new one, or select its exact ID."
   def open(root, options \\ []) do

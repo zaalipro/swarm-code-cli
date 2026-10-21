@@ -77,7 +77,9 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   Runs the turn to its end and returns the exit code.
 
   Options: `data_source`, `source_epoch`, `conversation_id`, `prompt`, and
-  optionally `format` (`:text` | `:json`), `output` and `error` (IO devices),
+  optionally `format` (`:text` | `:json`), `output` and `error` (IO devices), `sink`
+  (an arity-1 function that hears the turn's assistant text and reasoning as typed
+  events, see `emit/2`),
   `progress` (tool lines on `error`), `clock` (a zero-arity millisecond clock),
   `launch_pending?` (`run_id -> boolean`: does the run still have a launch to
   make; none by default) and `recheck_ms` (how often that is asked again).
@@ -117,9 +119,12 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     conversation = Keyword.fetch!(options, :conversation_id)
     prompt = Keyword.fetch!(options, :prompt)
     format = Keyword.get(options, :format, :text)
+    images = Keyword.get(options, :images, [])
+    output_file = Keyword.get(options, :output_file)
 
     if Intent.valid_id?(epoch) and Intent.valid_id?(conversation) and Intent.valid_text?(prompt) and
-         format in [:text, :json, :stream_json] do
+         format in [:text, :json, :stream_json] and valid_images?(images) and
+         valid_output_file?(output_file) do
       client = Keyword.fetch!(options, :data_source)
 
       state = %{
@@ -130,11 +135,21 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         conversation: conversation,
         prompt: prompt,
         format: format,
+        # pass 77 C-FEAT-10: `--image` files attached one by one before the
+        # prompt (`attaching` is the one being attached), and `-o` the file the
+        # final answer is also written to.
+        images: images,
+        attaching: nil,
+        output_file: output_file,
         output: Keyword.get(options, :output, :standard_io),
         error: Keyword.get(options, :error, :standard_error),
         progress?: Keyword.get(options, :progress, false) == true,
         clock: Keyword.get(options, :clock, fn -> System.system_time(:millisecond) end),
         observer: Keyword.get(options, :observer),
+        # Review 1019 RC-1/RC-2: a caller that wants the turn's typed events (`ncode acp`).
+        sink: sink_option(Keyword.get(options, :sink)),
+        sink_last: nil,
+        thoughts: %{},
         # cli020 B3: `--fail-on-denied`, and the folder the hint names.
         fail_on_denied?: Keyword.get(options, :fail_on_denied, false) == true,
         project_root: Keyword.get(options, :project_root),
@@ -191,6 +206,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         stop_reason: nil,
         announced: MapSet.new(),
         details: [],
+        # pass 77 C-BUG-9: an own query (the completion read, a detail page)
+        # is asked a second time once; `retried` names those asked again
+        # (`:completion`, `{:detail, id, offset}`), and `incomplete?` is set
+        # when one still did not answer: the exit is then 1, never a quiet 0
+        # with half an answer.
+        retried: MapSet.new(),
+        incomplete?: false,
         sequence: 0
       }
 
@@ -199,6 +221,18 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       {:stop, :invalid_one_shot}
     end
   end
+
+  @max_images 4
+
+  defp valid_images?(images) do
+    is_list(images) and length(images) <= @max_images and
+      Enum.all?(images, &(is_binary(&1) and Intent.valid_text?("/attach " <> &1)))
+  end
+
+  defp valid_output_file?(nil), do: true
+
+  defp valid_output_file?(file),
+    do: is_binary(file) and file != "" and Path.type(file) == :absolute
 
   @impl true
   def handle_continue(:bind, state) do
@@ -314,6 +348,30 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     |> check()
   end
 
+  # pass 77 C-FEAT-10: an `--image` was staged (an accepted `/attach` that
+  # answers the staged attachment), or the prompt is not sent at all.
+  defp observe_outcome(%{phase: :attaching, dispatch: id} = state, %Delivery{
+         kind: :response,
+         request_id: id,
+         body: %DTO.Outcome{} = outcome
+       })
+       when is_binary(id) do
+    case outcome do
+      %{status: :accepted, result: %{kind: :attachment}} ->
+        attach_next(state)
+
+      _ ->
+        finish_with(
+          state,
+          :prompt_not_sent,
+          1,
+          "the image " <>
+            clean(state.attaching) <>
+            " could not be attached (it must be a PNG, JPEG, GIF or WebP inside the project folder)."
+        )
+    end
+  end
+
   defp observe_outcome(%{dispatch: id} = state, %Delivery{
          kind: :response,
          request_id: id,
@@ -321,14 +379,19 @@ defmodule SwarmCodeCLI.Plain.OneShot do
        })
        when is_binary(id) do
     case outcome do
-      %{status: :accepted, identifiers: []} ->
+      # pass 77 C-BUG-8: only an outcome that says it started or steered a run
+      # is followed. Any other accepted answer (a `/rename`, a `/stop` with
+      # nothing running, a queued prompt) names the conversation or nothing
+      # and starts no run: it is the whole result.
+      %{status: :accepted, disposition: disposition, identifiers: [_ | _] = ids}
+      when disposition in [:started, :steered] ->
+        runs = Enum.take(ids, 8)
+        %{state | phase: :running, runs: runs, known: MapSet.new(runs)}
+
+      %{status: :accepted} ->
         # A slash command answers at once and starts nothing.
         text = if outcome.feedback, do: outcome.feedback.text, else: ""
         finish(reconcile(state, "command", text), 0)
-
-      %{status: :accepted, identifiers: ids} ->
-        runs = Enum.take(ids, 8)
-        %{state | phase: :running, runs: runs, known: MapSet.new(runs)}
 
       _ ->
         finish_with(
@@ -383,6 +446,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
     state
     |> print_answer(answer_items(state))
+    |> print_thoughts()
     |> announce_tools()
     |> count_blocked(ReadModel.items(state.ui.read_model, :workspace))
     |> answer_interactions()
@@ -564,19 +628,31 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp send_prompt(%{prompt: prompt} = state) when is_binary(prompt) do
     if SwarmCodeCLI.UI.Keymap.settings_command?(prompt),
       do: finish_with(state, :prompt_not_sent, 1, SwarmCodeCLI.Plain.Command.settings_words()),
-      else: send_line(state)
+      else: attach_next(state)
   end
 
-  defp send_line(state) do
+  # pass 77 C-FEAT-10: each `--image` goes out as `/attach <path>`, one at a
+  # time, through the same dispatch the prompt takes; the backend stages it and
+  # the prompt that follows consumes the staged images. A refused attach ends
+  # the command before any prompt is sent.
+  defp attach_next(%{images: [path | rest]} = state) do
+    send_text(%{state | images: rest, attaching: path}, "/attach " <> path, :attaching)
+  end
+
+  defp attach_next(state), do: send_line(state)
+
+  defp send_line(state), do: send_text(state, state.prompt, :sending)
+
+  defp send_text(state, text, phase) do
     key = {state.conversation, :main}
-    {state, _} = update(state, {:editor, key, {:paste, state.prompt}})
+    {state, _} = update(state, {:editor, key, {:paste, text}})
     text = Editor.text(Drafts.fetch(state.ui.drafts, key).editor)
     intent = {:dispatch, :send, text, :main, []}
     id = elem(State.next_id(state.ui, :request), 0)
     {state, effects} = update(state, {:invoke, intent, id})
 
     if Enum.any?(effects, &match?({:command, %Request{request_id: ^id}}, &1)) do
-      %{state | phase: :sending, dispatch: id}
+      %{state | phase: phase, dispatch: id}
     else
       finish_with(
         state,
@@ -634,6 +710,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         state
 
       true ->
+        state = emit(state, {:text_restart, id})
         state = say(state, "the answer restarted.")
         # The new attempt starts on a line of its own in the output too.
         if state.format == :text and state.mid_line?, do: write(state.output, "\n")
@@ -645,6 +722,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp write_answer(state, _id, ""), do: state
 
   defp write_answer(state, id, chunk) do
+    state = emit_text(state, id, chunk)
     texts = Map.update(state.texts, id, chunk, &(&1 <> chunk))
 
     if state.format == :text do
@@ -664,6 +742,68 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       %{state | texts: texts, last_written: id}
     end
   end
+
+  # -- the typed events of the turn (review 1019 RC-1/RC-2) -------------------
+
+  # The caller's `sink` (an arity-1 function, called in this process) hears the current
+  # turn's assistant text and reasoning exactly as this process settles them, never the
+  # transcript's older items or a user message (`answer_items/1` takes the assistant items
+  # of the tracked runs only):
+  #
+  #   {:text, message_id, chunk}      the bytes appended to the answer, a "\n\n" first when it
+  #                                   is a later message (the summary's `text` is their concatenation)
+  #   {:text_restart, message_id}     the message's attempt restarted; its text starts again
+  #   {:reasoning, message_id, chunk} the bytes appended to the message's reasoning
+  #   {:reasoning_restart, message_id}
+  #   {:summary, map}                 once, last: the summary object the format writes
+  defp sink_option(sink) when is_function(sink, 1), do: sink
+  defp sink_option(_other), do: nil
+
+  defp emit(%{sink: nil} = state, _event), do: state
+
+  defp emit(%{sink: sink} = state, event) do
+    safely(fn -> sink.(event) end)
+    state
+  end
+
+  defp emit_text(%{sink: nil} = state, _id, _chunk), do: state
+
+  defp emit_text(state, id, chunk) do
+    separator = if state.sink_last not in [nil, id], do: "\n\n", else: ""
+    emit(%{state | sink_last: id}, {:text, id, separator <> chunk})
+  end
+
+  defp print_thoughts(%{sink: nil} = state), do: state
+
+  defp print_thoughts(state),
+    do: Enum.reduce(answer_items(state), state, &thought(&2, &1.id, &1.reasoning))
+
+  defp thought(state, id, text) when is_binary(text) and text != "" do
+    known = Map.get(state.thoughts, id, "")
+
+    cond do
+      text == known ->
+        state
+
+      String.starts_with?(text, known) ->
+        chunk = binary_part(text, byte_size(known), byte_size(text) - byte_size(known))
+        state |> emit({:reasoning, id, chunk}) |> put_thought(id, text)
+
+      # A shorter text is the same reasoning cut to a preview.
+      String.starts_with?(known, text) ->
+        state
+
+      true ->
+        state
+        |> emit({:reasoning_restart, id})
+        |> emit({:reasoning, id, text})
+        |> put_thought(id, text)
+    end
+  end
+
+  defp thought(state, _id, _text), do: state
+
+  defp put_thought(state, id, text), do: %{state | thoughts: Map.put(state.thoughts, id, text)}
 
   defp announce_tools(%{progress?: false} = state), do: state
 
@@ -947,6 +1087,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp own_response(state, :completion, %DTO.WorkspaceSnapshot{state: :idle} = snapshot) do
     # The snapshot can show a run launched since the read model last heard.
+    state = %{state | retried: MapSet.delete(state.retried, :completion)}
     known = state.known
     state = follow(state, snapshot.runs)
     ids = tracked(state)
@@ -974,7 +1115,13 @@ defmodule SwarmCodeCLI.Plain.OneShot do
     end
   end
 
-  defp own_response(state, :completion, _), do: conclude(state, run_summaries(state))
+  # A failed or late completion read is asked once more; asked twice, the
+  # answer is incomplete.
+  defp own_response(state, :completion, _) do
+    if MapSet.member?(state.retried, :completion),
+      do: conclude(%{state | incomplete?: true}, run_summaries(state)),
+      else: query_completion(%{state | retried: MapSet.put(state.retried, :completion)})
+  end
 
   defp own_response(state, {:detail, id, ref, runs}, %DTO.DetailWindow{state: :idle} = window) do
     state = write_answer(state, id, window.text)
@@ -984,8 +1131,17 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       else: next_detail(state, runs)
   end
 
-  defp own_response(state, {:detail, _, _, runs}, _) do
-    next_detail(say(state, "the rest of the answer could not be read."), runs)
+  # The page that failed was not written, so the text so far ends at its offset.
+  defp own_response(state, {:detail, id, ref, runs}, _) do
+    offset = byte_size(Map.get(state.texts, id, ""))
+    key = {:detail, id, offset}
+
+    if MapSet.member?(state.retried, key) do
+      state = say(%{state | incomplete?: true}, "the rest of the answer could not be read.")
+      next_detail(state, runs)
+    else
+      query_detail(%{state | retried: MapSet.put(state.retried, key)}, id, ref, offset, runs)
+    end
   end
 
   defp read_answers(state, snapshot, runs) do
@@ -1050,7 +1206,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       Process.send_after(self(), {:own_deadline, id}, @own_deadline_ms)
       %{state | sequence: sequence, own: Map.put(state.own, id, purpose)}
     else
-      _ -> conclude(%{state | sequence: sequence}, run_summaries(state))
+      _ -> conclude(%{state | sequence: sequence, incomplete?: true}, run_summaries(state))
     end
   end
 
@@ -1068,10 +1224,24 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       Enum.all?(runs, &(&1.state == :done)) ->
         state = Enum.reduce(followed_runs(state, runs), state, &say(&2, run_words(state, &1)))
 
-        # cli020 B3: `--fail-on-denied` fails a done run that had denials.
-        if state.fail_on_denied? and state.denied != [],
-          do: finish_with(state, :denied, 1),
-          else: finish(state, 0)
+        cond do
+          # pass 77 C-BUG-9: the runs are done, but part of the answer could
+          # not be read (the partial text is already printed).
+          state.incomplete? ->
+            finish_with(
+              state,
+              :answer_incomplete,
+              1,
+              "the run finished, but its answer could not be read in full."
+            )
+
+          # cli020 B3: `--fail-on-denied` fails a done run that had denials.
+          state.fail_on_denied? and state.denied != [] ->
+            finish_with(state, :denied, 1)
+
+          true ->
+            finish(state, 0)
+        end
 
       true ->
         # Every run that did not finish is named, in order, and so is every
@@ -1132,6 +1302,7 @@ defmodule SwarmCodeCLI.Plain.OneShot do
 
   defp finish(state, code, message, reason) do
     if state.launch_timer, do: :erlang.cancel_timer(state.launch_timer)
+    {state, code, message, reason} = write_output_file(state, code, message, reason)
     state = if message, do: say(state, message), else: state
 
     state =
@@ -1144,14 +1315,16 @@ defmodule SwarmCodeCLI.Plain.OneShot do
         else: state
 
     message = message || state.error_text
+    summary = summary(state, code, message, reason)
+    # The last event of the turn, from this same process, so after every text event.
+    state = emit(state, {:summary, summary})
 
     case state.format do
       :json ->
-        write(state.output, [Jason.encode!(summary(state, code, message, reason)), "\n"])
+        write(state.output, [Jason.encode!(summary), "\n"])
 
       :stream_json ->
-        summary = Map.put(summary(state, code, message, reason), "type", "summary")
-        write(state.output, [Jason.encode!(summary), "\n"])
+        write(state.output, [Jason.encode!(Map.put(summary, "type", "summary")), "\n"])
 
       :text ->
         if state.mid_line?, do: write(state.output, "\n")
@@ -1165,17 +1338,62 @@ defmodule SwarmCodeCLI.Plain.OneShot do
   defp finish_with(state, key, code, message \\ nil),
     do: finish(state, code, message, Reasons.get(key))
 
+  # pass 77 C-FEAT-10: `-o FILE` also gets the final answer, the summary's
+  # `text`, replaced atomically (a temporary file in the same folder, renamed).
+  # Nothing is written for a command that failed with no answer at all, so an
+  # earlier file is not emptied by a run that never started. A write that fails
+  # is said on stderr and turns an exit 0 into 1 (`output_not_written`).
+  defp write_output_file(%{output_file: nil} = state, code, message, reason),
+    do: {state, code, message, reason}
+
+  defp write_output_file(state, code, message, reason) do
+    text = answer_text(state)
+
+    with true <- code == 0 or text != "",
+         {:error, why} <- atomic_write(state.output_file, text) do
+      line = "could not write " <> clean(state.output_file) <> ": " <> clean(why)
+
+      if code == 0,
+        do: {state, 1, message || line, reason || Reasons.get(:output_not_written)},
+        else: {say(state, line), code, message, reason}
+    else
+      _written_or_skipped -> {state, code, message, reason}
+    end
+  end
+
+  defp atomic_write(file, text) do
+    tmp = file <> "." <> Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false) <> ".tmp"
+
+    try do
+      File.write!(tmp, text, [:binary])
+      File.rename!(tmp, file)
+      :ok
+    rescue
+      error ->
+        _ = File.rm(tmp)
+        {:error, write_reason(error)}
+    catch
+      kind, reason ->
+        _ = File.rm(tmp)
+        {:error, inspect({kind, reason}, limit: 5)}
+    end
+  end
+
+  defp write_reason(%File.Error{reason: reason}),
+    do: reason |> :file.format_error() |> to_string()
+
+  defp write_reason(%File.RenameError{reason: reason}),
+    do: reason |> :file.format_error() |> to_string()
+
+  defp write_reason(error), do: Exception.message(error)
+
   defp summary(state, code, message, reason) do
     runs = summary_runs(state)
     # The first run that did not finish speaks for the session; the first one
     # when all did.
     run = Enum.find(runs, &(&1.state != :done)) || List.first(runs)
 
-    text =
-      state.answer_order
-      |> Enum.map(&Map.get(state.texts, &1, ""))
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.join("\n\n")
+    text = answer_text(state)
 
     %{
       "conversation_id" => state.conversation,
@@ -1194,6 +1412,15 @@ defmodule SwarmCodeCLI.Plain.OneShot do
       "runs" => Enum.map(runs, &run_entry(state, &1)),
       "exit_code" => code
     }
+  end
+
+  # The answer as the summary and `-o` carry it: the assistant's messages in
+  # order, as printed.
+  defp answer_text(state) do
+    state.answer_order
+    |> Enum.map(&Map.get(state.texts, &1, ""))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n\n")
   end
 
   defp summary_reason(_state, 0, _run, _reason), do: nil

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "upstream_commit": "68bc97cd37ff3f2c5fed18f8c5e36ad46d24a9ab",
+  "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
   "rewrite_rules": [
     {
       "id": "desktop-notify",
@@ -90,6 +90,16 @@
       ]
     },
     {
+      "upstream": "priv/commands/",
+      "destination": "apps/swarm_code_daemon/priv/commands/",
+      "classification": "source",
+      "rewrite": false,
+      "format": false,
+      "include": [
+        "*.md"
+      ]
+    },
+    {
       "upstream": "priv/skills/",
       "destination": "apps/swarm_code_daemon/priv/skills/",
       "classification": "spec",
@@ -121,13 +131,18 @@
         "engine/consensus_test.exs",
         "engine/context_test.exs",
         "engine/pass60_prompts_test.exs",
+        "engine/pass77_flush_batch_test.exs",
+        "engine/pass77_live_runs_test.exs",
         "engine/policy_test.exs",
+        "engine/polish74_c_e1_tool_images_test.exs",
         "engine/project_context_test.exs",
         "engine/prompts_test.exs",
         "git_test.exs",
         "llm/chunks_test.exs",
+        "llm/pass76_transport_test.exs",
         "llm/sse_test.exs",
         "llm/tool_args_test.exs",
+        "pass77_commands_args_test.exs",
         "pricing_test.exs",
         "projects/workspace_test.exs",
         "research/levels_test.exs",
@@ -135,11 +150,29 @@
         "scheduler/next_test.exs",
         "skills_test.exs",
         "tools/git_tools_test.exs",
+        "tools/pass76_command_safety_test.exs",
+        "tools/pass77_command_safety_test.exs",
+        "tools/pass77_load_skill_test.exs",
+        "tools/pass77_sandbox_test.exs",
         "tools/polish53_tools_test.exs",
         "tools/polish60_command_safety_test.exs",
         "tools/polish62_command_safety_test.exs",
+        "tools/polish74_bo2_command_safety_test.exs",
         "workflows/host_test.exs",
-        "workflows/panel_bound_test.exs"
+        "workflows/panel_bound_test.exs",
+        "workflows/pass76_host_read_test.exs",
+        "workflows/pass76_smoke_admission_test.exs",
+        "workflows/pass76_watchdog_test.exs"
+      ]
+    },
+    {
+      "upstream": "test/support/",
+      "destination": "apps/swarm_code_daemon/test/support/domain/",
+      "classification": "test",
+      "rewrite": true,
+      "format": true,
+      "files": [
+        "loopback_http.ex"
       ]
     }
   ],

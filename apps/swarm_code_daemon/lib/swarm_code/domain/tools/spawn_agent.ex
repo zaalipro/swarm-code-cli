@@ -348,7 +348,8 @@ defmodule SwarmCode.Domain.Tools.SpawnAgent do
   # pass76 eng-no-expiry: only time the worker (and its subtree) spends *not*
   # waiting for the user counts against `sub_agent_timeout_s`. The clock is
   # sampled in small slices; a slice during which an approval or question is
-  # parked below the worker is not charged.
+  # parked below the worker is not charged, and neither is a slice while the
+  # run is paused (pass 77 D-BUG-1: Pause holds every agent).
   @watchdog_slice_ms 250
 
   defp watchdog(run_id, agent_id, seconds) do

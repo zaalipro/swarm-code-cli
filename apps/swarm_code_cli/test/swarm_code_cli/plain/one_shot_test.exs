@@ -126,7 +126,12 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
   end
 
   defp accept(session),
-    do: respond(session, session.dispatch, %DTO.Outcome{status: :accepted, identifiers: [@run]})
+    do:
+      respond(session, session.dispatch, %DTO.Outcome{
+        status: :accepted,
+        identifiers: [@run],
+        disposition: :started
+      })
 
   defp delta(session, %Delta{} = delta) do
     sequence = session.sequence + 1
@@ -257,6 +262,50 @@ defmodule SwarmCodeCLI.Plain.OneShotTest do
     assert code(session) == 0
     assert text(context.output) == "Two notes: a.md and b.md\n"
     assert text(context.error) == ""
+  end
+
+  # pass 77 C-BUG-8: `ncode -p "/rename x"` answers accepted with the
+  # conversation's id and no disposition. No run was started, so there is
+  # nothing to follow: the command's own words are the result.
+  test "an accepted command that names the conversation and starts no run ends at once",
+       context do
+    session = start(context)
+
+    respond(session, session.dispatch, %DTO.Outcome{
+      status: :accepted,
+      identifiers: [@conversation],
+      feedback: %DTO.Feedback{kind: :notice, title: "Rename", text: "Renamed to x."}
+    })
+
+    assert code(session) == 0
+    assert text(context.output) == "Renamed to x.\n"
+    assert text(context.error) == ""
+  end
+
+  test "an accepted outcome that steered a run is followed to its end", context do
+    session = start(context)
+
+    respond(session, session.dispatch, %DTO.Outcome{
+      status: :accepted,
+      identifiers: [@run],
+      disposition: :steered
+    })
+
+    session = session |> upsert(message("Steered answer.")) |> run_update(:done)
+    complete(session, [run(:done)], [message("Steered answer.")])
+
+    assert code(session) == 0
+    assert text(context.output) == "Steered answer.\n"
+  end
+
+  test "an accepted outcome that started a run is followed, not ended at once", context do
+    session = start(context) |> accept()
+    refute_received {:code, _}
+    session = session |> upsert(message("Started answer.")) |> run_update(:done)
+    complete(session, [run(:done)], [message("Started answer.")])
+
+    assert code(session) == 0
+    assert text(context.output) == "Started answer.\n"
   end
 
   test "a restarted attempt is said on stderr and starts on a line of its own", context do

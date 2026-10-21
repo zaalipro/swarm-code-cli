@@ -56,17 +56,78 @@ defmodule SwarmCode.Domain.Engine.Rules do
 
   defp parse_list(_other), do: []
 
-  defp parse_rule(raw) when is_binary(raw) and byte_size(raw) <= @max_rule_bytes do
-    raw = String.trim(raw)
-
-    case Regex.run(@rule, raw) do
-      [_, tool] -> [%{raw: raw, tool: tool, pattern: nil}]
-      [_, tool, pattern] -> [%{raw: raw, tool: tool, pattern: pattern}]
-      _no_match -> []
+  defp parse_rule(raw) do
+    case classify_rule(raw) do
+      {:ok, rule} -> [rule]
+      {:error, _reason} -> []
     end
   end
 
-  defp parse_rule(_other), do: []
+  defp classify_rule(raw) when is_binary(raw) and byte_size(raw) <= @max_rule_bytes do
+    raw = String.trim(raw)
+
+    case Regex.run(@rule, raw) do
+      [_, tool] -> {:ok, %{raw: raw, tool: tool, pattern: nil}}
+      [_, tool, pattern] -> {:ok, %{raw: raw, tool: tool, pattern: pattern}}
+      _no_match -> {:error, "is not `tool` or `tool(pattern)`"}
+    end
+  end
+
+  defp classify_rule(raw) when is_binary(raw),
+    do: {:error, "is longer than #{@max_rule_bytes} bytes"}
+
+  defp classify_rule(_other), do: {:error, "is not a string"}
+
+  @doc """
+  pass 77 D-FEAT-15: `parse/1` plus a line for every entry it dropped and why,
+  for Settings → Project rules. The rules are exactly `parse/1`'s.
+  """
+  @spec parse_report(term()) :: {t(), [String.t()]}
+  def parse_report(nil), do: {@empty, []}
+
+  def parse_report(map) when is_map(map) do
+    {allow, d1} = report_list("allow", map["allow"])
+    {ask, d2} = report_list("ask", map["ask"])
+    {deny, d3} = report_list("deny", map["deny"])
+    {%{allow: allow, ask: ask, deny: deny}, d1 ++ d2 ++ d3}
+  end
+
+  def parse_report(_other),
+    do: {@empty, ["permissions must be an object with allow, ask and deny lists"]}
+
+  defp report_list(_name, nil), do: {[], []}
+
+  defp report_list(name, list) when is_list(list) do
+    {rules, dropped} =
+      Enum.reduce(list, {[], []}, fn entry, {rules, dropped} ->
+        case classify_rule(entry) do
+          {:ok, rule} ->
+            {[rule | rules], dropped}
+
+          {:error, reason} ->
+            {rules, ["permissions.#{name}: #{clip(entry)} #{reason}" | dropped]}
+        end
+      end)
+
+    rules = Enum.reverse(rules)
+
+    if length(rules) > @max_rules do
+      {Enum.take(rules, @max_rules),
+       Enum.reverse([
+         "permissions.#{name}: only the first #{@max_rules} rules are kept" | dropped
+       ])}
+    else
+      {rules, Enum.reverse(dropped)}
+    end
+  end
+
+  defp report_list(name, _other), do: {[], ["permissions.#{name} must be a list"]}
+
+  defp clip(entry) do
+    text = if is_binary(entry), do: entry, else: inspect(entry)
+    text = if String.length(text) > 60, do: String.slice(text, 0, 60) <> "…", else: text
+    inspect(text)
+  end
 
   @doc """
   The rules of the project at `root` (or owning the isolation directory

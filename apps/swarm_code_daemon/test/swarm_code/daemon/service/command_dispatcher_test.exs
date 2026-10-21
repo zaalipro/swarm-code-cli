@@ -73,6 +73,13 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcherTest do
     %{conversation: conversation}
   end
 
+  # pass 77 C-FEAT-12: the backend answers /add-dir itself; the dispatcher only
+  # refuses it as the terminal's.
+  test "/add-dir reaches the dispatcher as a client-only command", %{conversation: c} do
+    assert {:error, :client_only} = Dispatcher.dispatch(c.id, "/add-dir ../shared")
+    assert {:error, :missing_argument} = Dispatcher.dispatch(c.id, "/add-dir")
+  end
+
   test "invalid requests and unknown commands do not mutate", %{conversation: c} do
     assert {:error, :invalid_request} = Dispatcher.dispatch(1, "/stop")
     assert {:error, :invalid_request} = Dispatcher.dispatch(c.id, <<255>>)
@@ -350,6 +357,103 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcherTest do
     assert Conversations.get_run(id).conversation_id == c.id
     assert eventually(fn -> Conversations.get_run(id).status in ["done", "failed"] end)
     assert Conversations.get_run(id).status == "done"
+  end
+
+  # pass 77 C-FEAT-7: /btw <question>
+  describe "/btw" do
+    test "is refused in words while no run has finished", %{conversation: c} do
+      assert {:error, {:nothing_to_reply, words}} = Dispatcher.dispatch(c.id, "/btw why?")
+      assert words =~ "no finished run"
+      assert {:error, :missing_argument} = Dispatcher.dispatch(c.id, "/btw")
+    end
+
+    test "threads a follow-up under the last finished run, and a second one under the same",
+         %{conversation: c} do
+      loopback_chat(c)
+
+      assert {:ok, %{type: :started, run_id: root}} = Dispatcher.dispatch(c.id, "/review")
+      assert eventually(fn -> Conversations.get_run(root).status == "done" end)
+
+      assert {:ok, %{type: :started, command: "btw", run_id: first}} =
+               Dispatcher.dispatch(c.id, "/btw why?")
+
+      assert eventually(fn -> Conversations.get_run(first).status == "done" end)
+
+      assert {:ok, %{type: :started, run_id: second}} =
+               Dispatcher.dispatch(c.id, "/btw and then?")
+
+      assert eventually(fn -> Conversations.get_run(second).status == "done" end)
+
+      replies =
+        for m <- Conversations.list_messages(c.id),
+            m.role == "user",
+            m.reply_to_run_id != nil,
+            do: {m.content, m.run_id, m.reply_to_run_id}
+
+      assert {"why?", first, root} in replies
+      assert {"and then?", second, root} in replies
+      Engine.stop_all(c.id)
+    end
+
+    test "a workflow root puts its summary in front of the question", %{conversation: c} do
+      loopback_chat(c)
+      {:ok, _project} = Projects.trust(Projects.get!(c.project_id))
+
+      {:ok, definition} =
+        Workflows.parse(
+          "meta = %{name: \"btw-fixture\", description: \"Fixture\", args: %{}}\n\"all done here\"",
+          "project"
+        )
+
+      assert {:ok, %{type: :started, run_id: wf_id}} =
+               Dispatcher.dispatch(c.id, "/btw-fixture", workflows: [definition])
+
+      assert eventually(fn -> Conversations.get_run(wf_id).status == "done" end)
+
+      assert {:ok, %{type: :started, run_id: id}} =
+               Dispatcher.dispatch(c.id, "/btw what changed?")
+
+      assert_receive {:http_request, _, request}, 10_000
+      assert request.body =~ "[workflow "
+      assert request.body =~ "what changed?"
+      assert eventually(fn -> Conversations.get_run(id).status == "done" end)
+
+      assert Enum.any?(
+               Conversations.list_messages(c.id),
+               &(&1.role == "user" and &1.reply_to_run_id == wf_id and
+                   &1.content == "what changed?")
+             )
+
+      Engine.stop_all(c.id)
+    end
+  end
+
+  defp loopback_chat(conversation) do
+    server =
+      HTTP.start(fn socket, _request, _index ->
+        HTTP.stream(socket, [
+          HTTP.sse(%{
+            "choices" => [%{"delta" => %{"content" => "Answered."}, "finish_reason" => "stop"}]
+          })
+        ])
+      end)
+
+    on_exit(fn -> HTTP.stop(server) end)
+
+    {:ok, provider} =
+      Providers.create(%{
+        name: "btw-" <> conversation.id,
+        kind: "openai_compatible",
+        base_url: server.url <> "/v1",
+        api_key: "",
+        models: ["fixture"],
+        default_model: "fixture"
+      })
+
+    {:ok, _} =
+      Conversations.update(conversation, %{chat_provider_id: provider.id, chat_model: "fixture"})
+
+    :ok
   end
 
   defp eventually(fun, attempts \\ 200)

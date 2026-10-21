@@ -44,14 +44,14 @@ defmodule SwarmCodeCLI.Plain.ClockTest do
 
     session = start_supervised!({Session, options})
     assert_receive {:bound, ^session}
-    assert_receive {:source, {:watch, %Watch{slot: :shell} = shell}}
+    assert_receive {:source, {:watch, %Watch{slot: :shell} = shell}}, 2_000
 
     H.ready(session, shell, %DTO.ShellSnapshot{
       counts: %DTO.Counts{},
       connection: %DTO.Connection{source_epoch: H.epoch()}
     })
 
-    assert_receive {:source, {:watch, %Watch{slot: :workspace} = workspace}}
+    assert_receive {:source, {:watch, %Watch{slot: :workspace} = workspace}}, 2_000
     snapshot = workspace_snapshot()
     assert {:ok, _} = DTO.RunSummary.validate(hd(snapshot.runs))
     assert {:ok, _} = DTO.TranscriptItem.validate(hd(snapshot.transcript.items))

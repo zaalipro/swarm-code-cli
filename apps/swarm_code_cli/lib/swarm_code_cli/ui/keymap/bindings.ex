@@ -58,13 +58,20 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
   `keys_in_context/3` and `keys_for/2`.
   """
 
-  alias SwarmCodeCLI.UI.Keymap.{Binding, Overrides, SettingsBindings}
+  alias SwarmCodeCLI.UI.Keymap.{Binding, HomeBindings, Overrides, SettingsBindings}
 
   # cli74 U1-2: the settings layer's seven contexts (spec §3.9.1). `:global`
   # never expands into them, and a bare printable key is only ever bound in
   # `:settings` (browsing).
   @settings_contexts SettingsBindings.contexts()
   @settings_letterless SettingsBindings.letterless_contexts()
+
+  # orbit U8: Home's three contexts (composer, resume list, project map). Like
+  # the settings layer's they are never reached by `:global`; the composer and
+  # the list type, so a bare printable key is data there.
+  @home_contexts HomeBindings.contexts()
+  @home_typing HomeBindings.typing_contexts()
+  @home_passthrough Map.new(HomeBindings.passthrough())
 
   @contexts [
               :composer,
@@ -77,24 +84,24 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
               :dialog,
               :overlay,
               :hint
-            ] ++ @settings_contexts
+            ] ++ @settings_contexts ++ @home_contexts
 
   # The contexts where a bare printable key is the user typing, not a binding.
   # The agent overlay has a composer of its own (pass 72); the settings
   # search, its text editors and its pickers' filters type too (cli74).
   @typing_contexts [
-    :composer,
-    :field,
-    :picker,
-    :overlay,
-    :settings_search,
-    :settings_edit,
-    :settings_picker
-  ]
+                     :composer,
+                     :field,
+                     :picker,
+                     :overlay,
+                     :settings_search,
+                     :settings_edit,
+                     :settings_picker
+                   ] ++ HomeBindings.typing_contexts()
 
   # The groups the help sheet renders, in the order it renders them. Vim first:
   # it only appears in the NORMAL and VISUAL sheets, where it is the point.
-  @groups [:vim, :navigate, :focus, :runs, :act, :layers, :edit, :session, :settings]
+  @groups [:vim, :navigate, :focus, :runs, :act, :layers, :edit, :session, :settings, :home]
 
   @inspector_tabs [:agents, :timeline, :changes]
 
@@ -1965,22 +1972,29 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
   ]
 
   # cli74 U1-2: F2 opens Settings from the shell; the layer's own rows follow.
-  @bindings @bindings ++ [SettingsBindings.open_binding() | SettingsBindings.all()]
+  @bindings @bindings ++
+              [SettingsBindings.open_binding() | SettingsBindings.all()] ++
+              [HomeBindings.open_binding() | HomeBindings.all()]
 
   @table Enum.reduce(@bindings, %{}, fn binding, table ->
            Enum.reduce(binding.keys, table, fn {code, mods} = key, table ->
              typing? = is_binary(code) and mods == []
 
+             # orbit U8: Home's pass-through rows add its contexts to existing ids.
+             extra = Map.get(@home_passthrough, binding.id, [])
+
              contexts =
-               Enum.flat_map(binding.contexts, fn
+               Enum.flat_map(binding.contexts ++ extra, fn
                  :global when typing? ->
-                   @contexts -- (@typing_contexts ++ @settings_contexts)
+                   @contexts -- (@typing_contexts ++ @settings_contexts ++ @home_contexts)
 
                  :global ->
-                   @contexts -- @settings_contexts
+                   @contexts -- (@settings_contexts ++ @home_contexts)
 
                  context ->
-                   if typing? and context in @settings_letterless, do: [], else: [context]
+                   if typing? and (context in @settings_letterless or context in @home_typing),
+                     do: [],
+                     else: [context]
                end)
 
              Enum.reduce(contexts, table, &Map.put(&2, {&1, key}, binding))
@@ -2034,6 +2048,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Bindings do
   @doc "The settings contexts (cli74), in the order the docs list them."
   @spec settings_contexts() :: [atom()]
   def settings_contexts, do: @settings_contexts
+
+  @doc "Home's three contexts (orbit), in the order the docs list them."
+  @spec home_contexts() :: [atom()]
+  def home_contexts, do: @home_contexts
 
   @doc "Every binding reachable in `context`, in table order."
   @spec for_context(atom()) :: [Binding.t()]

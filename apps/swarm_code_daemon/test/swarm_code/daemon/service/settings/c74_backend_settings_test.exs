@@ -68,7 +68,13 @@ defmodule SwarmCode.Daemon.Service.Settings.C74BackendSettingsTest do
       source_epoch: Ecto.UUID.generate()
     ]
 
-    backend = start_supervised!({PersistedBackend, opts})
+    # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+    # delta of its own: let it land before a test counts deltas.
+    backend =
+      {PersistedBackend, opts}
+      |> start_supervised!()
+      |> SwarmCode.Test.C020Backend.settle_slash_extras()
+
     on_exit(fn -> Engine.stop_all(fixture.conversation.id) end)
     Map.merge(fixture, %{backend: backend, opts: opts, dir: dir})
   end
@@ -337,7 +343,12 @@ defmodule SwarmCode.Daemon.Service.Settings.C74BackendSettingsTest do
     assert [["completed", _]] = ledger(id)
 
     stop_supervised!(PersistedBackend)
-    restarted = start_supervised!({PersistedBackend, c.opts})
+
+    restarted =
+      {PersistedBackend, c.opts}
+      |> start_supervised!()
+      |> SwarmCode.Test.C020Backend.settle_slash_extras()
+
     assert {:ok, %{"value" => ^value}} = command(restarted, id, patch(7, 6))
   end
 

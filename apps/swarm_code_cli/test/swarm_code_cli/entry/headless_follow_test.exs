@@ -134,15 +134,24 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
     backend =
       Fixture.start_backend(c.world, c.conversation, [source_epoch: epoch] ++ backend_options)
 
+    # A unique id per stack: a test may run two one-shots on one conversation.
+    stack = System.unique_integer([:positive])
+
     start_supervised!(
-      {SwarmCode.Daemon.Service,
-       socket_path: socket, nonce: nonce, source_epoch: epoch, backend: backend}
+      Supervisor.child_spec(
+        {SwarmCode.Daemon.Service,
+         socket_path: socket, nonce: nonce, source_epoch: epoch, backend: backend},
+        id: {:service, stack}
+      )
     )
 
     client =
       start_supervised!(
-        {SwarmCodeCLI.UI.DataSource.Daemon,
-         socket_path: socket, nonce: nonce, source_epoch: epoch}
+        Supervisor.child_spec(
+          {SwarmCodeCLI.UI.DataSource.Daemon,
+           socket_path: socket, nonce: nonce, source_epoch: epoch},
+          id: {:client, stack}
+        )
       )
 
     {:ok, output} = StringIO.open("")
@@ -283,6 +292,21 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
     refute RunProcesses.alive?(run_id)
   end
 
+  # What a closed `ncode -p` leaves behind: the run's processes are gone, its row still says
+  # paused. The tree (the run's supervisor under `RunSupervisor`) is killed, and a status its
+  # shutdown wrote is put back.
+  defp leave_paused(run_id) do
+    for {pid, _value} <- Registry.lookup(SwarmCode.Domain.Registry, {:run, run_id}) do
+      [tree | _] = Process.info(pid, :dictionary) |> elem(1) |> Keyword.fetch!(:"$ancestors")
+      monitor = Process.monitor(pid)
+      Process.exit(tree, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 10_000
+    end
+
+    refute RunProcesses.alive?(run_id)
+    {:ok, _} = Conversations.update_run(Conversations.get_run(run_id), %{status: "paused"})
+  end
+
   defp continuation_answers(socket), do: sse(socket, %{"content" => "the report"}, "stop")
 
   defp run_states(c), do: Enum.map(Conversations.list_runs(c.conversation.id), & &1.status)
@@ -391,6 +415,87 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
     assert stderr =~ "paused"
     assert stderr =~ "ncode --resume #{c.conversation.id}"
     assert stderr =~ "/resume-run"
+    Engine.stop_all(c.conversation.id)
+  end
+
+  # Review 1019 RC-6: `ncode -p "/workflow resume <run>"` launches work, so it waits for it.
+  # Before the run is left paused, a request of the workflow's agent (if one is made at all
+  # before the pause) is held. After it, the first request, made by the resumed runner, is held
+  # until the test releases it; the continuation answers.
+  test "a resumed workflow is waited for, not reported as a finished command", c do
+    test = self()
+    {:ok, phase} = Agent.start_link(fn -> :first end)
+    {:ok, requests} = Agent.start_link(fn -> 0 end)
+
+    resumed = fn socket ->
+      case Agent.get(phase, & &1) do
+        :first ->
+          # The fixture serves one request at a time: held until the test has left the
+          # run paused.
+          send(test, {:first_request, self()})
+          receive(do: (:release -> :ok))
+
+        :resumed ->
+          case Agent.get_and_update(requests, &{&1, &1 + 1}) do
+            0 ->
+              send(test, {:resumed_request, self()})
+              receive(do: (:release -> :ok))
+              sse(socket, %{"content" => "resumed report"}, "stop")
+
+            _continuation ->
+              continuation_answers(socket)
+          end
+      end
+    end
+
+    c = provider(c, {"workflow_run", %{"source" => @workflow, "budget" => 1}}, resumed)
+
+    pauser =
+      Task.async(fn ->
+        run =
+          Enum.find_value(1..400, fn _ ->
+            Process.sleep(25)
+
+            Enum.find(
+              Conversations.list_runs(c.conversation.id),
+              &(&1.kind == "workflow" and &1.status == "running")
+            )
+          end)
+
+        Workflows.control(run.id, :pause)
+      end)
+
+    {1, %{"state" => "paused", "runs" => [_chat, %{"id" => flow_id}]}, _stderr} =
+      one_shot(c, approval_mode: "full_access")
+
+    assert Task.await(pauser, 30_000) == :ok
+    # The paused run's processes belonged to the first session, which a real
+    # `ncode -p` left with its VM; a resume starts them anew.
+    leave_paused(flow_id)
+    Agent.update(phase, fn _ -> :resumed end)
+
+    # The agent's first request is made only if the pause came after it.
+    receive do
+      {:first_request, first} -> send(first, :release)
+    after
+      500 -> :ok
+    end
+
+    second =
+      start_one_shot(c, [approval_mode: "full_access"], :json,
+        prompt: "/workflow resume #{flow_id}"
+      )
+
+    assert_receive {:resumed_request, handler}, 30_000
+    assert running?(second)
+
+    send(handler, :release)
+    {code, json, _stderr} = finish_one_shot(second)
+
+    assert code == 0
+    assert %{"state" => "done", "runs" => runs} = json
+    assert Enum.any?(runs, &(&1["id"] == flow_id and &1["state"] == "done"))
+    assert Conversations.get_run(flow_id).status == "done"
     Engine.stop_all(c.conversation.id)
   end
 

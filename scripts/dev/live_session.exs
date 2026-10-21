@@ -1,3 +1,6 @@
+# DEV-ONLY (C-ARCH-5): the unsaved live runtime, with a weaker tool policy than
+# ncode's. It is not the product path; the product opens the saved session
+# (scripts/dev/run_saved_session.sh, `ncode`).
 defmodule SwarmCode.Development.LiveSession do
   @moduledoc false
   alias SwarmCode.Daemon.Runtime.Configuration

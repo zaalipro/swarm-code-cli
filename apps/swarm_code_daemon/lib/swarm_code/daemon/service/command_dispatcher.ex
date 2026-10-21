@@ -203,7 +203,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
               SessionConfiguration.overlay(conv),
               cmd.prompt,
               attachments(opts),
-              [research_ids: research_ids(opts)] ++ approval(opts)
+              [research_ids: research_ids(opts)] ++ chat_opts(opts)
             )
 
       started(conv, cmd.name, result)
@@ -233,26 +233,21 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       ]
 
       result =
-        cond do
-          mode == "swarm" ->
-            Engine.start_swarm(
-              SessionConfiguration.overlay(conv),
-              goal.text,
-              args ++ approval(opts)
-            )
-
-          approval(opts) == [] ->
-            Engine.start_goal_turn(SessionConfiguration.overlay(conv), goal.text, args)
-
-          # `start_goal_turn/3` does not forward `approval_mode:`; this is the
-          # chat turn it starts, with the session's mode.
-          true ->
-            Engine.start_chat_turn(
-              SessionConfiguration.overlay(conv),
-              message,
-              [],
-              [prompt: args[:prompt], goal_id: goal.id] ++ approval(opts)
-            )
+        if mode == "swarm" do
+          Engine.start_swarm(
+            SessionConfiguration.overlay(conv),
+            goal.text,
+            args ++ approval(opts)
+          )
+        else
+          # `start_goal_turn/3` forwards neither `approval_mode:` nor the overlay nor the
+          # extra read roots; this is the chat turn it starts, with the session's options.
+          Engine.start_chat_turn(
+            SessionConfiguration.overlay(conv),
+            message,
+            [],
+            [prompt: args[:prompt], goal_id: goal.id] ++ chat_opts(opts)
+          )
         end
 
       case started(conv, cmd.name, result) do
@@ -377,7 +372,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         %{SessionConfiguration.overlay(conv) | mode: "plan"},
         cmd.task,
         attachments(opts),
-        [research_ids: research_ids(opts)] ++ approval(opts)
+        [research_ids: research_ids(opts)] ++ chat_opts(opts)
       )
     )
   end
@@ -400,7 +395,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
         },
         cmd.task,
         attachments(opts),
-        [research_ids: research_ids(opts)] ++ approval(opts)
+        [research_ids: research_ids(opts)] ++ chat_opts(opts)
       )
     )
   end
@@ -415,7 +410,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           "/create-workflow " <> cmd.prompt,
           attachments(opts),
           [prompt: cmd.prompt, command: :create_workflow, research_ids: research_ids(opts)] ++
-            approval(opts)
+            chat_opts(opts)
         )
       )
     end
@@ -430,7 +425,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           SessionConfiguration.overlay(conv),
           @review_prompt,
           attachments(opts),
-          [research_ids: research_ids(opts)] ++ approval(opts)
+          [research_ids: research_ids(opts)] ++ chat_opts(opts)
         )
       )
 
@@ -571,7 +566,10 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
              cmd.control,
              if(cmd[:budget], do: [budget: cmd.budget], else: [])
            ) do
-      result(conv, cmd.name, :updated, %{control: cmd.control, run_id: wf.run_id})
+      # Review 1019 RC-6: a resume starts the run's runner again (it is work a headless
+      # session has to wait for); a pause or a stop launches nothing.
+      type = if cmd.control == :resume, do: :resumed, else: :updated
+      result(conv, cmd.name, type, %{control: cmd.control, run_id: wf.run_id})
     end
   end
 
@@ -615,6 +613,30 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       text: "#{words}: #{current} (#{model}). Levels: #{levels}. #{command} <level> sets it."
     })
   end
+
+  # pass 77 C-FEAT-7: `/btw <question>` is a follow-up of the newest finished
+  # run, threaded under it like the desktop's side chat: the user message
+  # carries `reply_to_run_id`, and a workflow's summary goes in as context.
+  defp execute(conv, %{action: :reply_run} = cmd, opts) do
+    with :ok <- no_chat_running(conv),
+         {:ok, root} <- reply_root(conv) do
+      started(
+        conv,
+        cmd.name,
+        Engine.start_chat_turn(
+          SessionConfiguration.overlay(conv),
+          cmd.text,
+          [],
+          [reply_to_run_id: root.id, context: reply_context(root)] ++ chat_opts(opts)
+        )
+      )
+    end
+  end
+
+  # pass 77 C-FEAT-12: `/add-dir <folder>` widens this session's read roots; the
+  # backend answers it before the dispatcher, so reaching here is a client
+  # that sent it where it cannot work.
+  defp execute(_conv, %{action: :add_read_root}, _), do: {:error, :client_only}
 
   # cli020 C11 (tui-code-14): /rename <title>, /delete, /fork.
   defp execute(conv, %{action: :rename_conversation} = cmd, _) do
@@ -1136,6 +1158,62 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     end
   end
 
+  @reply_kinds ["chat", "swarm", "workflow"]
+  @settled_statuses ["done", "failed", "stopped", "interrupted"]
+
+  defp no_chat_running(conv) do
+    if Engine.chat_run_ids(conv.id) == [],
+      do: :ok,
+      else:
+        {:error,
+         {:busy,
+          "A turn is still running here. /btw asks about a finished run: wait for it or /stop first."}}
+  end
+
+  # The newest settled top-level run: not superseded, not itself a follow-up
+  # (its launching message names no run it replies to) and not launched by
+  # another run. A steer is a reply to the run it steers, so it does not hide it.
+  defp reply_root(conv) do
+    query =
+      from(r in Run,
+        as: :run,
+        where:
+          r.conversation_id == ^conv.id and r.kind in @reply_kinds and
+            r.status in @settled_statuses and is_nil(r.superseded_at) and
+            is_nil(r.launched_by_run_id) and
+            not exists(
+              from(m in SwarmCode.Domain.Conversations.Message,
+                where:
+                  m.run_id == parent_as(:run).id and not is_nil(m.reply_to_run_id) and
+                    m.reply_to_run_id != m.run_id,
+                select: 1
+              )
+            ),
+        order_by: [desc: r.inserted_at, desc: r.id],
+        limit: 1
+      )
+
+    case Repo.one(query) do
+      nil ->
+        {:error, {:nothing_to_reply, "There is no finished run to ask about yet."}}
+
+      root ->
+        {:ok, root}
+    end
+  end
+
+  defp reply_context(%{kind: "workflow", id: id}) do
+    case Workflows.get_run(id) do
+      %{display_name: name} = wf ->
+        "[workflow #{name} finished]\n" <> SwarmCode.Domain.Engine.RunServer.workflow_summary(wf)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp reply_context(_root), do: nil
+
   defp set_mode(conv, command, mode) do
     with {:ok, _} <- persist_mode(conv, mode),
          do: result(conv, command, :updated, %{mode: mode, fields: mode_fields(mode)})
@@ -1192,6 +1270,9 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   # cli020: a refusal in words (C11 /delete of a live conversation).
   defp failure({:busy, words}) when is_binary(words), do: {:error, {:busy, words}}
 
+  defp failure({:nothing_to_reply, words}) when is_binary(words),
+    do: {:error, {:nothing_to_reply, words}}
+
   defp failure({:untrusted_project, words}) when is_binary(words),
     do: {:error, {:untrusted_project, words}}
 
@@ -1215,6 +1296,23 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     case Keyword.get(opts, :approval_mode) do
       nil -> []
       mode -> [approval_mode: mode]
+    end
+  end
+
+  # pass 77 C-BUG-12: a chat turn also carries the session overlay (`--model`,
+  # `NCODE_EFFORT`) as a function, so a turn the engine chains after an
+  # automatic compaction reloads the conversation and applies it again. The
+  # engine reads it from the options of a chat turn only; a swarm start does
+  # not take it. Every `Engine.start_chat_turn/4` of this module takes its options
+  # from here, so a slash-launched turn also gets the session's extra read-only
+  # folders (`--add-dir`, `/add-dir`; pass 77 C-FEAT-12, review fix RC-7).
+  defp chat_opts(opts),
+    do: approval(opts) ++ [conversation_overlay: &SessionConfiguration.overlay/1] ++ roots(opts)
+
+  defp roots(opts) do
+    case Keyword.get(opts, :extra_read_roots, []) do
+      [_ | _] = roots -> [extra_read_roots: roots]
+      _ -> []
     end
   end
 
@@ -1293,6 +1391,14 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp valid_options?([{:approval_mode, mode} | rest], seen) do
     :approval_mode not in seen and mode in @approval_modes and
       valid_options?(rest, [:approval_mode | seen])
+  end
+
+  # Review 1019 RC-7: the session's extra read-only folders (at most 8, as the
+  # backend keeps them) ride on the options of a command that starts a chat turn.
+  defp valid_options?([{:extra_read_roots, roots} | rest], seen) do
+    :extra_read_roots not in seen and bounded_list?(roots, 8) and
+      Enum.all?(roots, &valid_text?(&1, 4_096)) and
+      valid_options?(rest, [:extra_read_roots | seen])
   end
 
   defp valid_options?([{key, value} | rest], seen) when key in @allowed do

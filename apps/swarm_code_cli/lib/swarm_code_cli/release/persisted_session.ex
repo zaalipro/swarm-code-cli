@@ -31,20 +31,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   alias SwarmCode.Daemon.FoundationGate.BootConfig
   alias SwarmCode.Daemon.Service.{PersistedBackend, SessionConfiguration, SessionSelection}
   alias SwarmCodeCLI.Companion
+  alias SwarmCodeCLI.Release.{Detach, Signals, Words}
   alias SwarmCodeCLI.UI.{Capabilities, Init, SessionRuntime, Size}
   alias SwarmCodeCLI.UI.DataSource.Daemon
   alias SwarmCodeCLI.UI.Renderer.RatatuiPort.Owner
 
   alias SwarmCodeCLI.Release.TerminalPreferences
 
-  @provider_setup_words "Add a model provider to start: pick a preset, paste its key."
   # cli020 B12/B13: what the interactive TUI answers with the Providers page.
   @setup_reasons [:provider_required, :model_required, :endpoint_required]
-
-  defp setup_words(:provider_required), do: @provider_setup_words
-
-  defp setup_words(reason),
-    do: session_failure(reason, nil).message <> " " <> @provider_setup_words
 
   @exit_failure 1
   @exit_usage 2
@@ -65,7 +60,6 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     :status_items
   ]
 
-  @exit_refused 3
   @log_bytes 2_097_152
   @log_files 3
 
@@ -169,6 +163,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   end
 
   @doc """
+  C-FEAT-13: sends the VM's logs to the private cli.log (and off the console)
+  before a session opens, for an entry such as `ncode acp` whose stdout belongs
+  to a protocol. `with_saved_session/2` does the same for every prompt.
+  """
+  @spec route_logs() :: :ok
+  def route_logs, do: route_logger!(log_path(nil))
+
+  @doc """
   pass74 S1-14: the foundation-only boot of `ncode config` — the log file,
   the lease and the verified migrations (guarded storage); no session
   selection, no provider resolution, no boot recovery, no daemon socket.
@@ -187,17 +189,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
           BootConfig.canonical(platform(), System.user_home!(), version)
         end)
 
-      {:ok, launcher} = RepoLauncher.start_link(boot_config: boot, pool_size: 4)
-      Process.unlink(launcher)
-
-      try do
-        case await_storage(launcher, boot) do
-          :ok -> {:ok, fun.()}
-          {:error, failure} -> {:error, failure}
-        end
-      after
-        close_owned_runtime(launcher)
-      end
+      with_launcher(boot, [], fn -> {:ok, fun.()} end)
     end)
     |> case do
       {:ok, {:ok, result}} -> {:ok, result}
@@ -237,13 +229,17 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   @doc false
   # cli020 B15: the failure a session reason becomes (tests).
   @spec session_failure_for(atom()) :: failure()
-  def session_failure_for(reason), do: session_failure(reason, nil)
+  def session_failure_for(reason), do: Words.session_failure(reason, nil)
+
+  @doc false
+  # The words a schema refusal is said with, for the regression tests.
+  defdelegate schema_words(error), to: Words
 
   @doc false
   # The failure a storage start refusal becomes (tests). `boot` names where
   # the lease owner record is read; never pass nil outside a sandbox.
   @spec startup_failure_for(term(), term()) :: failure()
-  def startup_failure_for(error, boot), do: startup_failure(error, boot)
+  def startup_failure_for(error, boot), do: Words.startup_failure(error, boot)
 
   @doc """
   pass72 G17 (QA Q17): writes the closing words, but never waits more than
@@ -285,14 +281,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         preflight!()
         root = project_root()
         check_root!(root)
-        {selection, ask?} = tui_selection()
+        {selection, opening} = tui_selection()
         executable = terminal_port!()
         route_logger!(log_path(test_boot))
         start_applications!()
 
         with_storage(
           test_boot,
-          fn session -> tui(session, executable, Keyword.put(opts, :resume_picker?, ask?)) end,
+          fn session -> tui(session, executable, Keyword.put(opts, :opening, opening)) end,
           root,
           conversation: selection,
           interactive: true
@@ -302,8 +298,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     status =
       case result do
         {:ok, {:ok, outcome, summary}} ->
-          print_summary(summary)
-          outcome_status(outcome)
+          # C-FEAT-3: after a hang-up that kept runs going the terminal is
+          # gone, so there is nothing to print the summary on.
+          unless summary[:detached], do: print_summary(summary)
+          outcome_status(outcome, summary[:detached] == true)
 
         {:ok, {:error, failure}} ->
           clear_starting_line(test_boot)
@@ -333,13 +331,37 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     if opts[:label] == :dev,
       do: IO.puts(:stderr, "ncode (dev) — conversation #{session.conversation.id}")
 
-    {outcome, current} = run_ui(session, executable, opts[:resume_picker?] == true)
+    {outcome, current} = run_ui(session, executable, opts[:opening])
+    detached? = detach(outcome)
     shown = %{session | conversation: %{session.conversation | id: current}}
     # Read the summary while storage and the runs are still up, then stop them.
     summary = query_worker(fn -> summary(shown, started_at) end)
     stopped = stop_live_runs()
-    {:ok, outcome, Map.merge(summary, %{stopped: stopped, notice: session[:notice]})}
+
+    {:ok, outcome,
+     Map.merge(summary, %{stopped: stopped, notice: session[:notice], detached: detached?})}
   end
+
+  # C-FEAT-3: a hang-up with runs still progressing lets them finish headless
+  # (or reach a question only a person can answer) before the normal close.
+  # The signal watchdog's deadline is held for the wait. Ctrl-C and SIGTERM
+  # close at once, as before.
+  defp detach({:signal, :sighup}) do
+    if Detach.progressing?() do
+      Signals.hold_deadline()
+      Detach.await()
+      Signals.release_deadline()
+      true
+    else
+      false
+    end
+  catch
+    kind, reason ->
+      Logger.error("detach failed: #{Exception.format(kind, reason)}")
+      false
+  end
+
+  defp detach(_outcome), do: false
 
   # Starts storage, selects and configures the session, runs `fun`, and always
   # closes the owned runtime. `fun` returns `{:ok, outcome, summary}`.
@@ -349,14 +371,28 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     version = Application.spec(:swarm_code_daemon, :vsn) |> to_string()
     boot = test_boot || BootConfig.canonical(platform(), System.user_home!(), version)
 
-    {:ok, launcher} = RepoLauncher.start_link(boot_config: boot, pool_size: 4)
+    with_launcher(boot, [], fn ->
+      with :ok <- boot_runtime(),
+           {:ok, session} <- open_session(root, selection, interactive?) do
+        fun.(session)
+      end
+    end)
+  end
+
+  # C-ARCH-14: the one storage-open sequence. Starts the guarded storage for
+  # `boot` (`:pool_size`, default 4), waits for it to be ready, runs `fun`, and
+  # always closes the owned runtime, whatever `fun` does. `{:error, failure}`
+  # when the storage does not come up (with the words of `Release.Words`).
+  defp with_launcher(boot, opts, fun) when is_list(opts) and is_function(fun, 0) do
+    {:ok, launcher} =
+      RepoLauncher.start_link(boot_config: boot, pool_size: Keyword.get(opts, :pool_size, 4))
+
     Process.unlink(launcher)
 
     try do
-      with :ok <- await_storage(launcher, boot),
-           :ok <- boot_runtime(),
-           {:ok, session} <- open_session(root, selection, interactive?) do
-        fun.(session)
+      case await_storage(launcher, boot) do
+        :ok -> fun.()
+        {:error, failure} -> {:error, failure}
       end
     after
       close_owned_runtime(launcher)
@@ -366,7 +402,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp await_storage(launcher, boot) do
     case RepoLauncher.await_ready(launcher, 120_000) do
       {:ok, _repo} -> :ok
-      {:error, reason} -> {:error, startup_failure(reason, boot)}
+      {:error, reason} -> {:error, Words.startup_failure(reason, boot)}
     end
   end
 
@@ -434,11 +470,11 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             # cli020 B11: a failed start leaves no empty conversation (and
             # no project row this call created).
             SessionSelection.discard(opened)
-            {:error, session_failure(reason, selection)}
+            {:error, Words.session_failure(reason, selection)}
         end
 
       {:error, reason} ->
-        {:error, session_failure(reason, selection)}
+        {:error, Words.session_failure(reason, selection)}
     end
   end
 
@@ -458,7 +494,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             {:ok,
              session
              |> Map.put(:open_settings, "providers")
-             |> Map.put(:setup_notice, setup_words(reason))}
+             |> Map.put(:setup_notice, Words.setup_words(reason))}
 
           true ->
             {:error, reason}
@@ -506,7 +542,24 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       :ok
   end
 
-  defp run_ui(session, executable, resume_picker?) do
+  @doc false
+  # C-FEAT-12: the PersistedBackend child's options. `extra_read_roots` are the
+  # launcher's `--add-dir` folders (read-only, this session only).
+  @spec backend_options(map(), binary(), binary(), %{optional(binary()) => binary()}) :: keyword()
+  def backend_options(session, conversation_id, source_epoch, env \\ System.get_env()) do
+    [
+      mode: :persisted,
+      repo: SwarmCode.Domain.Repo,
+      project_root: session.project.root_path,
+      project_id: session.project.id,
+      conversation_id: conversation_id,
+      source_epoch: source_epoch,
+      first_run_notice: session[:notice] || session[:setup_notice],
+      extra_read_roots: SwarmCodeCLI.Release.extra_read_roots(Map.get(env, "SWARM_ADD_DIRS"))
+    ]
+  end
+
+  defp run_ui(session, executable, opening) do
     # cli020 B10: folders a hard exit left behind go first.
     _ = SwarmCodeCLI.Release.SocketSweep.sweep()
     {dir, stat} = private_directory!()
@@ -519,14 +572,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       conversation_id = session.conversation.id
 
       backend =
-        child!(supervisor, PersistedBackend,
-          mode: :persisted,
-          repo: SwarmCode.Domain.Repo,
-          project_root: session.project.root_path,
-          project_id: session.project.id,
-          conversation_id: conversation_id,
-          source_epoch: source_epoch,
-          first_run_notice: session[:notice] || session[:setup_notice]
+        child!(
+          supervisor,
+          PersistedBackend,
+          backend_options(session, conversation_id, source_epoch)
         )
 
       path = Path.join(dir, "s")
@@ -585,13 +634,15 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
 
       # pass74 S1-13: the settings layer's boot query, the cli values, the
       # launch facts and cli.json's `ask` (U1's `Init` fields; a build without
-      # them ignores the keys).
+      # them ignores the keys). orbit: `home?` opens Home over the conversation
+      # (the default; `ask` opens the resume picker instead, never both).
       init =
         struct(init,
           settings_open: settings_open() || session[:open_settings],
           prefs: launch.prefs,
           launch_facts: launch_facts(launch, session.project.root_path, cli_path),
-          resume_picker?: resume_picker?
+          resume_picker?: opening == :picker,
+          home?: opening == :home
         )
 
       runtime =
@@ -650,14 +701,21 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
             end
 
           {:DOWN, ^owner_monitor, :process, ^owner, reason} ->
-            Logger.error("terminal owner stopped: #{inspect(reason)}")
+            # C-FEAT-3: the terminal port dies with the same hang-up that
+            # sends SIGHUP; the signal may be a moment behind the port.
+            if hangup_signal?() do
+              Logger.info("closing on sighup (the terminal owner stopped first)")
+              {:signal, :sighup}
+            else
+              Logger.error("terminal owner stopped: #{inspect(reason)}")
 
-            {:failed,
-             failure(
-               @exit_failure,
-               "The terminal stopped responding, so ncode closed.",
-               "Run ncode again; your conversation is saved."
-             )}
+              {:failed,
+               failure(
+                 @exit_failure,
+                 "The terminal stopped responding, so ncode closed.",
+                 "Run ncode again; your conversation is saved."
+               )}
+            end
 
           {:shutdown_signal, signal} when signal in [:sigterm, :sighup] ->
             Logger.info("closing on #{signal}")
@@ -689,6 +747,16 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
         _ ->
           :ok
       end
+    end
+  end
+
+  @hangup_grace_ms 200
+
+  defp hangup_signal? do
+    receive do
+      {:shutdown_signal, :sighup} -> true
+    after
+      @hangup_grace_ms -> false
     end
   end
 
@@ -749,7 +817,7 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
       reduced_motion?: false,
       accent: nil,
       companion?: Map.get(env, "SWARM_COMPANION") != "0",
-      startup_conversation: :latest,
+      startup_conversation: :dashboard,
       prefs: snapshot.values,
       env_overrides: %{},
       flag_overrides: %{},
@@ -779,34 +847,45 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     :ok
   end
 
-  @doc """
-  pass74 S1-13 (§3.8.4): the conversation a TUI session opens and whether it
-  asks first. A flag or `SWARM_CONVERSATION` chooses; else cli.json's
-  `startup_conversation` (`ask` opens the latest with the resume picker over
-  it). A settings-only session opens the latest (it never starts a new one).
+  @typedoc """
+  What opens over the conversation a session starts on: `:picker` is the resume
+  picker (`--resume` alone, or cli.json `ask`), `:home` is Home (the default),
+  `nil` is neither (a flag, `SWARM_CONVERSATION`, or an explicit `latest`).
   """
-  @spec tui_selection() :: {:latest | :new | String.t(), boolean()}
+  @type opening :: nil | :picker | :home
+
+  @doc """
+  pass74 S1-13 (§3.8.4): the conversation a TUI session opens and what opens
+  over it. A flag or `SWARM_CONVERSATION` chooses (and opens nothing); else
+  cli.json's `startup_conversation` (`dashboard`, the default, opens Home over
+  the latest; `ask` the resume picker; `latest` neither). A settings-only
+  session opens the latest and nothing over it (it never starts a new one).
+  """
+  @spec tui_selection() :: {:latest | :new | String.t(), opening()}
   def tui_selection do
     cond do
       # cli020 B19: bare `ncode --resume` opens the latest with the picker over it.
       System.get_env("SWARM_RESUME_PICKER") == "1" and not settings_only?() ->
-        {:latest, true}
+        {:latest, :picker}
 
       System.get_env("SWARM_CONVERSATION") in [nil, ""] and not settings_only?() ->
         startup_selection(SwarmCodeCLI.Release.preferences_path())
 
       true ->
-        {selection_from_env(), false}
+        {selection_from_env(), nil}
     end
   end
 
   @doc false
-  @spec startup_selection(Path.t() | nil) :: {:latest | :new, boolean()}
+  @spec startup_selection(Path.t() | nil) :: {:latest | :new, opening()}
   def startup_selection(cli_path) do
     case SwarmCode.Settings.CliFile.read_all(cli_path).values["startup_conversation"] do
-      "new" -> {:new, false}
-      "ask" -> {:latest, true}
-      _ -> {:latest, false}
+      "new" -> {:new, nil}
+      "ask" -> {:latest, :picker}
+      # An explicit `latest` keeps today's behaviour: no Home.
+      "latest" -> {:latest, nil}
+      # `dashboard`, an absent key or a file that is missing or unreadable.
+      _ -> {:latest, :home}
     end
   end
 
@@ -1263,14 +1342,14 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp color?,
     do: System.get_env("NO_COLOR") in [nil, ""] and :prim_tty.isatty(:stdout) == true
 
-  defp outcome_status(:ok), do: 0
+  defp outcome_status(:ok, _detached?), do: 0
 
-  defp outcome_status({:signal, signal}) do
-    say(:stderr, "ncode: " <> SwarmCodeCLI.Release.Signals.words(signal))
-    SwarmCodeCLI.Release.Signals.exit_code(signal)
+  defp outcome_status({:signal, signal}, detached?) do
+    say(:stderr, "ncode: " <> Signals.words(signal, detached?))
+    Signals.exit_code(signal)
   end
 
-  defp outcome_status({:failed, failure}), do: report(failure)
+  defp outcome_status({:failed, failure}, _detached?), do: report(failure)
 
   ## Failures
 
@@ -1298,10 +1377,8 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
   defp fail!(status, message, action), do: throw({__MODULE__, failure(status, message, action)})
 
   # `reason` is an atom written at the call site (see `Release.Reasons`).
-  defp failure(status, message, action, reason \\ nil) do
-    failure = %{status: status, message: message, action: action}
-    if reason, do: Map.put(failure, :reason, reason), else: failure
-  end
+  defp failure(status, message, action, reason \\ nil),
+    do: Words.failure(status, message, action, reason)
 
   defp preflight! do
     unless System.argv() == [],
@@ -1362,160 +1439,6 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     )
   end
 
-  defp startup_failure(%{__struct__: SwarmCode.Daemon.StartupError} = error, boot) do
-    Logger.error("startup refused: #{error.code}: #{error.message} #{error.action}")
-    {message, action} = startup_words(error.code, error, boot)
-    # pass74 S1-14: `ncode config` answers a held lease with its own words.
-    failure = @exit_refused |> failure(message, action) |> Map.put(:code, error.code)
-    if error.cause, do: Map.put(failure, :cause, error.cause), else: failure
-  end
-
-  defp startup_failure(reason, _boot) do
-    Logger.error("guarded storage did not start: #{inspect(reason)}")
-    {message, action} = storage_words(reason)
-    failure(@exit_refused, message, action, storage_reason(reason))
-  end
-
-  @doc false
-  # The words a schema refusal is said with, for the regression tests.
-  def schema_words(%{code: :schema_incompatible} = error),
-    do: startup_words(:schema_incompatible, error, nil)
-
-  defp startup_words(:desktop_active, _error, _boot),
-    do:
-      {"The ncode app is open, and only one of them can use your conversations at a time.",
-       "Quit the ncode app, then run ncode again."}
-
-  defp startup_words(:data_lease_held, _error, boot) do
-    if settings_only?(),
-      do: {lease_words(boot, :settings), ""},
-      else:
-        {lease_holder(boot),
-         "Close it first (Ctrl-C twice, and once more if it asks), then run ncode again."}
-  end
-
-  # The allowlist's two refusals (pass70 D2: an upgrade only the app makes, a
-  # database from a newer app), the gate's stray-file and damaged-file ones
-  # (Q13) and the mode refusal (cli020 fix S4) already say what to do; any
-  # other schema failure gets the general sentence.
-  defp startup_words(:schema_incompatible, error, _boot) do
-    refusals = [
-      SwarmCode.Daemon.Schema.Refusal.desktop_upgrade_required(),
-      SwarmCode.Daemon.Schema.Refusal.database_ahead(),
-      SwarmCode.Daemon.Schema.Refusal.not_a_database(),
-      SwarmCode.Daemon.Schema.Refusal.damaged(),
-      # cli020 fix S4: one sentence, the path travels in the action.
-      SwarmCode.Daemon.Schema.Refusal.database_mode("")
-    ]
-
-    if Enum.any?(refusals, &(&1.message == error.message)),
-      do: {error.message, error.action},
-      else:
-        {"Your conversations database comes from an ncode version this ncode does not know.",
-         "Update ncode, or open the ncode app once to upgrade the database. Nothing was changed."}
-  end
-
-  defp startup_words(code, _error, _boot)
-       when code in [:private_directory_failed, :path_resolution_failed, :lease_failed],
-       do:
-         {"ncode could not safely open its private data folder.",
-          "Check that ~/Library/Application Support/SwarmCode belongs to you and has mode 0700."}
-
-  defp startup_words(:macos_platform_helper_unavailable, _error, _boot),
-    do:
-      {"ncode could not check whether the ncode app is running.",
-       "Reinstall ncode: curl -fsSL https://code.llmotions.com/install.sh | sh"}
-
-  defp startup_words(code, _error, _boot) when code in [:backup_failed, :backup_unverified],
-    do:
-      {"ncode could not make a verified backup before upgrading the database, so it changed nothing.",
-       "Free some disk space and run ncode again."}
-
-  defp startup_words(_code, error, _boot), do: {error.message, error.action}
-
-  defp storage_words(reason) when reason in [:migration_failed, :migration_timeout],
-    do:
-      {"ncode could not upgrade the database; it was left as it was.",
-       "Your verified backup is in the backups folder beside your conversations database. Open the ncode app, or report this."}
-
-  defp storage_words(_reason),
-    do:
-      {"ncode could not open your conversations database.",
-       "Close other ncode windows and run ncode again."}
-
-  defp storage_reason(reason) when reason in [:migration_failed, :migration_timeout],
-    do: :migration_failed
-
-  defp storage_reason(_reason), do: :database_unavailable
-
-  # pass74 S1-13 (D11): the exit-3 words name the settings command.
-  defp session_failure(:provider_required, _),
-    do:
-      failure(
-        @exit_refused,
-        "No model provider is set up yet.",
-        "Run 'ncode settings providers' to add one, or set NCODE_MODEL, NCODE_BASE_URL and NCODE_API_KEY in ~/.secrets (the older SWARM_* names still work)."
-      )
-      |> Map.put(:reason, :provider_required)
-
-  # cli020 B13 (onboarding-4): a first run from the environment that lacks
-  # an endpoint or a model says which.
-  defp session_failure(:endpoint_required, _),
-    do:
-      failure(
-        @exit_refused,
-        "NCODE_BASE_URL is missing (OpenAI-compatible URLs end in /v1).",
-        "Set NCODE_BASE_URL, or run 'ncode settings providers'."
-      )
-      |> Map.put(:reason, :endpoint_required)
-
-  defp session_failure(:model_required, _),
-    do:
-      failure(
-        @exit_refused,
-        "NCODE_MODEL is missing.",
-        "Set NCODE_MODEL to a model of your provider, or run 'ncode settings providers'."
-      )
-      |> Map.put(:reason, :model_required)
-
-  # pass71 F19 (review R17): the sentence names the model that was given.
-  defp session_failure(:unknown_model, _),
-    do:
-      failure(
-        @exit_usage,
-        unknown_model_words(System.get_env("SWARM_MODEL_OVERRIDE")),
-        "Use a model from /model, or provider/model.",
-        :unknown_model
-      )
-
-  defp session_failure(:conversation_not_found, _),
-    do:
-      failure(
-        @exit_usage,
-        "That conversation is not part of this project.",
-        "Use ncode --continue, or --resume with an id from this project.",
-        :conversation_not_found
-      )
-
-  defp session_failure(:invalid_project, _),
-    do:
-      failure(
-        @exit_usage,
-        "That project directory cannot be opened.",
-        "Name a readable directory.",
-        :invalid_project
-      )
-
-  defp session_failure(reason, _selection) do
-    Logger.error("session could not be prepared: #{inspect(reason)}")
-
-    failure(
-      @exit_failure,
-      "ncode could not open the conversation.",
-      "Run ncode again; nothing was changed."
-    )
-  end
-
   @doc false
   # pass74 S1-13/S1-14: a settings change while another session holds the
   # data. The owner record names its process, not its folder.
@@ -1542,8 +1465,10 @@ defmodule SwarmCodeCLI.Release.PersistedSession do
     _ -> "another process"
   end
 
+  @doc false
   # B7: the lease owner record names the process that holds the data lease.
-  defp lease_holder(boot) do
+  @spec lease_holder(term()) :: String.t()
+  def lease_holder(boot) do
     with {:ok, paths} <- paths_for(boot),
          {:ok, %File.Stat{type: :regular, size: size}} when size <= 32_768 <-
            File.lstat(paths.owner_record),

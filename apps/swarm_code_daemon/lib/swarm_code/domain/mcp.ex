@@ -15,6 +15,8 @@ defmodule SwarmCode.Domain.MCP do
   # of the client's state so Settings can read them while the client is busy
   # with a two-minute `tools/call`.
   @output_table :swarm_code_mcp_output
+  # pass 77 D-FEAT-12: `{server_id, project_id, server_name, prompts}` per server.
+  @prompts_table :swarm_code_mcp_prompts
 
   def tools_table, do: @tools_table
   def status_table, do: @status_table
@@ -156,6 +158,10 @@ defmodule SwarmCode.Domain.MCP do
 
     if :ets.whereis(@output_table) == :undefined do
       :ets.new(@output_table, [:named_table, :public, :set, read_concurrency: true])
+    end
+
+    if :ets.whereis(@prompts_table) == :undefined do
+      :ets.new(@prompts_table, [:named_table, :public, :set, read_concurrency: true])
     end
 
     :ok
@@ -368,6 +374,10 @@ defmodule SwarmCode.Domain.MCP do
       :ets.delete(@output_table, server_id)
     end
 
+    if :ets.whereis(@prompts_table) != :undefined do
+      :ets.delete(@prompts_table, server_id)
+    end
+
     :ok
   end
 
@@ -390,6 +400,133 @@ defmodule SwarmCode.Domain.MCP do
       |> Enum.map(&to_ref/1)
     end
   end
+
+  ## ----------------------------------------------------------------- prompts
+
+  @doc """
+  pass 77 D-FEAT-12: publishes the prompts of one server (called by its client).
+  Each prompt gets the slash command it is offered under: `mcp__<server>__<prompt>`,
+  lower-cased to `[a-z0-9_-]`, at most 64 characters, and unique within the server.
+  """
+  @spec put_prompts(Server.t(), [map()]) :: :ok
+  def put_prompts(%Server{} = server, prompts) when is_list(prompts) do
+    ensure_tables()
+    prefix = "mcp__" <> Server.slug(server) <> "__"
+
+    {entries, _seen} =
+      Enum.map_reduce(prompts, MapSet.new(), fn prompt, seen ->
+        plain = server |> tool_name(prefix, prompt.name) |> String.downcase()
+
+        command =
+          if MapSet.member?(seen, plain),
+            do: server |> tool_name(prefix, prompt.name, hashed: true) |> String.downcase(),
+            else: plain
+
+        {Map.put(prompt, :command, command), MapSet.put(seen, command)}
+      end)
+
+    :ets.insert(@prompts_table, {server.id, server.project_id, server.name, entries})
+    :ok
+  end
+
+  @doc """
+  The prompts the ready servers of the global scope and of `project_id` offer,
+  as `[%{server_id, server_name, prompt, command, description, arguments}]`.
+  An ETS read only.
+  """
+  @spec prompts_for(String.t() | nil) :: [map()]
+  def prompts_for(project_id) do
+    if :ets.whereis(@prompts_table) == :undefined do
+      []
+    else
+      ms = [
+        {{:"$1", nil, :_, :_}, [], [:"$_"]},
+        {{:"$1", project_id, :_, :_}, [], [:"$_"]}
+      ]
+
+      @prompts_table
+      |> :ets.select(ms)
+      |> Enum.filter(fn {server_id, _project, _name, _prompts} -> status(server_id) == :ready end)
+      |> Enum.sort_by(fn {_id, _project, name, _prompts} -> name end)
+      |> Enum.flat_map(fn {server_id, _project, server_name, prompts} ->
+        for prompt <- prompts do
+          %{
+            server_id: server_id,
+            server_name: server_name,
+            prompt: prompt.name,
+            command: prompt.command,
+            description: prompt.description,
+            arguments: prompt.arguments
+          }
+        end
+      end)
+    end
+  end
+
+  # Longest prompt text the composer will turn into a user message.
+  @max_prompt_chars 100_000
+
+  @doc """
+  pass 77 D-FEAT-12: runs `prompts/get` on `server_id` and returns the text of
+  its messages, joined by blank lines (an image, audio clip or non-text
+  resource becomes a `[image]`-style marker). Does network work: call it from
+  owned work, never from a LiveView callback.
+  """
+  @spec get_prompt(String.t(), String.t(), map(), pos_integer()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def get_prompt(server_id, prompt, args, timeout \\ 30_000) do
+    case Registry.lookup(SwarmCode.Domain.Registry, {:mcp, server_id}) do
+      [{pid, _}] ->
+        try do
+          case GenServer.call(pid, {:get_prompt, prompt, args, timeout}, timeout + 5_000) do
+            {:ok, %{} = result} -> prompt_text(result)
+            {:error, reason} -> {:error, reason}
+          end
+        catch
+          :exit, _ -> {:error, "MCP server is not connected"}
+        end
+
+      [] ->
+        name = (get(server_id) || %{}) |> Map.get(:name, server_id)
+        {:error, "MCP server #{name} is not connected"}
+    end
+  end
+
+  defp prompt_text(%{"messages" => messages}) when is_list(messages) do
+    text =
+      messages
+      |> Enum.flat_map(fn
+        %{"content" => content} -> content |> List.wrap() |> Enum.map(&prompt_part/1)
+        _other -> []
+      end)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
+
+    cond do
+      text == "" ->
+        {:error, "the prompt returned no text"}
+
+      String.length(text) > @max_prompt_chars ->
+        {:error, "the prompt is longer than #{@max_prompt_chars} characters"}
+
+      true ->
+        {:ok, text}
+    end
+  end
+
+  defp prompt_text(_result), do: {:error, "the prompt returned no messages"}
+
+  defp prompt_part(%{"type" => "text", "text" => text}) when is_binary(text), do: text
+
+  defp prompt_part(%{"type" => "resource", "resource" => %{"text" => text}}) when is_binary(text),
+    do: text
+
+  defp prompt_part(%{"type" => "resource", "resource" => %{"uri" => uri}}) when is_binary(uri),
+    do: "[resource #{uri}]"
+
+  defp prompt_part(%{"type" => type}) when is_binary(type), do: "[#{type}]"
+  defp prompt_part(text) when is_binary(text), do: text
+  defp prompt_part(_other), do: ""
 
   @spec lookup(String.t()) :: {:ok, Ref.t()} | :error
   def lookup(name) do
@@ -514,4 +651,14 @@ defmodule SwarmCode.Domain.MCP do
   @doc "The images the last `call/4` of this process returned, once (spec 67 T34)."
   @spec take_images() :: [map()]
   def take_images, do: Process.delete(@images_key) || []
+
+  @doc """
+  Leaves `images` for `take_images/0` (pass 77 D3-1): the hand-off a built-in tool
+  such as `read_file` uses to attach an image to its result, like an MCP image.
+  """
+  @spec put_images([map()]) :: :ok
+  def put_images(images) do
+    Process.put(@images_key, images)
+    :ok
+  end
 end

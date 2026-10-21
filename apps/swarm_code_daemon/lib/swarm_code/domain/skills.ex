@@ -18,7 +18,9 @@ defmodule SwarmCode.Domain.Skills do
   @doc "Every skill visible in `project`, shadowed names removed."
   @spec list(map() | nil) :: [Skill.t()]
   def list(project \\ nil) do
-    (builtins() ++ scope_list(user_dir(), "user") ++ scope_list(project_dir(project), "project"))
+    (builtins() ++
+       scope_list(user_dir(), "user", nil) ++
+       scope_list(project_dir(project), "project", project_root(project)))
     |> Enum.reverse()
     |> Enum.uniq_by(& &1.name)
     |> Enum.sort_by(& &1.name)
@@ -30,11 +32,15 @@ defmodule SwarmCode.Domain.Skills do
     name = to_string(name)
 
     # spec 60 T23: only the named skill is read, project → user → builtin (the
-    # precedence `list/1` gives), and the name cannot leave the skills dir.
-    if name =~ ~r/^[A-Za-z0-9._-]+$/ do
-      Enum.find_value([{project_dir(project), "project"}, {user_dir(), "user"}], fn {dir, scope} ->
-        is_binary(dir) and read(Path.join(dir, name), scope)
-      end) || Enum.find(builtins(), &(&1.name == name))
+    # precedence `list/1` gives), and the name cannot leave the skills dir
+    # (RD-2: `.` and `..` match the character class and are refused too).
+    if name =~ ~r/^[A-Za-z0-9._-]+$/ and name not in [".", ".."] do
+      Enum.find_value(
+        [{project_dir(project), "project", project_root(project)}, {user_dir(), "user", nil}],
+        fn {dir, scope, root} ->
+          is_binary(dir) and read(Path.join(dir, name), scope, root)
+        end
+      ) || Enum.find(builtins(), &(&1.name == name))
     else
       nil
     end
@@ -45,7 +51,7 @@ defmodule SwarmCode.Domain.Skills do
   def builtins do
     case :persistent_term.get({__MODULE__, :builtins}, nil) do
       nil ->
-        parsed = scope_list(builtin_dir(), "builtin")
+        parsed = scope_list(builtin_dir(), "builtin", nil)
         :persistent_term.put({__MODULE__, :builtins}, parsed)
         parsed
 
@@ -64,6 +70,10 @@ defmodule SwarmCode.Domain.Skills do
   def project_dir(nil), do: nil
   def project_dir(%{root_path: root}), do: Path.join([root, ".swarm_code", "skills"])
   def project_dir(root) when is_binary(root), do: Path.join([root, ".swarm_code", "skills"])
+
+  defp project_root(%{root_path: root}) when is_binary(root), do: root
+  defp project_root(root) when is_binary(root), do: root
+  defp project_root(_none), do: nil
 
   @doc """
   The skill as one block of prompt text: `SKILL.md` first, then every asset
@@ -92,16 +102,21 @@ defmodule SwarmCode.Domain.Skills do
 
   # ------------------------------------------------------------------ private
 
-  defp scope_list(nil, _scope), do: []
+  # RD-2: a project skill is the project's own file, so its folder, its
+  # SKILL.md and every asset must be inside the project root both as a plain
+  # path and after symlinks are resolved (`Tools.Path.confined?/2`); a link to a
+  # file elsewhere is not read. `root` is nil for the user and builtin scopes:
+  # those folders are configured by the user or shipped, not by the project.
+  defp scope_list(nil, _scope, _root), do: []
 
-  defp scope_list(dir, scope) do
+  defp scope_list(dir, scope, root) do
     case File.ls(dir) do
       {:ok, entries} ->
         entries
         |> Enum.sort()
         |> Enum.map(&Path.join(dir, &1))
-        |> Enum.filter(&File.dir?/1)
-        |> Enum.map(&read(&1, scope))
+        |> Enum.filter(&(File.dir?(&1) and confined?(root, &1)))
+        |> Enum.map(&read(&1, scope, root))
         |> Enum.reject(&is_nil/1)
 
       _other ->
@@ -109,8 +124,13 @@ defmodule SwarmCode.Domain.Skills do
     end
   end
 
-  defp read(dir, scope) do
-    case read_capped(Path.join(dir, "SKILL.md"), @asset_cap) do
+  defp confined?(nil, _path), do: true
+  defp confined?(root, path), do: SwarmCode.Domain.Tools.Path.confined?(root, path)
+
+  defp read(dir, scope, root) do
+    skill_md = Path.join(dir, "SKILL.md")
+
+    case (confined?(root, dir) and confined?(root, skill_md)) && read_capped(skill_md, @asset_cap) do
       {:ok, text} ->
         %Skill{
           name: Path.basename(dir),
@@ -118,7 +138,7 @@ defmodule SwarmCode.Domain.Skills do
           path: dir,
           description: description(text),
           body: cap(String.trim(text), @asset_cap),
-          assets: assets(dir)
+          assets: assets(dir, root)
         }
 
       _other ->
@@ -139,13 +159,14 @@ defmodule SwarmCode.Domain.Skills do
     end
   end
 
-  defp assets(dir) do
+  defp assets(dir, root) do
     case File.ls(dir) do
       {:ok, entries} ->
         for name <- Enum.sort(entries),
             name != "SKILL.md",
             path = Path.join(dir, name),
             File.regular?(path),
+            confined?(root, path),
             {:ok, body} <- [read_capped(path, @asset_cap)],
             do: %{name: name, body: cap(body, @asset_cap)}
 

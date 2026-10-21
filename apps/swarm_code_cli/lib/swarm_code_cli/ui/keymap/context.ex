@@ -18,12 +18,13 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   | `:hint` | hint mode (Ctrl-F), no layer |
   | `:overlay` | the agent overlay is open, no layer |
   | `:settings…` | the settings layer is open, no shell layer over it: one of seven by its mode and popover (`UI.Settings.context/1`, cli74) |
+  | `:home_composer`, `:home_list`, `:home_map` | Home is open (orbit), no layer and no settings over it: by its focus |
 
   A picker is a picker before it is a field: its query *is* the layer, and its
   keys (Ctrl-N, Home, the opening chord) have to beat the field editor's.
   """
 
-  alias SwarmCodeCLI.UI.{Keymap, Settings}
+  alias SwarmCodeCLI.UI.{Keymap, Settings, State}
 
   @picker_layers [
     :switcher,
@@ -46,29 +47,49 @@ defmodule SwarmCodeCLI.UI.Keymap.Context do
   def picker?(_layer), do: false
 
   @spec of(map()) :: atom()
-  # pass72 F: hint mode opens over a request card (the approval card and the
-  # question dialog, the layers a needs-you agent raises), so its badge keys
-  # are read before the layer under it.
-  def of(%{hint: %{}}), do: :hint
+  # C-ARCH-8: `State.surface/1` holds the precedence (hint, layers, settings,
+  # Home, overlay, else the shell); this maps the owner to its context.
+  def of(state) do
+    case State.surface(state) do
+      # pass72 F: hint mode opens over a request card (the approval card and
+      # the question dialog, the layers a needs-you agent raises), so its
+      # badge keys are read before the layer under it.
+      :hint ->
+        :hint
 
-  def of(%{layers: [layer | _]} = state) do
-    cond do
-      picker?(layer) -> :picker
-      match?({:field_editor, _}, Keymap.editor_context(state)) -> :field
-      true -> :dialog
+      {:layer, layer} ->
+        cond do
+          picker?(layer) -> :picker
+          match?({:field_editor, _}, Keymap.editor_context(state)) -> :field
+          true -> :dialog
+        end
+
+      # cli74 U1-2: the settings layer covers the shell (and the agent
+      # overlay) until it closes; its mode and popover pick one of its seven
+      # contexts.
+      :settings ->
+        Settings.context(state.settings)
+
+      # orbit D8: Home covers the shell (and the agent overlay) until it
+      # closes; layers and Settings, which open over it, are read before it.
+      :home ->
+        Map.fetch!(
+          %{composer: :home_composer, list: :home_list, map: :home_map},
+          state.home.focus
+        )
+
+      # pass72: the agent overlay covers the chat until Esc.
+      :overlay ->
+        :overlay
+
+      :shell ->
+        shell(state)
     end
   end
 
-  # cli74 U1-2: the settings layer covers the shell (and the agent overlay)
-  # until it closes; its mode and popover pick one of its seven contexts.
-  def of(%{settings: %Settings.Layer{} = layer}), do: Settings.context(layer)
-
-  # pass72: hint mode reads its badge keys before anything under it, and the
-  # agent overlay covers the chat until Esc.
-  def of(%{overlay: %{}}), do: :overlay
-  def of(%{focus: "composer"} = state), do: composer(state)
-  def of(%{focus: "inspector"}), do: :inspector
-  def of(_state), do: :main
+  defp shell(%{focus: "composer"} = state), do: composer(state)
+  defp shell(%{focus: "inspector"}), do: :inspector
+  defp shell(_state), do: :main
 
   # The vim modes only exist while the vim keymap is on; with `:default` the
   # composer is always the plain composer however `state.vim` happens to read.

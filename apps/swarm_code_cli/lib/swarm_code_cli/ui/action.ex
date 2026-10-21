@@ -98,16 +98,20 @@ defmodule SwarmCodeCLI.UI.Action do
              | :panel
              | :diff
              | :theme
-             | :mouse}
+             | :mouse
+             | :home}
           # pass73-K: Enter on the palette runs its command (T4); the opt-out
           # key sends a "workflow" message as it is (T5); /diff, /theme and
           # /mouse (T1, T2, T9) and the /approval picker's rows (T7).
-          | {:run_command, binary()}
+          | {:run_command, binary() | {:dynamic, binary()}}
           # cli021 B3: the argument list (`SlashPalette`): Tab, Enter.
           | {:complete_argument, binary()}
           | {:run_argument, binary()}
           | :send_plain
           # cli020 lane D (§8.3).
+          # orbit: Home (spec 3.6).
+          | :open_home
+          | {:home, SwarmCodeCLI.UI.Home.verb()}
           | {:cycle_permission_mode}
           | :shell_send
           | {:paste_image}
@@ -191,7 +195,7 @@ defmodule SwarmCodeCLI.UI.Action do
              | {:preset, :compact | :balanced | :wide}
              | {:nudge, -8 | -2 | 2 | 8}}
           | {:composer_height, :reset | {:nudge, -1 | 1}}
-          | {:complete_command, binary()}
+          | {:complete_command, binary() | {:dynamic, binary()}}
           # pass73 finisher (V1's request K1): Enter on an approval card with a
           # blank draft shows every command line, or folds them back.
           | {:approval_show_all, binary()}
@@ -277,12 +281,20 @@ defmodule SwarmCodeCLI.UI.Action do
           :theme,
           :mouse,
           :settings,
+          # orbit: `/home` opens Home.
+          :home,
           # cli020 D10/D20.
           :rewind,
           :undo,
           :delete
         ]
       )
+
+  # C-FEAT-1/8: a project's custom command or workflow, checked by shape here
+  # (the action layer cannot know them) and against the listed rows when the
+  # reducer applies it.
+  def validate({kind, {:dynamic, name}} = action) when kind in [:run_command, :complete_command],
+    do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.dynamic_name?(name))
 
   def validate({:run_command, name} = action),
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))
@@ -358,6 +370,12 @@ defmodule SwarmCodeCLI.UI.Action do
 
   def validate({:settings_open, arg} = action),
     do: valid_action(action, SwarmCodeCLI.UI.Settings.Event.open_arg?(arg))
+
+  # orbit: Home opens (Alt-O, `/home`) and takes its keys as verbs.
+  def validate(:open_home), do: {:ok, :open_home}
+
+  def validate({:home, verb} = action),
+    do: valid_action(action, SwarmCodeCLI.UI.Home.verb?(verb))
 
   def validate({:show_diffs, value} = action),
     do: valid_action(action, is_boolean(value) or value == :toggle)

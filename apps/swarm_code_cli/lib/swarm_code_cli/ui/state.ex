@@ -91,6 +91,10 @@ defmodule SwarmCodeCLI.UI.State do
     # `UI.Settings.Layer`), and the user's key overrides from cli.json's
     # `keys` (`UI.Keymap.Overrides`; nil = the defaults everywhere).
     settings: nil,
+    # orbit (spec 3.6): Home, the layer over the conversation (nil while it is
+    # closed), and the position the last closed Home left for the next one.
+    home: nil,
+    home_resume: nil,
     key_overrides: nil,
     # The page stack, focus and tasks kept after the layer closes, for the
     # next `/settings` (nil before the first close).
@@ -162,7 +166,8 @@ defmodule SwarmCodeCLI.UI.State do
     # (`%{id, text}`: the `queue.edit` request that removes it and what it said).
     queue_take: nil,
     # cli020 D10: the rewind in flight (`%{mode}` while the turns load,
-    # `%{mode: :apply, turn, scope}` while it applies) and the last bare Esc.
+    # `%{mode: :apply, turn, scope, key, identity}` while it applies: the
+    # composer that asked and its payload identity, C-BUG-17) and the last bare Esc.
     rewind: nil,
     last_escape_at: nil,
     # cli020 D19: the history search's debounce timer and newest request,
@@ -287,6 +292,33 @@ defmodule SwarmCodeCLI.UI.State do
   end
 
   def dirty?(state), do: Drafts.dirty?(state.drafts) or FieldEditors.dirty?(state.field_editors)
+
+  @typedoc "The surface that owns the keys (C-ARCH-8): see `surface/1`."
+  @type surface :: :hint | {:layer, term()} | :settings | :home | :overlay | :shell
+
+  @doc """
+  The one surface that owns the keys, from the nullable surface fields, in the
+  one written precedence order (the order `Keymap.Context.of/1` reads them):
+  hint mode (it opens over a request card, so over a layer), then the top
+  layer, then the settings layer, then Home, then the agent overlay, else the
+  shell. Reducer guards and the keymap ask this instead of each re-deriving
+  the order from `hint`, `layers`, `settings`, `home` and `overlay`.
+  """
+  @spec surface(t() | map()) :: surface()
+  def surface(%{hint: %{}}), do: :hint
+  def surface(%{layers: [layer | _]}), do: {:layer, layer}
+
+  def surface(%{settings: settings}) when is_struct(settings, SwarmCodeCLI.UI.Settings.Layer),
+    do: :settings
+
+  def surface(%{home: home}) when is_struct(home, SwarmCodeCLI.UI.Home), do: :home
+  def surface(%{overlay: %{}}), do: :overlay
+  def surface(_state), do: :shell
+
+  # orbit D9: Home's own composer, one draft for the whole session. While Home
+  # is open it covers the agent overlay, so its key comes first.
+  def current_draft_key(%{home: %{focus: :composer}, source_epoch: epoch}) when is_binary(epoch),
+    do: {epoch, :home}
 
   # The agent overlay's composer is the one being typed into while it is open.
   def current_draft_key(%{overlay: %{draft_key: key}}) when not is_nil(key), do: key

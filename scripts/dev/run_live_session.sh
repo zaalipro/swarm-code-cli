@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# DEV-ONLY (C-ARCH-5): the unsaved live runtime, with a weaker tool policy than
+# ncode's. It is not the product path (scripts/dev/run_saved_session.sh is).
 # pass71 S3: what the session writes (logs, sockets, backups, temp files) is
 # owner-only, like the release (`rel/env.sh.eex`).
 export SWARM_USER_UMASK="${SWARM_USER_UMASK:-$(umask)}"
@@ -7,6 +9,7 @@ umask 077
 if [[ $# -eq 1 && "$1" == "--help" ]]; then
   cat <<'HELP'
 ncode development TUI — LIVE · UNSAVED
+dev-only: a weaker tool policy than ncode; not the product path
 
 Usage: scripts/dev/run_live_session.sh
 

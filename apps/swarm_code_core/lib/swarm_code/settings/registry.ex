@@ -171,6 +171,23 @@ defmodule SwarmCode.Settings.Registry do
   @spec fetch!(String.t()) :: Entry.t()
   def fetch!(key), do: Map.fetch!(@by_key, key)
 
+  @doc """
+  The bounds of an integer or duration key as `min..max`, from its entry
+  (C-ARCH-12: the one place the terminal's preferences read them from), or nil
+  for a key without both bounds.
+  """
+  @spec range(String.t()) :: Range.t() | nil
+  def range(key) do
+    case fetch(key) do
+      {:ok, %Entry{min: min, max: max}} when is_integer(min) and is_integer(max) -> min..max
+      _ -> nil
+    end
+  end
+
+  @doc "The default of a key, from its entry (raises for an unknown key)."
+  @spec default(String.t()) :: term()
+  def default(key), do: fetch!(key).default
+
   @doc "The entries stored under a column / json name (`\"max_concurrent_agents\"`)."
   @spec by_stored_name(String.t()) :: [Entry.t()]
   def by_stored_name(name), do: Map.get(@by_stored_name, name, [])

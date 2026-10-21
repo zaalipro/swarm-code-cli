@@ -164,6 +164,8 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
                    {:composer_newline, :composer},
                    {:composer_newline, :field},
                    {:composer_newline, :overlay},
+                   # orbit: Home's composer is the same fixture draft.
+                   {:composer_newline, :home_composer},
                    {:overlay_stop_agent, :overlay},
                    # cli020 D15: Up on a picker's first row stays put.
                    {:picker_previous, :picker},
@@ -173,9 +175,11 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
                  ] ++
                    for(
                      id <- [:layout_narrower, :layout_wider, :layout_reset],
-                     # cli74: global chords never reach the settings layer.
+                     # cli74: global chords never reach the settings layer; orbit:
+                     # nor Home.
                      context <-
-                       Bindings.contexts() -- [:inspector | Bindings.settings_contexts()],
+                       Bindings.contexts() --
+                         [:inspector | Bindings.settings_contexts() ++ Bindings.home_contexts()],
                      do: {id, context}
                    )
                )
@@ -282,11 +286,27 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
     # printable key is only bound in `:settings` (browsing) there.
     settings = Bindings.settings_contexts()
 
-    binding.contexts
+    # orbit: nor does it reach Home's, which has its own grammar; the rows
+    # `HomeBindings.passthrough/0` names are added to Home's contexts, and a
+    # bare printable key types there (composer, list).
+    home = Bindings.home_contexts()
+    home_typing = SwarmCodeCLI.UI.Keymap.HomeBindings.typing_contexts()
+
+    extra =
+      SwarmCodeCLI.UI.Keymap.HomeBindings.passthrough() |> Map.new() |> Map.get(binding.id, [])
+
+    (binding.contexts ++ extra)
     |> Enum.flat_map(fn
-      :global when typing? -> Bindings.contexts() -- (Bindings.typing_contexts() ++ settings)
-      :global -> Bindings.contexts() -- settings
-      context -> if typing? and context in (settings -- [:settings]), do: [], else: [context]
+      :global when typing? ->
+        Bindings.contexts() -- (Bindings.typing_contexts() ++ settings ++ home)
+
+      :global ->
+        Bindings.contexts() -- (settings ++ home)
+
+      context ->
+        if typing? and (context in (settings -- [:settings]) or context in home_typing),
+          do: [],
+          else: [context]
     end)
     |> Enum.uniq()
   end
@@ -433,17 +453,47 @@ defmodule SwarmCodeCLI.UI.BindingsTest do
     }
 
     case context do
-      :composer -> %{state | focus: "composer"}
-      :composer_normal -> %{state | focus: "composer", keymap: :vim, vim: %Vim{mode: :normal}}
-      :composer_visual -> %{state | focus: "composer", keymap: :vim, vim: %Vim{mode: :visual}}
-      :main -> %{state | focus: "main"}
-      :inspector -> %{state | focus: "inspector"}
-      :picker -> %{state | focus: "query"}
-      :dialog -> %{state | focus: "dialog"}
-      :field -> field(state)
-      :hint -> %{state | focus: "composer", hint: SwarmCodeCLI.UI.Reducer.Hint.open(state)}
-      :overlay -> overlay(state)
-      settings -> settings(state, settings)
+      :composer ->
+        %{state | focus: "composer"}
+
+      :composer_normal ->
+        %{state | focus: "composer", keymap: :vim, vim: %Vim{mode: :normal}}
+
+      :composer_visual ->
+        %{state | focus: "composer", keymap: :vim, vim: %Vim{mode: :visual}}
+
+      :main ->
+        %{state | focus: "main"}
+
+      :inspector ->
+        %{state | focus: "inspector"}
+
+      :picker ->
+        %{state | focus: "query"}
+
+      :dialog ->
+        %{state | focus: "dialog"}
+
+      :field ->
+        field(state)
+
+      :hint ->
+        %{state | focus: "composer", hint: SwarmCodeCLI.UI.Reducer.Hint.open(state)}
+
+      :overlay ->
+        overlay(state)
+
+      :home_composer ->
+        %{state | focus: "composer", home: %SwarmCodeCLI.UI.Home{focus: :composer}}
+
+      :home_list ->
+        %{state | focus: "composer", home: %SwarmCodeCLI.UI.Home{focus: :list}}
+
+      :home_map ->
+        %{state | focus: "composer", home: %SwarmCodeCLI.UI.Home{focus: :map}}
+
+      settings ->
+        settings(state, settings)
     end
   end
 

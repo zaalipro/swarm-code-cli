@@ -3,7 +3,7 @@ defmodule SwarmCode.Domain.Engine do
 
   require Logger
   alias SwarmCode.Domain.{Conversations, Providers, Repo, Settings}
-  alias SwarmCode.Domain.Engine.{Prompts, RunServer, RunSupervisor}
+  alias SwarmCode.Domain.Engine.{Prompts, QueueDrain, RunServer, RunSupervisor}
 
   # Spec 50 §2.4: commands whose turn is defined by the command itself, so a
   # judge would have nothing to judge — the workflow author's turn produces a
@@ -55,6 +55,16 @@ defmodule SwarmCode.Domain.Engine do
     )
   end
 
+  @doc """
+  Starts a chat turn (an assistant run) in `conversation` with the user's `text`.
+
+  `opts` are the turn's launch options (`:prompt`, `:goal_id`, `:reply_to_run_id`,
+  `:launched_by_run_id`, `:approval_mode`, `:store_user`, ...). One is only for callers that
+  hold in-memory overrides the database does not (the CLI's `--model` / `NCODE_EFFORT` session
+  overlay): `:conversation_overlay`, a 1-arity function applied to the conversation reloaded
+  for a turn chained behind an automatic compaction, so the continuation keeps the overrides
+  the compactor ran with. The desktop never passes it.
+  """
   @spec start_chat_turn(
           SwarmCode.Domain.Conversations.Conversation.t(),
           String.t(),
@@ -119,7 +129,12 @@ defmodule SwarmCode.Domain.Engine do
     if Conversations.claim_compact_due(conversation.id) do
       compact_then_turn(%{conversation | compact_due: false}, text, attachments, opts)
     else
-      do_start_chat_turn(conversation, text, attachments, opts)
+      do_start_chat_turn(
+        conversation,
+        text,
+        attachments,
+        Keyword.delete(opts, :conversation_overlay)
+      )
     end
   end
 
@@ -237,7 +252,10 @@ defmodule SwarmCode.Domain.Engine do
         consensus_verdicts: opts[:consensus_verdicts],
         assistant_message: assistant,
         # pass 72 F8: nil, or the mode every op of this run is decided in.
-        approval_override: opts[:approval_mode]
+        approval_override: opts[:approval_mode],
+        # pass 77 C-FEAT-12: extra directories the file-reading tools may read
+        # (never written, never persisted); the CLI's `--add-dir`.
+        extra_read_roots: read_roots(opts[:extra_read_roots])
       })
     else
       {:error, :database_busy} = busy -> busy
@@ -259,6 +277,35 @@ defmodule SwarmCode.Domain.Engine do
   # and the override must not be a way around that. The desktop UI does not
   # use it.
   @approval_modes ~w(read_only auto full_access)
+
+  # pass 77 C-FEAT-12: `opts[:extra_read_roots]` — absolute directories that
+  # exist, real-pathed, not "/", at most eight; anything else is dropped.
+  @max_read_roots 8
+
+  @doc false
+  @spec read_roots(term()) :: [String.t()]
+  def read_roots(list) when is_list(list) do
+    list
+    |> Enum.flat_map(&read_root/1)
+    |> Enum.uniq()
+    |> Enum.take(@max_read_roots)
+  end
+
+  def read_roots(_other), do: []
+
+  defp read_root(dir) when is_binary(dir) do
+    with :absolute <- Elixir.Path.type(dir),
+         expanded = Elixir.Path.expand(dir),
+         true <- File.dir?(expanded),
+         {:ok, real} <- SwarmCode.Domain.Tools.Path.real_path(expanded),
+         true <- real != "/" do
+      [real]
+    else
+      _ -> []
+    end
+  end
+
+  defp read_root(_other), do: []
 
   # The project is read only for a mode that needs its trust.
   defp check_approval_override(conversation, mode) when mode in ["auto", "full_access"],
@@ -504,7 +551,13 @@ defmodule SwarmCode.Domain.Engine do
 
       other ->
         Logger.warning("swarm_code: automatic compaction did not start: " <> inspect(other))
-        do_start_chat_turn(conversation, text, attachments, opts)
+
+        do_start_chat_turn(
+          conversation,
+          text,
+          attachments,
+          Keyword.delete(opts, :conversation_overlay)
+        )
     end
   end
 
@@ -574,7 +627,8 @@ defmodule SwarmCode.Domain.Engine do
         Logger.warning("swarm_code: the conversation went away before its chat turn started")
 
       fresh ->
-        opts = Keyword.put(opts, :user_message, user)
+        fresh = apply_overlay(fresh, opts)
+        opts = opts |> Keyword.delete(:conversation_overlay) |> Keyword.put(:user_message, user)
 
         case do_start_chat_turn(fresh, text, attachments, opts) do
           {:ok, _run_id} -> :ok
@@ -582,6 +636,16 @@ defmodule SwarmCode.Domain.Engine do
           {:error, {:start_failed, _reason}} -> :ok
           other -> chain_failed(fresh, text, user, other)
         end
+    end
+  end
+
+  # pass 77 C-BUG-12: a caller that launched with in-memory overrides (the CLI's --model /
+  # NCODE_EFFORT session overlay) gets them on the chained turn too, not just the compactor.
+  # The continuation reloads the conversation from the database, which knows nothing of them.
+  defp apply_overlay(conversation, opts) do
+    case opts[:conversation_overlay] do
+      fun when is_function(fun, 1) -> fun.(conversation)
+      _none -> conversation
     end
   end
 
@@ -661,11 +725,30 @@ defmodule SwarmCode.Domain.Engine do
   @spec cancel_chains() :: :ok
   def cancel_chains, do: cancel_chain_pids([{{{:chain, :_, :_}, :"$1", :_}, [], [:"$1"]}])
 
+  # pass 77 RD-6: the chains of `conversation_id` that belong to `run_ids` — the compaction a
+  # chain waits on is one of those runs, or the run that launched its turn is.
+  defp cancel_chains_of(conversation_id, run_ids) do
+    ids = MapSet.new(run_ids)
+
+    pids =
+      for {compact_run_id, pid, launched_by} <-
+            Registry.select(SwarmCode.Domain.Registry, [
+              {{{:chain, conversation_id, :"$1"}, :"$2", :"$3"}, [], [{{:"$1", :"$2", :"$3"}}]}
+            ]),
+          MapSet.member?(ids, compact_run_id) or MapSet.member?(ids, launched_by),
+          do: pid
+
+    cancel_chain_list(pids)
+  end
+
   @chain_cancel_ms 5_000
 
-  defp cancel_chain_pids(spec) do
+  defp cancel_chain_pids(spec),
+    do: cancel_chain_list(Registry.select(SwarmCode.Domain.Registry, spec))
+
+  defp cancel_chain_list(pids) do
     monitors =
-      for pid <- Registry.select(SwarmCode.Domain.Registry, spec) do
+      for pid <- pids do
         monitor = Process.monitor(pid)
         send(pid, :cancel_chain)
         {pid, monitor}
@@ -1230,51 +1313,28 @@ defmodule SwarmCode.Domain.Engine do
     end
   end
 
+  # pass 77 D-BUG-9: the compensation is the only thing that turns a run that never booted
+  # into an inspectable terminal state, so a busy database must not swallow it. The whole
+  # transaction is retried (`Repo.retry/2` wraps it, never a statement inside it); when even
+  # that is busy, ONE owned task keeps trying with growing pauses (outside any transaction),
+  # and the boot sweep marks the row interrupted if the database never frees up.
+  @compensation_delays_ms [1_000, 2_000, 4_000]
+
   defp compensate_start_failure(args, reason) do
-    content = start_failure_message(args.run.kind, reason)
+    case attempt_compensation(args, reason) do
+      :ok ->
+        :ok
 
-    case Repo.transaction(fn ->
-           run = Conversations.get_run(args.run.id) || args.run
+      {:error, :database_busy} ->
+        Logger.error(
+          "swarm_code could not compensate failed run #{args.run.id}: database busy; " <>
+            "retrying in the background"
+        )
 
-           {:ok, _} =
-             rollback_on_error(
-               Conversations.update_run(run, %{status: "failed", finished_at: DateTime.utc_now()})
-             )
+        Task.Supervisor.start_child(SwarmCode.Domain.TaskSupervisor, fn ->
+          retry_compensation(args, reason, @compensation_delays_ms)
+        end)
 
-           case args[:assistant_message] do
-             %{} = message ->
-               {:ok, _} =
-                 rollback_on_error(Conversations.update_message(message, %{content: content}))
-
-             nil ->
-               # spec 68 T5: targeted query instead of unbounded list_messages.
-               existing =
-                 Conversations.assistant_message_for_run(args.conversation.id, run.id)
-
-               unless existing do
-                 {:ok, _} =
-                   rollback_on_error(
-                     Conversations.create_message(%{
-                       conversation_id: args.conversation.id,
-                       role: "assistant",
-                       content: content,
-                       run_id: run.id
-                     })
-                   )
-               end
-           end
-
-           case Conversations.get_goal(run.goal_id) do
-             %{status: "active"} = goal ->
-               {:ok, _} = rollback_on_error(Conversations.update_goal(goal, %{status: "paused"}))
-
-             _ ->
-               :ok
-           end
-
-           :ok
-         end) do
-      {:ok, :ok} ->
         :ok
 
       {:error, error} ->
@@ -1283,6 +1343,109 @@ defmodule SwarmCode.Domain.Engine do
         )
 
         :ok
+    end
+  end
+
+  defp retry_compensation(args, reason, [delay | rest]) do
+    Process.sleep(delay)
+
+    case attempt_compensation(args, reason) do
+      {:error, :database_busy} when rest != [] ->
+        retry_compensation(args, reason, rest)
+
+      {:error, :database_busy} ->
+        Logger.error(
+          "swarm_code gave up compensating failed run #{args.run.id}: database busy; " <>
+            "the next boot sweep marks the row interrupted"
+        )
+
+      {:error, error} ->
+        Logger.error(
+          "swarm_code could not compensate failed run #{args.run.id}: #{inspect(error)}"
+        )
+
+      :ok ->
+        :ok
+    end
+  end
+
+  defp attempt_compensation(args, reason) do
+    content = start_failure_message(args.run.kind, reason)
+
+    result =
+      Repo.retry(:compensate_start, fn ->
+        Repo.transaction(
+          fn ->
+            run = Conversations.get_run(args.run.id) || args.run
+
+            {:ok, _} =
+              rollback_on_error(
+                Conversations.update_run(run, %{
+                  status: "failed",
+                  finished_at: DateTime.utc_now()
+                })
+              )
+
+            created = write_failure_message(args, run, content)
+
+            case Conversations.get_goal(run.goal_id) do
+              %{status: "active"} = goal ->
+                {:ok, _} = rollback_on_error(Conversations.update_goal(goal, %{status: "paused"}))
+
+              _ ->
+                :ok
+            end
+
+            created
+          end,
+          mode: :immediate
+        )
+      end)
+
+    case result do
+      {:ok, created} ->
+        # The raw insert inside the transaction announces nothing; the message appears once
+        # the transaction has committed.
+        if created,
+          do: Conversations.broadcast(created.conversation_id, {:message_created, created})
+
+        :ok
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  # The failure text on the run's assistant row: the one the turn pre-created, an existing
+  # one, or a new one. Returns the newly inserted message (to announce after the commit) or nil.
+  defp write_failure_message(args, run, content) do
+    case args[:assistant_message] do
+      %{} = message ->
+        {:ok, _} = rollback_on_error(Conversations.update_message(message, %{content: content}))
+        nil
+
+      nil ->
+        # spec 68 T5: targeted query instead of unbounded list_messages.
+        if Conversations.assistant_message_for_run(args.conversation.id, run.id) do
+          nil
+        else
+          # Raw insert: `create_message/1` carries its own `Repo.retry`, which must not run
+          # inside this transaction.
+          {:ok, message} =
+            rollback_on_error(
+              Conversations.insert_message(
+                %{
+                  conversation_id: args.conversation.id,
+                  role: "assistant",
+                  content: content,
+                  run_id: run.id
+                },
+                args.conversation.id
+              )
+            )
+
+          message
+        end
     end
   end
 
@@ -1309,6 +1472,65 @@ defmodule SwarmCode.Domain.Engine do
     case Providers.effective_model(conversation, :swarm) do
       {:ok, model} -> model
       _ -> nil
+    end
+  end
+
+  @doc """
+  pass 77 D-BUG-4: stops an edited turn's run and every run it launched, and folds them.
+
+  Edit & resend superseded only the turn's own run: a swarm or workflow it had started kept
+  running (and kept counting as "a swarm is running", so the resent `start_swarm` was
+  refused). The family is read after the launcher is stopped, so nothing it starts later
+  escapes. `RunServer.stop/1` replies before the process is gone, so each stopped run is
+  awaited (bounded) until it has left the registry.
+  """
+  @family_rounds 3
+
+  @spec stop_superseded_family(String.t(), String.t()) ::
+          {:ok, [String.t()]} | {:error, :database_busy}
+  def stop_superseded_family(conversation_id, run_id) do
+    if run_id in running_runs(conversation_id), do: stop_and_await(run_id)
+    settle_family(conversation_id, run_id, @family_rounds)
+  end
+
+  # RD-6: one round folds the family as it is now, cancels the compaction chains that would
+  # wake into a new turn when their compactor is stopped, and stops the live members. A run
+  # that a stopped one launched in the meantime is in the next round's family; a round that
+  # stopped something is followed by another fold, which takes in the rows the stops wrote —
+  # the "stopped by user" message of a swarm is created after its run is stopped.
+  defp settle_family(conversation_id, run_id, rounds) do
+    with {:ok, family} <- Conversations.supersede_launched(conversation_id, run_id) do
+      cancel_chains_of(conversation_id, [run_id | family])
+      running = running_runs(conversation_id)
+      live = Enum.filter(family, &(&1 in running))
+      Enum.each(live, &stop_and_await/1)
+
+      cond do
+        live == [] -> {:ok, family}
+        rounds > 1 -> settle_family(conversation_id, run_id, rounds - 1)
+        true -> Conversations.supersede_launched(conversation_id, run_id)
+      end
+    end
+  end
+
+  @stop_await_ms 5_000
+
+  defp stop_and_await(run_id) do
+    case Registry.lookup(SwarmCode.Domain.Registry, {:run, run_id}) do
+      [{pid, _value}] ->
+        ref = Process.monitor(pid)
+        stop_run(run_id)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+        after
+          @stop_await_ms ->
+            Process.demonitor(ref, [:flush])
+            :ok
+        end
+
+      [] ->
+        :ok
     end
   end
 
@@ -1675,17 +1897,51 @@ defmodule SwarmCode.Domain.Engine do
 
   # spec 74 ARCHITECTURE-17: the chained turns go first — stopping a
   # compaction is what would wake them.
+  #
+  # pass 77 RD-3: the queue is held while the runs are stopped (`QueueDrain.with_hold/2`): the
+  # finish of a stopped chat does not start the next queued message, a drain that is active is
+  # ended first, and the stop waits for the stopped runs to be gone so no finish is left to
+  # arrive after the hold. The queue itself is untouched.
   @spec stop_all(String.t()) :: :ok
   def stop_all(conversation_id) do
-    cancel_chains(conversation_id)
-    conversation_id |> running_runs() |> Enum.each(&stop_run/1)
+    QueueDrain.with_hold(conversation_id, fn ->
+      cancel_chains(conversation_id)
+      stop_runs_and_await(Enum.filter(live_runs(), &(&1.conversation_id == conversation_id)))
+    end)
   end
 
   @doc "Stops every run of every conversation (the quit path, spec 11 §11)."
   @spec stop_all() :: :ok
   def stop_all do
-    cancel_chains()
-    Enum.each(running_run_ids(), &stop_run/1)
+    QueueDrain.with_hold(:all, fn ->
+      cancel_chains()
+      stop_runs_and_await(live_runs())
+    end)
+  end
+
+  @stopped_runs_ms 3_000
+
+  defp stop_runs_and_await(runs) do
+    monitors =
+      for %{run_id: run_id, pid: pid} <- runs do
+        monitor = Process.monitor(pid)
+        stop_run(run_id)
+        {pid, monitor}
+      end
+
+    deadline = System.monotonic_time(:millisecond) + @stopped_runs_ms
+
+    Enum.each(monitors, fn {pid, monitor} ->
+      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      receive do
+        {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+      after
+        remaining -> Process.demonitor(monitor, [:flush])
+      end
+    end)
+
+    :ok
   end
 
   @spec stop_agent(String.t(), String.t()) :: :ok
@@ -1732,6 +1988,24 @@ defmodule SwarmCode.Domain.Engine do
   @spec running_run_ids() :: [String.t()]
   def running_run_ids do
     Registry.select(SwarmCode.Domain.Registry, [{{{:run, :"$1"}, :_, :_}, [], [:"$1"]}])
+  end
+
+  @doc """
+  Every running run with its `RunServer` pid, conversation and kind (one registry read).
+  pass 77 C-ARCH-11: a caller that monitors runs needs the pids, and this keeps the
+  registry's key/value shape private to the engine.
+  """
+  @spec live_runs() :: [
+          %{run_id: String.t(), pid: pid(), conversation_id: String.t(), kind: String.t()}
+        ]
+  def live_runs do
+    SwarmCode.Domain.Registry
+    |> Registry.select([
+      {{{:run, :"$1"}, :"$2", {:"$3", :"$4"}}, [], [{{:"$1", :"$2", :"$3", :"$4"}}]}
+    ])
+    |> Enum.map(fn {run_id, pid, conversation_id, kind} ->
+      %{run_id: run_id, pid: pid, conversation_id: conversation_id, kind: kind}
+    end)
   end
 
   @doc "Ids of the conversations that have any run going right now (one registry read)."

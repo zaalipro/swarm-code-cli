@@ -19,8 +19,9 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
   def description,
     do:
       "Read a text file from the project and return its plain content, without line numbers. " <>
-        "Files over 5 MB are refused, a directory is an error — use list_dir for those — and a " <>
-        "binary file is refused rather than returned as bytes. The " <>
+        "Files over 5 MB are refused and a directory is an error — use list_dir for those. An " <>
+        "image (PNG, JPEG, GIF, WebP, up to 5 MB) comes back as an image you can look at; any " <>
+        "other binary file is refused rather than returned as bytes. The " <>
         "result is capped at 40 000 characters whatever the line count is, so page through a " <>
         "long file with offset and limit rather than re-reading it whole."
 
@@ -45,7 +46,7 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
 
   @impl true
   def run(args, ctx, progress) do
-    with {:ok, abs} <- Path.resolve(ctx.project_root, args["path"]) do
+    with {:ok, abs} <- Path.resolve_read(ctx, args["path"]) do
       rel = Path.relative(ctx.project_root, abs)
 
       case File.stat(abs) do
@@ -62,12 +63,17 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
           {:error, "file too large: #{rel} (#{size} bytes)"}
 
         {:ok, %{size: size}} ->
-          if binary?(abs) do
-            {:error,
-             "#{rel} is a binary file (#{size} bytes) — use run_command with a decoder " <>
-               "(file, strings, xxd, base64) rather than reading it"}
-          else
-            read_content(abs, rel, size, args, progress)
+          case sniff_head(abs) do
+            {:image, mime} ->
+              read_image(abs, rel, size, mime)
+
+            :binary ->
+              {:error,
+               "#{rel} is a binary file (#{size} bytes) — use run_command with a decoder " <>
+                 "(file, strings, xxd, base64) rather than reading it"}
+
+            :text ->
+              read_content(abs, rel, size, args, progress)
           end
       end
     end
@@ -77,21 +83,82 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
   # UTF-8, and the next provider request died on `Jason.EncodeError` — the turn
   # ended with a crash instead of "that is a binary file". `Grep.binary?/1` has
   # sniffed for a NUL byte since spec 13; nothing called it from here.
-  defp binary?(abs) do
+  # pass 77 D3-1: the same head also tells an image (magic bytes) from other binaries.
+  defp sniff_head(abs) do
     case File.open(abs, [:read, :binary]) do
       {:ok, fd} ->
         try do
           case IO.binread(fd, @sniff) do
-            data when is_binary(data) -> SwarmCode.Domain.Tools.Grep.binary?(data)
-            _eof_or_error -> false
+            data when is_binary(data) ->
+              case SwarmCode.Domain.Attachments.sniff(data) do
+                {:ok, mime} -> {:image, mime}
+                _ -> if SwarmCode.Domain.Tools.Grep.binary?(data), do: :binary, else: :text
+              end
+
+            _eof_or_error ->
+              :text
           end
         after
           File.close(fd)
         end
 
       _error ->
-        false
+        :text
     end
+  end
+
+  # pass 77 D3-1 (D-FEAT-10): an image is attached to the result through the same
+  # process-dictionary hand-off an MCP image uses (`Engine.Operation.run_tool/4`
+  # collects it). The base64 lives only on the agent's in-memory history.
+  defp read_image(abs, rel, size, mime) do
+    # RD-10: the stat above is only a first look. The bytes are read from one
+    # handle with a hard `max_bytes + 1` limit, so a file that grew (or was
+    # replaced) after the stat is refused before anything is base64-encoded.
+    # The mime type and size are taken from the bytes actually read.
+    with {:ok, raw} <- read_bounded(abs, SwarmCode.Domain.Attachments.max_bytes()),
+         {:ok, mime} <- SwarmCode.Domain.Attachments.sniff(raw),
+         data = Base.encode64(raw),
+         true <- readable_image?(mime, raw, data) do
+      SwarmCode.Domain.MCP.put_images([
+        %{mime: mime, data: data, tokens: SwarmCode.Domain.Attachments.image_tokens(raw, mime)}
+      ])
+
+      {:ok,
+       "#{rel} is an image (#{mime}, #{byte_size(raw)} bytes); it is attached to this result so you can look at it."}
+    else
+      _ ->
+        {:error,
+         "#{rel} is an image the model cannot take (#{mime}, #{size} bytes; too large, too many pixels or a damaged file)"}
+    end
+  end
+
+  @doc false
+  # At most `max` bytes of `abs` (one extra byte is read to tell "exactly max"
+  # from "more"); `{:error, :too_large}` when there is more, and never more than
+  # `max + 1` bytes in memory.
+  @spec read_bounded(String.t(), non_neg_integer()) :: {:ok, binary()} | {:error, term()}
+  def read_bounded(abs, max) do
+    opened =
+      File.open(abs, [:read, :binary], fn fd ->
+        case IO.binread(fd, max + 1) do
+          data when is_binary(data) and byte_size(data) <= max -> {:ok, data}
+          data when is_binary(data) -> {:error, :too_large}
+          :eof -> {:error, :empty}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+
+    case opened do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A truncated or corrupt PNG/GIF/JPEG (header unreadable) would be a 400 on every
+  # later request, so only WebP — whose size is not parsed — passes without one.
+  defp readable_image?(mime, raw, data) do
+    SwarmCode.Domain.Attachments.provider_image?(mime, data) and
+      (mime == "image/webp" or SwarmCode.Domain.Attachments.dimensions(raw, mime) != nil)
   end
 
   defp read_content(abs, rel, size, args, progress) do

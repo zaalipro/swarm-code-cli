@@ -28,7 +28,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 | `efforts.workflow` | Workflow effort | global | effort | same as the default effort | next turn | — |
 | `efforts.implementer` | Implementer effort | global | effort | medium (not set) | next turn | — |
 | `session.model` | Model · this conversation | session | model | the chat model | next turn | `--model` |
-| `session.effort` | Effort · this conversation | session | effort | the default effort | next turn | — |
+| `session.effort` | Effort · this conversation | session | effort | the default effort | next turn | `SWARM_EFFORT` |
 | `session.sub_agent_model` | Worker model · this conversation | session | model | the worker model | next spawn | `--model` |
 | `session.sub_agent_effort` | Worker effort · this conversation | session | effort | the worker effort | next spawn | — |
 | `session.validator_model` | Validator model · this conversation | session | model | the main model | desktop | — |
@@ -170,7 +170,7 @@ Override: the environment variable or flag that wins over the stored value. The 
 
 | Key | Label | Scope | Type | Default | Applies | Override |
 |---|---|---|---|---|---|---|
-| `terminal.startup_conversation` | On launch | cli | enum | latest | next launch | `NCODE_CONVERSATION` or `SWARM_CONVERSATION`, `--new/--continue/--resume` |
+| `terminal.startup_conversation` | On launch | cli | enum | dashboard | next launch | `NCODE_CONVERSATION` or `SWARM_CONVERSATION`, `--new/--continue/--resume` |
 | `terminal.companion` | Visual companion | cli | toggle | on | next launch | `NCODE_COMPANION` or `SWARM_COMPANION` |
 
 ## Storage

@@ -27,6 +27,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
           | :detail_window
           | :library_snapshot
           | :conversation_list
+          | :home_overview
           | :agent_detail
           | :settings_snapshot
           | :settings_result
@@ -53,6 +54,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
           | {:feature_query, atom(), binary() | nil, binary() | nil, 1..200, 1..1_048_576}
           | {:feature_command, atom(), atom(), binary() | nil, map()}
           | {:conversation_list, binary() | nil, 1..200, 1..1_048_576}
+          | {:home_overview, 1..8, 1..24, 1..1_048_576}
+          | {:conversation_search, binary(), 1..50, 1..1_048_576}
           | {:conversation_new}
           | {:conversation_open, binary()}
           | {:project_update, :read_only | :auto | :full_access | nil, true | nil}
@@ -89,6 +92,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
             | {:watch, binary()}
             | {:query, :detail}
             | {:conversation, :list | :new | :open}
+            | {:home, :overview | :search}
             | {:project, :update}
             | settings_origin(),
           deadline: integer(),
@@ -334,6 +338,17 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
       (is_nil(cursor) or Intent.valid_id?(cursor)) and is_integer(size) and size in 1..200 and
         is_integer(bytes) and bytes in 1..1_048_576
 
+  # orbit §3.3: Home's overview and its list search (origins `{:home, :overview | :search}`).
+  defp valid_kind?({:home_overview, projects, per_project, bytes}),
+    do:
+      is_integer(projects) and projects in 1..8 and is_integer(per_project) and
+        per_project in 1..24 and is_integer(bytes) and bytes in 1..1_048_576
+
+  defp valid_kind?({:conversation_search, query, limit, bytes}),
+    do:
+      search_query?(query) and is_integer(limit) and limit in 1..50 and is_integer(bytes) and
+        bytes in 1..1_048_576
+
   # pass72 S: one agent's detail for the overlay (origin `{:query, :agent_detail}`).
   defp valid_kind?({:agent_detail, run_id, node_id}), do: uuid?(run_id) and uuid?(node_id)
 
@@ -401,6 +416,7 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
     do: action in Intent.conversation_actions()
 
   defp valid_origin?({:project, :update}), do: true
+  defp valid_origin?({:home, kind}) when kind in [:overview, :search], do: true
 
   defp valid_origin?({:settings, generation, purpose})
        when is_integer(generation) and generation > 0,
@@ -417,6 +433,11 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
   defp valid_response?({:agent_detail, _, _}, response), do: response == :agent_detail
 
   defp valid_response?({:conversation_list, _, _, _}, response),
+    do: response == :conversation_list
+
+  defp valid_response?({:home_overview, _, _, _}, response), do: response == :home_overview
+
+  defp valid_response?({:conversation_search, _, _, _}, response),
     do: response == :conversation_list
 
   defp valid_response?({:settings_query, _}, response), do: response == :settings_snapshot
@@ -448,6 +469,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
   defp correlated_kind_origin?({:conversation_list, _, _, _}, {:conversation, :list}),
     do: true
 
+  defp correlated_kind_origin?({:home_overview, _, _, _}, {:home, :overview}), do: true
+  defp correlated_kind_origin?({:conversation_search, _, _, _}, {:home, :search}), do: true
   defp correlated_kind_origin?({:conversation_new}, {:conversation, :new}), do: true
   defp correlated_kind_origin?({:conversation_open, _}, {:conversation, :open}), do: true
   defp correlated_kind_origin?({:project_update, _, _}, {:project, :update}), do: true
@@ -498,6 +521,13 @@ defmodule SwarmCodeCLI.UI.DataSource.Request do
     do: action in Intent.conversation_actions() and Intent.conversation_action(kind) == action
 
   defp correlated_kind_origin?(_kind, _origin), do: false
+
+  # The same bound the service decodes with (`ServiceRequest`): 1..200 bytes of
+  # valid UTF-8 without control characters.
+  defp search_query?(query),
+    do:
+      is_binary(query) and byte_size(query) in 1..200 and String.valid?(query) and
+        not String.match?(query, ~r/[\x00-\x1F\x7F]/)
 
   defp uuid?(value) when is_binary(value) and byte_size(value) == 36,
     do: Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/, value)

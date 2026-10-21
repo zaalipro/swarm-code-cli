@@ -42,6 +42,10 @@ defmodule SwarmCode.Daemon.Service.Settings.Cli021C1FetchModelsTest do
          source_epoch: epoch}
       )
 
+    # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+    # delta of its own: let it land before a test counts deltas.
+    SwarmCode.Test.C020Backend.settle_slash_extras(backend)
+
     on_exit(fn -> Engine.stop_all(data.conversation.id) end)
 
     socket_dir = Path.join(fx.dir, "sock")

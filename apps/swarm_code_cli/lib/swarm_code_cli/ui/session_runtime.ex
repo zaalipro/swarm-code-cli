@@ -1017,8 +1017,19 @@ defmodule SwarmCodeCLI.UI.SessionRuntime do
   end
 
   # cli020 D4: pbcopy took it; otherwise the terminal is asked instead.
-  defp job_result(state, {:copy, lines, _text}, {:ok, {:ok, 0, _}}),
-    do: copy_notice(state, {:copied, lines})
+  # orbit (lane U issue 16): Home already said `Copied: <this text> — …`, which
+  # names the command to run; a confirmed copy keeps those words.
+  defp job_result(state, {:copy, lines, text}, {:ok, {:ok, 0, _}}) do
+    case state.ui.notice do
+      {:command_feedback, "Copied: " <> rest = words} ->
+        if String.starts_with?(rest, text <> " "),
+          do: runtime_notice(%{state | copy: nil}, words),
+          else: copy_notice(state, {:copied, lines})
+
+      _ ->
+        copy_notice(state, {:copied, lines})
+    end
+  end
 
   defp job_result(state, {:copy, lines, text}, _result), do: osc_copy(state, text, lines)
 

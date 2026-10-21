@@ -969,37 +969,8 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
     end
   end
 
-  defp request_capability(%{"op" => "query"}), do: :query
-  defp request_capability(%{"op" => "feature.query"}), do: :query
-  defp request_capability(%{"op" => "agent.detail"}), do: :query
-  defp request_capability(%{"op" => "feature.command"}), do: :feature_command
-  defp request_capability(%{"op" => "question.answer"}), do: :question_answer
-  defp request_capability(%{"op" => "detail"}), do: :detail
-  defp request_capability(%{"op" => "dispatch"}), do: :dispatch_send
-  defp request_capability(%{"op" => "run.control", "action" => "pause"}), do: :run_pause
-  defp request_capability(%{"op" => "run.control", "action" => "continue"}), do: :run_continue
-  defp request_capability(%{"op" => "run.control", "action" => "stop"}), do: :run_stop
-  defp request_capability(%{"op" => "run.steer"}), do: :run_steer
-  defp request_capability(%{"op" => "approval.resolve"}), do: :approval_resolve
-  defp request_capability(%{"op" => "conversation.open"}), do: :conversation_open
-  defp request_capability(%{"op" => "conversation.list"}), do: :conversation_list
-  defp request_capability(%{"op" => "conversation.new"}), do: :conversation_new
-  defp request_capability(%{"op" => "mark_seen"}), do: :mark_seen
-  defp request_capability(%{"op" => "project.update"}), do: :project_update
-  # pass74 §3.4.1: both settings ops need the `settings` grant.
-  defp request_capability(%{"op" => "settings.query"}), do: :settings
-  defp request_capability(%{"op" => "settings.command"}), do: :settings
-  # cli020 C1.
-  defp request_capability(%{"op" => op}) when op in ["queue.resume", "queue.edit"], do: :queue
-  defp request_capability(%{"op" => "run.retry"}), do: :run_retry
-  defp request_capability(%{"op" => "attachment.slot"}), do: :attachment
-  defp request_capability(%{"op" => "attachment.attach_slot"}), do: :attachment
-  defp request_capability(%{"op" => "shell.run"}), do: :shell
-  defp request_capability(%{"op" => "shell.stop"}), do: :shell
-  defp request_capability(%{"op" => "rewind.turns"}), do: :rewind
-  defp request_capability(%{"op" => "rewind.apply"}), do: :rewind
-  defp request_capability(%{"op" => "history.search"}), do: :history
-  defp request_capability(_), do: nil
+  # C-ARCH-9: the daemon's own table (`ServiceRequest.capability/2`).
+  defp request_capability(body), do: ServiceRequest.capability_for_wire(body)
 
   defp expire_requests(state) do
     now = now(state)
@@ -1111,6 +1082,9 @@ defmodule SwarmCodeCLI.UI.DataSource.Daemon do
 
         :conversation_list ->
           struct!(DTO.ConversationList, attrs)
+
+        :home_overview ->
+          struct!(DTO.HomeOverview, attrs)
 
         :agent_detail ->
           struct!(DTO.AgentDetail, attrs)

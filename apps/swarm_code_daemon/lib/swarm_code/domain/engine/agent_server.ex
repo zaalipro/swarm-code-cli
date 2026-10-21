@@ -601,6 +601,7 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
     # from the summary, which is the turn that would otherwise have lost the
     # beginning of the conversation silently.
     state = maybe_auto_compact(state, budget)
+    broadcast_context_usage(state, budget)
 
     # spec 67 T24 (G26): and this turn's own history is summarised in place when
     # it crosses the same threshold — the conversation-level path above only
@@ -821,10 +822,34 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
   end
 
   defp auto_compact?(state, budget) do
-    Map.get(state, :role) == "assistant" and Map.get(state, :depth, 0) == 0 and
-      Map.get(state, :run_kind) == "chat" and is_binary(Map.get(state, :conversation_id)) and
-      gap_elapsed?(state) and
+    root_chat_agent?(state) and gap_elapsed?(state) and
       context_tokens(state) > budget * @auto_compact_at
+  end
+
+  defp root_chat_agent?(state) do
+    Map.get(state, :role) == "assistant" and Map.get(state, :depth, 0) == 0 and
+      Map.get(state, :run_kind) == "chat" and is_binary(Map.get(state, :conversation_id))
+  end
+
+  # pass 77 D-FEAT-9: the composer's context meter. How full the root chat
+  # agent's context is before this think step, against the same budget and the
+  # same threshold `auto_compact?/2` judges (0.9, not the 80 % the T14 comment
+  # still says). One typed event per think step, scoped to the conversation;
+  # workers and nested runs emit none.
+  defp broadcast_context_usage(state, budget) do
+    if root_chat_agent?(state) do
+      SwarmCode.Domain.Engine.Events.broadcast(
+        state.conversation_id,
+        {:context_usage, state.run_id,
+         %{
+           used: context_tokens(state),
+           budget: budget,
+           compact_at: round(budget * @auto_compact_at)
+         }}
+      )
+    end
+
+    :ok
   end
 
   # spec 67 T11 (G27): `result.usage.input` is what the provider charged for the
@@ -1152,6 +1177,8 @@ defmodule SwarmCode.Domain.Engine.AgentServer do
       approval_mode: state.approval_mode,
       # pass 72 F8: the run's approval override, nil for every desktop run.
       approval_override: Map.get(state, :approval_override),
+      # pass 77 C-FEAT-12: read-only roots beyond the project (`Tools.Path.resolve_read/2`).
+      extra_read_roots: Map.get(state, :extra_read_roots, []),
       project_id: Map.get(state, :project_id),
       # Spec 39 §1.1: the run kind, so a research op keeps its in-memory mode.
       run_kind: Map.get(state, :run_kind),

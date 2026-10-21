@@ -47,6 +47,10 @@ defmodule SwarmCode.Domain.LSP.Language do
     "zig" => "zls"
   }
 
+  @doc "The default server command of every language that has one (Settings → Limits shows them)."
+  @spec defaults() :: %{String.t() => String.t()}
+  def defaults, do: @defaults
+
   @doc "The language ID for a file path, or nil."
   @spec detect(String.t()) :: String.t() | nil
   def detect(path) do

@@ -74,6 +74,10 @@ defmodule SwarmCode.Daemon.Service.Pass76ElsewhereTest do
          source_epoch: Ecto.UUID.generate()}
       )
 
+    # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+    # delta of its own: let it land before a test counts deltas.
+    SwarmCode.Test.C020Backend.settle_slash_extras(backend)
+
     %{backend: backend, project: project, shown: shown, other: other, third: third}
   end
 

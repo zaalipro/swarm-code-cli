@@ -22,6 +22,7 @@ defmodule SwarmCode.Daemon.Service.Elsewhere do
   """
   import Ecto.Query, only: [from: 2]
 
+  alias SwarmCode.Daemon.Service.LiveRuns
   alias SwarmCode.Domain.Conversations.Conversation
   alias SwarmCode.Domain.Engine.Questions
 
@@ -40,7 +41,7 @@ defmodule SwarmCode.Daemon.Service.Elsewhere do
   @doc "The facts of the session; `live` and `waiting` leave out `current`'s conversation."
   @spec facts(binary() | nil) :: facts()
   def facts(current) do
-    runs = Registry.select(SwarmCode.Domain.Registry, [{{{:run, :_}, :_, :"$1"}, [], [:"$1"]}])
+    runs = Enum.map(LiveRuns.all(), &{&1.conversation_id, &1.kind})
 
     live = Enum.count(runs, &match?({id, _kind} when is_binary(id) and id != current, &1))
 

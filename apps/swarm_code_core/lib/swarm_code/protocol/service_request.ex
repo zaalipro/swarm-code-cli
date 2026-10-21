@@ -47,6 +47,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
           | :shell_run
           | :attachment_attach
           | :attachment_slot
+          | :home_overview
+          | :conversation_search
 
   @type t :: %__MODULE__{
           operation: operation(),
@@ -62,6 +64,75 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   @features ~w(workflows research schedules settings usage changes checkpoints mcp memory files)
   @request_keys [:__struct__, :operation, :params, :timeout_ms]
   @scope_keys [:__struct__, :kind, :id, :generation]
+
+  # C-ARCH-9: the capability each operation needs, in one place. The daemon's
+  # connection checks it against the grants of the connection; the terminal
+  # client checks the same table before it writes a request, so the two sides
+  # cannot drift apart. `run_control` depends on its action.
+  @capabilities %{
+    query: :query,
+    feature_query: :query,
+    agent_detail: :query,
+    detail: :detail,
+    feature_command: :feature_command,
+    question_answer: :question_answer,
+    dispatch_send: :dispatch_send,
+    run_steer: :run_steer,
+    approval_resolve: :approval_resolve,
+    # pass74 S1-5: both settings operations ride the `settings` capability.
+    settings_query: :settings,
+    settings_command: :settings,
+    # cli020 C1: the conversation's queue.
+    queue_resume: :queue,
+    queue_edit: :queue,
+    run_retry: :run_retry,
+    history_search: :history,
+    # orbit S4: Home's overview and the conversation search.
+    home_overview: :home,
+    conversation_search: :home,
+    rewind_apply: :rewind,
+    rewind_turns: :rewind,
+    shell_stop: :shell,
+    shell_run: :shell,
+    attachment_attach: :attachment,
+    attachment_slot: :attachment,
+    watch: :watch,
+    ack: :watch,
+    unwatch: :watch,
+    resync: :watch,
+    conversation_open: :conversation_open,
+    conversation_list: :conversation_list,
+    conversation_new: :conversation_new,
+    mark_seen: :mark_seen,
+    project_update: :project_update
+  }
+  @run_control_capabilities %{
+    "pause" => :run_pause,
+    "continue" => :run_continue,
+    "stop" => :run_stop
+  }
+
+  @doc """
+  The capability `operation` needs, given its `params` (`run_control` depends
+  on its `"action"`), or nil for an operation that needs none this table knows
+  (`cancel`, an unknown action): a connection grants nothing for nil.
+  """
+  @spec capability(atom(), map()) :: atom() | nil
+  def capability(:run_control, params) when is_map(params),
+    do: Map.get(@run_control_capabilities, params["action"])
+
+  def capability(operation, _params) when is_atom(operation),
+    do: Map.get(@capabilities, operation)
+
+  @doc """
+  `capability/2` for a request as it goes on the wire (`"op"` and the params
+  beside it).
+  """
+  @spec capability_for_wire(term()) :: atom() | nil
+  def capability_for_wire(%{"op" => op} = wire) when is_binary(op),
+    do: op |> decode_operation() |> capability(wire)
+
+  def capability_for_wire(_wire), do: nil
 
   @doc "Validate a parsed service request body in its typed envelope scope."
   @spec decode(term(), Scope.t() | nil) :: {:ok, t()} | {:error, Error.t()}
@@ -149,6 +220,10 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp decode_operation("rewind.apply"), do: :rewind_apply
   # cli020 C20: the prompt history (Ctrl-R).
   defp decode_operation("history.search"), do: :history_search
+  # orbit S1: Home's bounded cross-project overview and the project-filtered
+  # conversation search (both reads, capability `home`).
+  defp decode_operation("home.overview"), do: :home_overview
+  defp decode_operation("conversation.search"), do: :conversation_search
   defp decode_operation(_operation), do: nil
 
   defp encode_operation(:query), do: "query"
@@ -183,6 +258,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp encode_operation(:rewind_turns), do: "rewind.turns"
   defp encode_operation(:rewind_apply), do: "rewind.apply"
   defp encode_operation(:history_search), do: "history.search"
+  defp encode_operation(:home_overview), do: "home.overview"
+  defp encode_operation(:conversation_search), do: "conversation.search"
   defp encode_operation(_operation), do: nil
 
   defp param_keys(:query), do: ~w(slot cursor direction page_size byte_limit)
@@ -230,6 +307,8 @@ defmodule SwarmCode.Protocol.ServiceRequest do
   defp param_keys(:rewind_turns), do: []
   defp param_keys(:rewind_apply), do: ~w(message_id scope)
   defp param_keys(:history_search), do: ~w(query)
+  defp param_keys(:home_overview), do: ~w(projects per_project byte_limit)
+  defp param_keys(:conversation_search), do: ~w(query limit byte_limit)
   defp param_keys(_operation), do: []
 
   defp valid_params?(:query, params, scope) do
@@ -390,6 +469,21 @@ defmodule SwarmCode.Protocol.ServiceRequest do
         (is_binary(params["query"]) and byte_size(params["query"]) <= 200 and
            String.valid?(params["query"]))
 
+  # orbit S1: both are reads in the shell watch's scope (like conversation.list);
+  # neither names a project: the service uses its admitted one.
+  defp valid_params?(:home_overview, params, scope) do
+    scope.kind in [:global, :project, :conversation] and
+      bounded_integer?(params["projects"], 1, 8) and
+      bounded_integer?(params["per_project"], 1, 24) and
+      bounded_integer?(params["byte_limit"], 1, 1_048_576)
+  end
+
+  defp valid_params?(:conversation_search, params, scope) do
+    scope.kind in [:global, :project, :conversation] and search_query?(params["query"]) and
+      bounded_integer?(params["limit"], 1, 50) and
+      bounded_integer?(params["byte_limit"], 1, 1_048_576)
+  end
+
   defp valid_params?(:queue_resume, _params, scope), do: scope.kind == :conversation
 
   defp valid_params?(:queue_edit, params, scope) do
@@ -400,6 +494,11 @@ defmodule SwarmCode.Protocol.ServiceRequest do
         _ -> false
       end
   end
+
+  defp search_query?(query),
+    do:
+      is_binary(query) and byte_size(query) in 1..200 and String.valid?(query) and
+        not String.match?(query, ~r/[\x00-\x1F\x7F]/)
 
   defp json_attributes?(_, depth) when depth > 6, do: false
 

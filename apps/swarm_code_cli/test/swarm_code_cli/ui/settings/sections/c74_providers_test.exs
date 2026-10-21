@@ -313,7 +313,9 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
     end
 
     test "fetch shows the exact difference; a applies all, + adds the new ones" do
-      {_s, id, task, rows} = T.run(I.seed(), "provider.fetch_models", %{"id" => @ids.deepseek})
+      {_s, id, task, rows} =
+        T.run(I.seed(), "provider.fetch_models", %{"id" => @ids.deepseek}, %{"apply" => "none"})
+
       c = record_ctx(@ids.deepseek) |> T.put(id, task, rows)
       page = record_rows(c, @ids.deepseek)
       assert text(row(page, "item:diff:deepseek-v4-lite").value) == "+ deepseek-v4-lite  new"
@@ -350,7 +352,8 @@ defmodule SwarmCodeCLI.UI.Settings.Sections.C74ProvidersTest do
     test "a truncated fetch offers only adding" do
       {_s, id, task, rows} =
         T.run(I.seed(), "provider.fetch_models", %{"id" => @ids.ollama}, %{
-          "listed" => for(i <- 1..2_100, do: "m#{i}")
+          "listed" => for(i <- 1..2_100, do: "m#{i}"),
+          "apply" => "none"
         })
 
       c = record_ctx(@ids.ollama) |> T.put(id, task, rows)

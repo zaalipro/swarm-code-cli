@@ -219,7 +219,8 @@ defmodule SwarmCode.Domain.Engine.Prompts do
 
       _stale ->
         block = environment(project)
-        SwarmCode.Domain.Cache.put(key, {block, now})
+        # pass 77 D-ARCH-7: derived, so byte-bounded and swept (freshness stays `@env_ttl_ms`).
+        SwarmCode.Domain.Cache.put_derived(key, {block, now}, 60_000)
         block
     end
   end
@@ -234,6 +235,12 @@ defmodule SwarmCode.Domain.Engine.Prompts do
   """
   @spec environment(Project.t()) :: String.t()
   def environment(%Project{} = project) do
+    # pass 77 C-FEAT-4: `"sandbox": "workspace-write"` in config.json confines
+    # the model's commands (macOS Seatbelt); without it nothing is confined.
+    sandboxed? =
+      SwarmCode.Domain.Tools.Sandbox.mode(%{project_root: project.root_path}) == :workspace_write and
+        SwarmCode.Domain.Tools.Sandbox.available?()
+
     elements =
       [
         {"cwd", project.root_path},
@@ -242,9 +249,13 @@ defmodule SwarmCode.Domain.Engine.Prompts do
         {"current_date", Date.to_iso8601(Date.utc_today())},
         {"git_branch", branch(project.root_path)},
         {"approval_mode", project.approval_mode},
-        # T8 (the OS sandbox) was dropped by the owner: commands are not
-        # confined, so the honest answer is that nothing is.
-        {"writable", "unsandboxed"}
+        {"writable", if(sandboxed?, do: "project and temp folders only", else: "unsandboxed")},
+        {"sandbox",
+         if(sandboxed?,
+           do:
+             "Commands run in a sandbox: writes outside the project and temp folders fail, " <>
+               "and the network is off (on with Full access)."
+         )}
       ]
       |> Enum.reject(fn {_name, value} -> value in [nil, ""] end)
       |> Enum.map_join("\n", fn {name, value} -> "  <#{name}>#{value}</#{name}>" end)

@@ -318,9 +318,54 @@ defmodule SwarmCodeCLI.UI.DataSource.C74SettingsIntegrationsTest do
     refute inspect(state) =~ @canary
   end
 
-  test "fetch shows the Appendix A difference and writes nothing until applied" do
+  # C-ARCH-13: a fetch saves by default, like the service (cli021 C1).
+  test "a fetch replaces the list by default and says it saved" do
     state = I.seed()
     {task, state} = started(state, cmd("provider.fetch_models", %{"id" => @ids.deepseek}))
+    {{:done, summary, _rows}, state} = I.run_task(state, task)
+
+    assert summary["saved"] == true
+    assert summary["stored"] == 2
+    assert summary["words"] == "2 models · 1 new · 1 removed"
+
+    assert record!(state, "provider", @ids.deepseek)["models"] == [
+             "deepseek-v4-pro",
+             "deepseek-v4-lite"
+           ]
+  end
+
+  test "apply add keeps a hand-added model, and apply none writes nothing" do
+    state = I.seed()
+    add = cmd("provider.fetch_models", %{"id" => @ids.deepseek}, %{"apply" => "add"})
+    {task, added} = started(state, add)
+    {{:done, summary, _rows}, added} = I.run_task(added, task)
+
+    assert summary["saved"] == true
+    assert summary["stored"] == 3
+    # An add never removes: its words do not count the removed model.
+    assert summary["words"] == "2 models · 1 new"
+
+    assert record!(added, "provider", @ids.deepseek)["models"] == [
+             "deepseek-v4-pro",
+             "deepseek-v4-flash",
+             "deepseek-v4-lite"
+           ]
+
+    none = cmd("provider.fetch_models", %{"id" => @ids.deepseek}, %{"apply" => "none"})
+    {task, untouched} = started(state, none)
+    {{:done, summary, _rows}, untouched} = I.run_task(untouched, task)
+
+    assert summary["saved"] == false
+    refute Map.has_key?(summary, "stored")
+
+    assert record!(untouched, "provider", @ids.deepseek)["models"] ==
+             record!(state, "provider", @ids.deepseek)["models"]
+  end
+
+  test "fetch shows the Appendix A difference and writes nothing until applied" do
+    state = I.seed()
+    none = cmd("provider.fetch_models", %{"id" => @ids.deepseek}, %{"apply" => "none"})
+    {task, state} = started(state, none)
     {{:done, summary, rows}, state} = I.run_task(state, task)
     assert summary["added"] == 1 and summary["removed"] == 1 and summary["unchanged"] == 1
 
@@ -368,7 +413,7 @@ defmodule SwarmCodeCLI.UI.DataSource.C74SettingsIntegrationsTest do
     state = I.seed()
     {task, state} = started(state, cmd("provider.fetch_models", %{"id" => @ids.ollama}))
     listed = for i <- 1..2_500, do: "m#{i}"
-    task = put_in(task["attributes"], %{"listed" => listed})
+    task = put_in(task["attributes"], %{"listed" => listed, "apply" => "none"})
     {{:done, summary, _rows}, state} = I.run_task(state, task)
     assert summary["truncated"] and summary["listed"] == 2_500
 

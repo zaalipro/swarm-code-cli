@@ -95,6 +95,67 @@ defmodule SwarmCode.Domain.Tools.Path do
     end
   end
 
+  @doc """
+  pass 77 C-FEAT-12: `resolve/2` for a tool that only **reads**. The project root
+  answers first; an absolute path outside it is tried against each of the run's
+  extra read-only roots (`ctx[:extra_read_roots]`, set by the CLI's `--add-dir`
+  through `Engine.start_chat_turn/4`). A relative path never reaches an extra
+  root, and nothing but the exact roots widens: `../` escapes and other
+  absolute paths keep the project-root error. Writing tools stay on
+  `resolve_write/2`.
+  """
+  @spec resolve_read(map(), String.t() | nil) :: {:ok, String.t()} | {:error, String.t()}
+  def resolve_read(ctx, path) do
+    case resolve(ctx.project_root, path) do
+      {:ok, _abs} = ok ->
+        ok
+
+      {:error, _message} = error ->
+        if Elixir.Path.type(to_string(path || "")) == :absolute do
+          Enum.find_value(List.wrap(ctx[:extra_read_roots]), error, &resolve_extra(&1, path))
+        else
+          error
+        end
+    end
+  end
+
+  # The roots are stored real-pathed (`Engine.read_roots/1`), so `/tmp/x` — which
+  # is `/private/tmp/x` on macOS — is tried by its real path as well; `resolve/2`
+  # then confines that against the root.
+  defp resolve_extra(root, path) do
+    case resolve(root, path) do
+      {:ok, _abs} = ok ->
+        ok
+
+      {:error, _message} ->
+        with {:ok, real} <- real_path(path),
+             {:ok, _abs} = ok <- resolve(root, real) do
+          ok
+        else
+          _ -> nil
+        end
+    end
+  end
+
+  @doc """
+  The root a path from `resolve_read/2` lies in: the project root, or the extra
+  read-only root that accepted it. Walks start from it; names shown to the model
+  stay relative to the project root, so a path outside it prints in full.
+  """
+  @spec read_root(map(), String.t()) :: String.t()
+  def read_root(ctx, abs) do
+    project = Elixir.Path.expand(ctx.project_root)
+
+    if inside?(project, abs) do
+      project
+    else
+      ctx[:extra_read_roots]
+      |> List.wrap()
+      |> Enum.map(&Elixir.Path.expand/1)
+      |> Enum.find(project, &inside?(&1, abs))
+    end
+  end
+
   def resolve(root, path) do
     path = to_string(path || "")
     root = Elixir.Path.expand(root)

@@ -11,11 +11,22 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
   the undoable `replace_draft` (both/conversation) and says what came back.
   `/undo` asks the same confirm for the newest turn.
 
+  C-BUG-17: the answer goes to the composer that asked, not to whichever one
+  is in view when it arrives (`state.rewind` keeps that draft's key and its
+  payload identity). A draft edited meanwhile is kept: the old prompt goes to
+  the stash when that is free, else it stays in the transcript.
+
+  Review 1019 RC-10: `state.rewind` is `nil` or a map `request_id => origin` of
+  the requests in flight (`%{mode: :pick | :undo}` for `rewind.turns`,
+  `%{mode: :apply, turn:, scope:, key:, identity:}` for `rewind.apply`), so
+  overlapping requests each answer to their own origin, and an answer or a
+  refusal clears only its own.
+
   The layers open only once the client can draw them (`LayerSpec.validate/1`
   knows them; lane E adds the drawing).
   """
 
-  alias SwarmCodeCLI.UI.State
+  alias SwarmCodeCLI.UI.{Draft, Drafts, State}
   alias SwarmCodeCLI.UI.Reducer.Remote
 
   @escape_ms 600
@@ -28,7 +39,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
 
       conversation ->
         {next, effects} = Remote.send(state, {:rewind_turns, conversation}, :rewind)
-        if effects == [], do: {next, []}, else: {%{next | rewind: %{mode: mode}}, effects}
+        {remember(next, effects, %{mode: mode}), effects}
     end
   end
 
@@ -56,20 +67,42 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
   defp draft_empty?(state), do: String.trim(SwarmCodeCLI.UI.Keymap.draft_text(state)) == ""
 
   @doc "The turns' answer (newest first)."
-  def turns_answer(state, _request, payload) do
+  def turns_answer(state, request, payload) do
     turns = payload |> List.wrap() |> Enum.flat_map(&turn/1) |> Enum.take(200)
-    mode = get_in(state.rewind || %{}, [:mode]) || :pick
+    {origin, state} = forget(state, request)
+    mode = Map.get(origin, :mode) || :pick
 
     cond do
       turns == [] ->
-        {%{state | rewind: nil, notice: {:command_feedback, "Nothing to rewind yet."}}, []}
+        {%{state | notice: {:command_feedback, "Nothing to rewind yet."}}, []}
 
       mode == :undo ->
-        open(%{state | rewind: nil}, {:rewind_confirm, hd(turns)})
+        open(state, {:rewind_confirm, hd(turns)})
 
       true ->
-        open(%{state | rewind: nil}, {:rewind, %{turns: turns, selected: 0}})
+        open(state, {:rewind, %{turns: turns, selected: 0}})
     end
+  end
+
+  # The origin of the request just sent (its id is the one in `effects`). Only the origins of
+  # requests still in flight are kept, so a request that never answers does not pile up.
+  defp remember(state, [{:command, %{request_id: id}}], origin) do
+    kept = Map.take(state.rewind || %{}, Map.keys(state.requests))
+    %{state | rewind: Map.put(kept, id, origin)}
+  end
+
+  defp remember(state, _effects, _origin), do: state
+
+  # `{origin, state}` of `request`, the state without it (`nil` when none is left).
+  defp forget(state, request) do
+    {origin, rest} = Map.pop(state.rewind || %{}, Map.get(request, :request_id))
+    {origin || %{}, %{state | rewind: if(rest == %{}, do: nil, else: rest)}}
+  end
+
+  @doc "A refused or expired rewind request: its remembered origin goes, the others stay."
+  def refused(state, request) do
+    {_origin, state} = forget(state, request)
+    state
   end
 
   defp turn(row) when is_map(row) do
@@ -125,24 +158,27 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
     conversation = Remote.conversation(state)
     state = %{state | layers: rest}
 
+    # C-BUG-17: the composer that asked, and what it held, read before the send.
+    key = State.current_draft_key(state)
+    identity = key && Draft.payload_identity(Drafts.fetch(state.drafts, key))
+
     {next, effects} =
       Remote.send(state, {:rewind_apply, conversation, turn.message_id, scope}, :rewind)
 
-    if effects == [],
-      do: {next, []},
-      else: {%{next | rewind: %{mode: :apply, turn: turn, scope: scope}}, effects}
+    origin = %{mode: :apply, turn: turn, scope: scope, key: key, identity: identity}
+    {remember(next, effects, origin), effects}
   end
 
   def apply(state, _scope), do: {state, []}
 
   @doc "The answer of `rewind.apply`."
-  def apply_answer(state, %{kind: {:rewind_apply, _, _, scope}}, payload) do
-    turn = get_in(state.rewind || %{}, [:turn]) || %{turn: "?"}
+  def apply_answer(state, %{kind: {:rewind_apply, _, _, scope}} = request, payload) do
+    {origin, state} = forget(state, request)
+    turn = Map.get(origin, :turn) || %{turn: "?"}
     restored = count(Remote.field(payload, :restored))
     skipped = count(Remote.field(payload, :skipped))
     text = Remote.field(payload, :text)
     skipped_words = if skipped > 0, do: " · #{skipped} skipped (see the transcript)", else: ""
-    state = %{state | rewind: nil}
 
     case scope do
       :files ->
@@ -150,22 +186,44 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
         {%{state | notice: {:command_feedback, words}}, []}
 
       _ ->
-        {state, effects} =
-          case {State.current_draft_key(state), text} do
-            {key, text} when key != nil and is_binary(text) ->
-              SwarmCodeCLI.UI.Reducer.replace_text(state, key, text)
-
-            _ ->
-              {state, []}
-          end
+        {state, effects, placed} = place_prompt(state, origin, text)
 
         words =
           "Rewound to turn #{turn.turn} · #{files(restored)} restored · " <>
-            "edit and press Enter to resend" <> skipped_words
+            placed_words(placed) <> skipped_words
 
         {%{state | notice: {:command_feedback, words}}, effects}
     end
   end
+
+  # The prompt goes to the composer that asked, if it still holds what it held.
+  # An edited draft is never overwritten: the prompt waits in the stash when it
+  # is free, else only the transcript has it. No origin, no draft change.
+  defp place_prompt(state, %{key: key, identity: identity}, text)
+       when key != nil and is_binary(text) do
+    cond do
+      Draft.payload_identity(Drafts.fetch(state.drafts, key)) == identity ->
+        {state, effects} = SwarmCodeCLI.UI.Reducer.replace_text(state, key, text)
+        {state, effects, :filled}
+
+      Map.has_key?(state.stashes, key) ->
+        {state, [], :kept_in_transcript}
+
+      true ->
+        {%{state | stashes: Map.put(state.stashes, key, text)}, [], :kept_in_stash}
+    end
+  end
+
+  defp place_prompt(state, _origin, _text), do: {state, [], :none}
+
+  defp placed_words(placed) when placed in [:filled, :none],
+    do: "edit and press Enter to resend"
+
+  defp placed_words(:kept_in_stash),
+    do: "your draft was kept; the old prompt is in the stash (Ctrl-P Restore stash)"
+
+  defp placed_words(:kept_in_transcript),
+    do: "your draft was kept; the old prompt is in the transcript"
 
   defp count(n) when is_integer(n), do: n
   defp count(list) when is_list(list), do: length(list)

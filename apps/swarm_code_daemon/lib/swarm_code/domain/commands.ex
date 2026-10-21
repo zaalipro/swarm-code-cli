@@ -3,9 +3,17 @@ defmodule SwarmCode.Domain.Commands do
   Custom slash commands stored as Markdown files.
 
   Project commands live in `<root>/.swarm_code/commands/*.md`, global ones under
-  the config dir. A file is optional front matter between `---` lines
-  (`description`, `swarm`, `mode`) plus the message template; `$ARGUMENTS` is
-  replaced by whatever the user typed after the command.
+  the config dir, and a few ship with ncode (`priv/commands/*.md`, scope
+  `:builtin`, e.g. `/init`). The order is project, then global, then built-in:
+  a file of the same name in an earlier tier overrides the later one. A file is
+  optional front matter between `---` lines (`description`, `swarm`, `mode`)
+  plus the message template.
+
+  In the template, `$ARGUMENTS` is replaced by everything the user typed after
+  the command, and `$1` to `$9` by the words of it one by one (a "quoted phrase"
+  or 'quoted phrase' is one word; a missing word is empty; `$10` is not
+  positional). One pass fills all of them, so text the user typed is never
+  expanded again (pass 77 D3-3).
   """
 
   alias SwarmCode.Domain.Projects.Workspace
@@ -13,7 +21,7 @@ defmodule SwarmCode.Domain.Commands do
   @type t :: %{
           name: String.t(),
           description: String.t(),
-          scope: :project | :global,
+          scope: :project | :global | :builtin,
           swarm: boolean(),
           mode: String.t() | nil,
           body: String.t(),
@@ -28,9 +36,16 @@ defmodule SwarmCode.Domain.Commands do
   Write the prompt the agent should receive here.
 
   Arguments typed after the command land here: $ARGUMENTS
+
+  Or take them one by one: $1 is the first word, $2 the second ("quote a phrase
+  to keep it as one word"). A missing one is left empty.
   """
 
-  @doc "Every command visible to `project`; project files override global ones."
+  @doc "The commands that ship with ncode (pass 77 D3-3)."
+  @spec builtin_dir() :: String.t()
+  def builtin_dir, do: Path.join(:code.priv_dir(:swarm_code_daemon), "commands")
+
+  @doc "Every command visible to `project`; project overrides global, global overrides built-in."
   @spec list(map() | nil) :: [t()]
   def list(project \\ nil) do
     global = read_dir(Workspace.global_commands_dir(), :global)
@@ -41,7 +56,7 @@ defmodule SwarmCode.Domain.Commands do
         _ -> []
       end
 
-    (project_commands ++ global)
+    (project_commands ++ global ++ read_dir(builtin_dir(), :builtin))
     |> Enum.uniq_by(& &1.name)
     |> Enum.sort_by(& &1.name)
   end
@@ -52,15 +67,50 @@ defmodule SwarmCode.Domain.Commands do
     Enum.find(list(project), &(&1.name == name))
   end
 
-  @doc "Fills `$ARGUMENTS` in the command body."
+  @doc """
+  Fills `$ARGUMENTS` (everything typed after the command) and `$1`-`$9` (its
+  words, see `split_args/1`) in the command body, in one pass.
+  """
   @spec expand(t(), String.t()) :: String.t()
   def expand(command, arguments) do
     arguments = arguments |> to_string() |> String.trim()
+    args = split_args(arguments)
 
-    command.body
-    |> String.replace("$ARGUMENTS", arguments)
+    ~r/\$ARGUMENTS|\$([1-9])(?![0-9])/
+    |> Regex.replace(command.body, fn
+      "$ARGUMENTS", _ -> arguments
+      _whole, n -> Enum.at(args, String.to_integer(n) - 1, "")
+    end)
     |> String.trim()
   end
+
+  @doc """
+  Splits typed arguments into words on whitespace. "Double" and 'single' quotes
+  group a phrase into one word (the quotes are removed; `\\"` inside double quotes
+  is a literal `"`); an unterminated quote runs to the end.
+  """
+  @spec split_args(String.t()) :: [String.t()]
+  def split_args(text), do: scan(to_string(text), [], "", false, nil)
+
+  defp scan(<<>>, args, cur, started?, _quote), do: Enum.reverse(push(args, cur, started?))
+
+  defp scan(<<?\\, ?", rest::binary>>, args, cur, _started?, ?"),
+    do: scan(rest, args, cur <> "\"", true, ?")
+
+  defp scan(<<q, rest::binary>>, args, cur, _started?, q) when q in [?", ?'],
+    do: scan(rest, args, cur, true, nil)
+
+  defp scan(<<q, rest::binary>>, args, cur, _started?, nil) when q in [?", ?'],
+    do: scan(rest, args, cur, true, q)
+
+  defp scan(<<c, rest::binary>>, args, cur, started?, nil) when c in [?\s, ?\t, ?\n, ?\r],
+    do: scan(rest, push(args, cur, started?), "", false, nil)
+
+  defp scan(<<c, rest::binary>>, args, cur, _started?, quote),
+    do: scan(rest, args, cur <> <<c>>, true, quote)
+
+  defp push(args, cur, true), do: [cur | args]
+  defp push(args, _cur, false), do: args
 
   @doc "Creates a starter command file in the project (or global) commands folder."
   @spec create(map() | nil, :project | :global, String.t()) ::

@@ -87,6 +87,10 @@ defmodule SwarmCodeCLI.UI.Reducer.Remote do
         state = SwarmCodeCLI.UI.Reducer.QueueCommands.refused(state, request)
         {notice(state, words || refused_words(kind)), []}
 
+      {rewind, {:error, words}} when rewind in [:rewind_apply, :rewind_turns] ->
+        state = SwarmCodeCLI.UI.Reducer.Rewind.refused(state, request)
+        {notice(state, words || refused_words(kind)), []}
+
       {_, {:error, words}} ->
         {notice(state, words || refused_words(kind)), []}
 

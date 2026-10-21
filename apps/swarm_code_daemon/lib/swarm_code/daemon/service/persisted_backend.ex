@@ -38,7 +38,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     :conversation_list,
     :agent_detail,
     :rewind_turns,
-    :history_search
+    :history_search,
+    # orbit S4: Home's overview and the conversation search are reads (jobs).
+    :home_overview,
+    :conversation_search
   ]
   # pass71 S2: slow reads run as jobs; this many at once, the rest are refused.
   @max_jobs 8
@@ -60,11 +63,89 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     CommandDispatcher,
     ShellEscape,
     CommandLedger,
+    HomeOverview,
+    LiveRuns,
     PersistedProjection,
+    QueueRecovery,
     QueueState,
     Rewind,
     SessionConfiguration
   }
+
+  # pass 77 C-ARCH-1: the backend's state is a struct, so a misspelled key is a
+  # compile error in `init/1` and an access to a missing one cannot hide behind
+  # `Map.get/3`. Every key is set by `init/1` (`slash_extras` by the slash
+  # catalog, pass 77 C-FEAT-5).
+  defstruct [
+    :opts,
+    :roots,
+    :runs,
+    :order,
+    :watches,
+    :requests,
+    :request_order,
+    :revision,
+    :metadata,
+    :research_ids,
+    :attachment_ids,
+    :extra_read_roots,
+    :staged_removed,
+    :refresh_pending,
+    :full_pending,
+    :partial,
+    :inputs,
+    :projections,
+    :repo_monitor,
+    :streams,
+    :changes,
+    :verdicts,
+    :waiting_seen,
+    :first_run_notice,
+    :rate_limits,
+    :mcp_failed,
+    :agent_models,
+    :agent_status,
+    :background,
+    :background_tick,
+    :background_exits,
+    :diff_cache,
+    :diff_order,
+    :change_facts,
+    :facts_missing,
+    :facts_job,
+    :facts_failed,
+    :file_index,
+    :queues,
+    :queue_paused,
+    :desktop_running,
+    :vitals,
+    :elsewhere,
+    :elsewhere_timer,
+    :clipboard_slots,
+    :shell,
+    :shells,
+    :git,
+    :ledger_prune,
+    :ledger_started_at,
+    :ledger_prune_ms,
+    :ledger_timer,
+    :jobs,
+    :task_supervisor,
+    :work,
+    :settings_jobs,
+    :settings_tasks,
+    :settings_revision,
+    :settings_seen,
+    :settings_pending,
+    :settings_timer,
+    :settings_own_at,
+    :settings_session,
+    :home_month,
+    :home_revision,
+    :home_timer,
+    :home_monitors,
+    :slash_extras
+  ]
 
   @errors %{
     invalid_request: "invalid data source request",
@@ -98,6 +179,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          {:ok, ^root} <- SwarmCode.Domain.Tools.Path.real_path(project_root),
          true <- File.dir?(root) do
       :ok = CommandLedger.ensure!()
+      # Review 1019 RC-3: prompts a stopped backend held and could not store are stored now.
+      :ok = QueueRecovery.restore()
       # pass71 S2: `terminate/2` must run on a supervisor shutdown so it can
       # kill the running jobs and settle their callers.
       Process.flag(:trap_exit, true)
@@ -134,7 +217,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       ledger_started_at = DateTime.utc_now()
       ledger_prune_ms = ledger_prune_ms(opts)
 
-      state = %{
+      state = %__MODULE__{
         opts: Keyword.put(opts, :project_root, root),
         # The realized root and the roots as configured: checkpoint paths are
         # recorded under whichever form the engine resolved against.
@@ -148,6 +231,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         metadata: nil,
         research_ids: [],
         attachment_ids: staged_attachments,
+        # pass 77 C-FEAT-12: extra read-only folders of this session (`--add-dir`,
+        # `/add-dir`): real paths, in memory only, passed to every chat turn.
+        extra_read_roots: validate_roots(List.wrap(opts[:extra_read_roots]), root),
         # cli020 C2: a staged image's file was gone at this send.
         staged_removed: false,
         refresh_pending: false,
@@ -192,6 +278,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # computing some of them, and the ones whose diff failed (not retried).
         facts_missing: [],
         facts_job: nil,
+        # C-FEAT-1/8: the project's custom commands and workflows, listed by one
+        # owned task at launch for the terminal's `/` popup and /help.
+        slash_extras: %{task: nil, items: nil, pending: false, timer: nil},
         facts_failed: MapSet.new(),
         file_index: nil,
         # Queue ownership follows the conversation, not the selected view.
@@ -259,19 +348,38 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         settings_pending: [],
         settings_timer: nil,
         settings_own_at: nil,
-        settings_session: SettingsDeltas.session_values(conversation)
+        settings_session: SettingsDeltas.session_values(conversation),
+        # orbit S4/S5: Home's month spend cached for 10 s (`{monotonic ms,
+        # month}`), the revision of the last `home_stale` push and the timer
+        # that debounces the next one (500 ms, owned by this process).
+        home_month: nil,
+        home_revision: 0,
+        home_timer: nil,
+        # orbit int (DAEMON-F3): `%{monitor ref => {run id, pid}}` of the live
+        # runs the last overview listed (at most 64).
+        home_monitors: %{}
       }
 
       # cli020 C1 (bugs-7): a prompt queued before a restart drains now (after
       # init returns, from the mailbox).
       send(self(), {:drain_queue, opts[:conversation_id]})
       send(self(), {:git_facts, :start})
+      send(self(), {:slash_extras, :start})
       {:ok, reload(state)}
     else
-      _ -> :ignore
+      # The refusal is the shape of the failed check (`false`, `nil`, a tagged
+      # error): never the opts, which may hold prompts or paths.
+      other ->
+        Logger.error("persisted backend: init refused: " <> inspect(other, limit: 20))
+        :ignore
     end
   rescue
-    _ -> :ignore
+    e ->
+      Logger.error(
+        "persisted backend: init failed\n" <> Exception.format(:error, e, __STACKTRACE__)
+      )
+
+      :ignore
   end
 
   @impl true
@@ -509,6 +617,35 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   def handle_info({:DOWN, ref, :process, _, _}, %{git: %{task: %Task{ref: ref}}} = state),
     do: {:noreply, git_done(state, nil, nil)}
 
+  # C-FEAT-1/8: the project's custom commands and workflows are listed (at
+  # launch) by one owned task; a task that dies keeps the previous list.
+  def handle_info({:slash_extras, _reason}, state), do: {:noreply, slash_extras_job(state)}
+
+  def handle_info(
+        {ref, {:slash_extras, items}},
+        %{slash_extras: %{task: %Task{ref: ref}}} = state
+      ) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, slash_extras_done(state, items)}
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _, _},
+        %{slash_extras: %{task: %Task{ref: ref}}} = state
+      ),
+      do: {:noreply, slash_extras_done(state, nil)}
+
+  # Review 1019 RC-11: the listing is bounded like the Git facts are.
+  def handle_info(
+        {:slash_extras_timeout, ref},
+        %{slash_extras: %{task: %Task{ref: ref} = task}} = state
+      ) do
+    Task.shutdown(task, :brutal_kill)
+    {:noreply, slash_extras_done(state, nil)}
+  end
+
+  def handle_info({:slash_extras_timeout, _ref}, state), do: {:noreply, state}
+
   def handle_info({:git_timeout, ref}, %{git: %{task: %Task{ref: ref} = task}} = state) do
     Task.shutdown(task, :brutal_kill)
     {:noreply, git_done(state, nil, nil)}
@@ -555,6 +692,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         {:noreply, state}
     end
   end
+
+  # orbit int (DAEMON-F3): a live run Home listed is gone; Home hears about it.
+  def handle_info({:DOWN, ref, :process, _, _}, %{home_monitors: monitors} = state)
+      when is_map_key(monitors, ref),
+      do: {:noreply, %{state | home_monitors: Map.delete(monitors, ref)} |> arm_home_stale()}
 
   # pass71 S2: a job crashed or was killed without answering.
   def handle_info({:DOWN, ref, :process, _, _}, %{jobs: jobs} = state)
@@ -622,11 +764,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   # pass70 C5 (arch F10): the domain's own notices become toasts on the shell
   # watch. "Waiting" comes from `:waiting_changed` instead, which knows the
   # conversation.
+  #
+  # orbit int (lane S issue 6): a swarm, workflow or research run that finished
+  # in any conversation (the notice is global) is also a Home trigger, so a
+  # Home left open sees a background run end.
   def handle_info({:notification, kind, message}, state) when is_binary(message) do
     case kind do
-      :finished -> {:noreply, toast(state, "success", "Finished", message, nil)}
-      :info -> {:noreply, toast(state, "info", "ncode", message, nil)}
-      _waiting -> {:noreply, state}
+      :finished ->
+        {:noreply, state |> toast("success", "Finished", message, nil) |> arm_home_stale()}
+
+      :info ->
+        {:noreply, toast(state, "info", "ncode", message, nil)}
+
+      _waiting ->
+        {:noreply, state}
     end
   end
 
@@ -634,11 +785,20 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: {:noreply, toast(state, "info", "ncode", text, nil)}
 
   def handle_info({:waiting_changed}, state),
-    do: {:noreply, state |> waiting_elsewhere() |> arm_elsewhere() |> schedule_refresh()}
+    do:
+      {:noreply,
+       state
+       |> waiting_elsewhere()
+       |> arm_elsewhere()
+       |> arm_home_stale()
+       |> schedule_refresh()}
 
   # pass76: any conversation's run changed status.
+  # pass 77 C-ARCH-10: Home also hears it. `arm_home_stale/1` is a debounce, so
+  # a burst is one push; the `home_monitors` stay for a run process that dies
+  # without a status write.
   def handle_info({:run_status, _conversation_id, _status}, state),
-    do: {:noreply, arm_elsewhere(state)}
+    do: {:noreply, state |> arm_elsewhere() |> arm_home_stale()}
 
   # The timer names its own ref: a replaced one that still delivers is stale.
   def handle_info({:timeout, ref, :elsewhere_due}, %{elsewhere_timer: {ref, kind}} = state),
@@ -646,11 +806,36 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:timeout, _stale, :elsewhere_due}, state), do: {:noreply, state}
 
+  # orbit S5: the debounce ended; Home's shell watch hears one `home_stale`
+  # with the new revision (an invalidation: the client reads `home.overview`).
+  def handle_info(:home_stale_due, state) do
+    revision = state.home_revision + 1
+    state = %{state | home_timer: nil, home_revision: revision}
+
+    {:noreply,
+     broadcast(state, %{
+       "kind" => "home_stale",
+       "entity_id" => nil,
+       "run_id" => nil,
+       "conversation_id" => nil,
+       "channel" => nil,
+       "attempt_id" => nil,
+       "text" => nil,
+       "body" => %{"revision" => revision},
+       "sequence" => 0,
+       "revision" => state.revision
+     })}
+  end
+
   # Runs of this conversation may be research or workflow runs; the library
   # itself is read on demand, so a changed workflow file needs no delta.
+  # orbit int (lane S issue 6): the two run events are global (any
+  # conversation's research or workflow run), so they are Home triggers too.
   def handle_info({event}, state)
-      when event in [:research_runs_changed, :workflow_runs_changed, :workflows_changed],
-      do: {:noreply, schedule_refresh(state)}
+      when event in [:research_runs_changed, :workflow_runs_changed],
+      do: {:noreply, state |> arm_home_stale() |> schedule_refresh()}
+
+  def handle_info({:workflows_changed}, state), do: {:noreply, schedule_refresh(state)}
 
   def handle_info({:rate_limit, provider_id, snapshot}, state)
       when is_binary(provider_id) and is_map(snapshot),
@@ -793,16 +978,30 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   @impl true
   def terminate(_, state) do
     Enum.each(state.queues.entries, fn {_id, entry} -> cancel_queue_effects(entry) end)
+    keep_held_prompts(state)
     cancel_jobs(state, wire_error(:source_unavailable))
 
-    with ref when is_reference(ref) <- Map.get(state, :ledger_timer),
+    with ref when is_reference(ref) <- state.ledger_timer,
          do: Process.cancel_timer(ref)
 
-    with %Task{} = task <- Map.get(state, :ledger_prune), do: Task.shutdown(task, :brutal_kill)
-    ClipboardInbox.close_all(Map.get(state, :clipboard_slots, %{}))
-    with %{task: %Task{} = task} <- Map.get(state, :git), do: Task.shutdown(task, :brutal_kill)
+    with timer when is_reference(timer) <- state.home_timer,
+         do: Process.cancel_timer(timer)
+
+    Enum.each(state.home_monitors, fn {ref, _} ->
+      Process.demonitor(ref, [:flush])
+    end)
+
+    with %Task{} = task <- state.ledger_prune, do: Task.shutdown(task, :brutal_kill)
+    ClipboardInbox.close_all(state.clipboard_slots)
+    with %{task: %Task{} = task} <- state.git, do: Task.shutdown(task, :brutal_kill)
+    # Review 1019 RC-11: the command and workflow listing stops with its owner.
+    with %{task: %Task{} = task} <- state.slash_extras, do: Task.shutdown(task, :brutal_kill)
+
+    with %{timer: timer} when is_reference(timer) <- state.slash_extras,
+         do: Process.cancel_timer(timer)
+
     # cli020 C15: quitting kills a running `!` command (its task traps exits).
-    with %{task: task} <- Map.get(state, :shell),
+    with %{task: task} <- state.shell,
          do: ShellEscape.stop(state.task_supervisor, task)
 
     # pass74 S1-9/S1-10: every settings job settles (a command's ledger row
@@ -956,7 +1155,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       params["attachment_refs"] != [] or state.attachment_ids != [] ->
         {refuse(id, :attachments_not_queued), state}
 
-      turn_runs(state.opts[:conversation_id]) == [] ->
+      turn_runs(state.opts[:conversation_id]) == [] or command_name(params["text"]) == "add-dir" ->
         execute(
           %{operation: :dispatch_send, params: %{params | "action" => "send"}},
           scope,
@@ -976,6 +1175,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     command = command_name(text)
 
     cond do
+      # pass 77 C-FEAT-12: a session setting, never a turn: it works at once.
+      command == "add-dir" ->
+        add_read_root(state, id, text)
+
       command in @waits_for_turn and turn_runs(conversation_id) != [] ->
         enqueue(state, id, text)
 
@@ -1054,7 +1257,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       node_id = params["node_id"]
       interactions = run.interactions
       model = state.agent_models[node_id] || run.model
-      roots = Map.get(state, :roots, [])
+      roots = state.roots
 
       work = fn ->
         case PersistedProjection.agent_detail(conversation, run.id, node_id) do
@@ -1139,7 +1342,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
     case Conversations.get(target) do
       %{project_id: ^project} ->
-        {accepted(id, [target]), switch_conversation(state, target)}
+        {accepted(id, [target]), state |> switch_conversation(target) |> arm_home_stale()}
 
       _ ->
         {reject(id, :not_allowed), state}
@@ -1150,7 +1353,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   defp execute(%{operation: :conversation_new}, _scope, id, state) do
     case Conversations.create(state.opts[:project_id]) do
       {:ok, conversation} ->
-        {accepted(id, [conversation.id]), switch_conversation(state, conversation.id)}
+        {accepted(id, [conversation.id]),
+         state |> switch_conversation(conversation.id) |> arm_home_stale()}
 
       {:error, _} ->
         {reject(id, :not_allowed), state}
@@ -1176,6 +1380,68 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # orbit S4 (`home.overview`): the bounded cross-project overview, built by a
+  # job (a newer request replaces an older one). The project is the admitted
+  # one, never a client field. Fitting the byte limit happens in the job too,
+  # so this process only wraps and replies; the 10 s month cache is refreshed
+  # only by a reading that was not itself served from it.
+  defp execute(%{operation: :home_overview, params: params}, _scope, id, state) do
+    project = state.opts[:project_id]
+    cached = cached_month(state)
+    revision = state.home_revision
+    options = %{projects: params["projects"], per_project: params["per_project"]}
+
+    build = state.work.home_overview
+
+    work = fn ->
+      {body, entries} = build.(project, options, cached, revision)
+
+      body
+      |> Map.merge(%{"request_id" => id, "state" => "ready", "error" => nil})
+      |> fit_home(params["byte_limit"])
+      |> case do
+        {:ok, body} -> {:ok, body, entries}
+        {:error, code} -> {:error, code}
+      end
+    end
+
+    finish = fn
+      {:ok, body, entries}, next ->
+        next =
+          if cached == nil,
+            do: %{next | home_month: {System.monotonic_time(:millisecond), body["month"]}},
+            else: next
+
+        {result("home_overview", body), watch_live_runs(next, entries)}
+
+      {:error, code}, next ->
+        {wire_error(code), next}
+    end
+
+    {{:job, %{key: :home_overview, replace: true, work: work, finish: finish}}, state}
+  end
+
+  # orbit S4 (`conversation.search`): this project's conversations matching a
+  # title or prompt text, in the shape of `conversation.list`.
+  defp execute(%{operation: :conversation_search, params: params}, _scope, id, state) do
+    project = state.opts[:project_id]
+
+    work = fn ->
+      PersistedProjection.conversation_search(project, params["query"], params["limit"])
+    end
+
+    finish = fn {:ok, rows, more?}, next ->
+      body = conversation_list(rows, more?, nil, id, next)
+
+      case fit("conversation_list", body, params["byte_limit"]) do
+        {:ok, kind, body} -> {result(kind, body), next}
+        {:error, code} -> {wire_error(code), next}
+      end
+    end
+
+    {{:job, %{key: :conversation_search, replace: true, work: work, finish: finish}}, state}
+  end
+
   # pass70 C2 (arch F12): the project's approval mode and trust, the
   # desktop's own (`Projects.trust/1` stamps `trusted_at` and lifts a
   # read-only project to `auto`).
@@ -1186,6 +1452,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       text = picked || project_notice(project, params)
       state = refresh(state)
       state = toast(state, "success", "Project", text, nil)
+      state = arm_home_stale(state)
 
       {accepted(id, [project.id], %{
          "kind" => "notice",
@@ -1242,8 +1509,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
            QuestionProjection.selection(item, p["answers"], p["custom_text"] || ""),
          index when is_integer(index) <-
            QuestionProjection.index(p["node_id"], p["expected_revision"], p["interaction_id"]),
-         :ok <-
-           RunServer.answer_question(run.id, p["node_id"], index, indices, p["custom_text"] || "") do
+         :ok <- answer_question(run, item, p, index, indices) do
       {accepted(id, [run.id]), refresh(state)}
     else
       {:error, :invalid_request} -> {reject(id, :invalid_request), state}
@@ -1528,18 +1794,13 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   # The running runs of this conversation of the given kinds, from the
   # registry (the truth about what runs): {id, pid}.
-  defp runs_of(conversation_id, kinds) do
-    Registry.select(SwarmCode.Domain.Registry, [
-      {{{:run, :"$1"}, :"$2", {:"$3", :"$4"}}, [{:==, :"$3", conversation_id}],
-       [{{:"$1", :"$2", :"$4"}}]}
-    ])
-    |> Enum.filter(fn {_id, _pid, kind} -> kind in kinds end)
-    |> Enum.map(fn {id, pid, _kind} -> {id, pid} end)
-  end
+  defp runs_of(conversation_id, kinds), do: LiveRuns.of_conversation(conversation_id, kinds)
 
   defp chat_runs(conversation_id), do: runs_of(conversation_id, ["chat"])
   # A turn is what a queued prompt waits behind: a chat turn or a compaction.
-  defp turn_runs(conversation_id), do: runs_of(conversation_id, ["chat", "compact"])
+  # pass 77 C-BUG-6: a compaction's chain owner is a turn too, until its chat run registers.
+  defp turn_runs(conversation_id),
+    do: runs_of(conversation_id, ["chat", "compact"]) ++ LiveRuns.chains(conversation_id)
 
   # The newest of the running chat runs is the turn a message steers.
   defp newest_run([{id, _}]), do: id
@@ -1602,7 +1863,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           SessionConfiguration.overlay(Conversations.get!(state.opts[:conversation_id])),
           text,
           attachments,
-          [research_ids: state.research_ids] ++ approval_opts(state)
+          chat_turn_opts(state, research_ids: state.research_ids)
         )
       end
 
@@ -1618,6 +1879,53 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     end
   end
 
+  # pass 77 C-BUG-12: the options of every chat turn this session starts: the
+  # caller's own, the session's approval mode and the session overlay as a
+  # function (a turn the engine chains after an automatic compaction applies it
+  # to the conversation it reloads).
+  defp chat_turn_opts(state, extra),
+    do:
+      extra ++
+        approval_opts(state) ++
+        [conversation_overlay: &SessionConfiguration.overlay/1] ++ extra_roots_opts(state)
+
+  # pass 77 C-FEAT-12: the session's extra read-only folders, when it has any.
+  defp extra_roots_opts(%{extra_read_roots: []}), do: []
+  defp extra_roots_opts(%{extra_read_roots: roots}), do: [extra_read_roots: roots]
+
+  @max_extra_roots 8
+
+  # The real path of an extra read-only folder, or :error: absolute, an
+  # existing directory, not "/" and not the project itself (already readable).
+  defp extra_root(path, root) when is_binary(path) do
+    with :absolute <- Path.type(path),
+         true <- File.dir?(path),
+         {:ok, real} <- SwarmCode.Domain.Tools.Path.real_path(path),
+         true <- real != "/" and real != root do
+      {:ok, real}
+    else
+      _ -> :error
+    end
+  end
+
+  defp extra_root(_path, _root), do: :error
+
+  # The unique valid folders, at most @max_extra_roots of them; the others are dropped.
+  defp validate_roots(paths, root) do
+    paths
+    |> Enum.flat_map(fn path ->
+      case extra_root(path, root) do
+        {:ok, real} -> [real]
+        :error -> []
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.take(@max_extra_roots)
+  end
+
+  @doc false
+  def chat_turn_opts_for_test(state, extra \\ []), do: chat_turn_opts(state, extra)
+
   defp send_command(state, id, params) do
     text = params["text"]
 
@@ -1627,7 +1935,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         CommandDispatcher.dispatch(
           state.opts[:conversation_id],
           text,
-          [research_ids: state.research_ids, attachments: attachments] ++ approval_opts(state)
+          [research_ids: state.research_ids, attachments: attachments] ++
+            approval_opts(state) ++ extra_roots_opts(state)
         )
       end
 
@@ -1696,6 +2005,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         state = pause_queue(state, :run_control, %{"action" => "stop"})
         {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
 
+      # Review 1019 RC-6: a workflow resumed by `/workflow resume` runs again: it is named, with
+      # the started disposition, like a launch (staged attachments are not the resume's).
+      {:ok, %{type: :resumed, run_id: run_id}} when is_binary(run_id) ->
+        {accepted(id, [run_id], nil, "started"), refresh(state)}
+
       {:ok, %{type: type}} when type in [:updated, :controlled, :saved] ->
         {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
 
@@ -1745,11 +2059,47 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   # pass73 T3/T8: a prompt or a conversation-level command waits for the
   # running turn on the conversation's own queue; it starts when that ends.
+  # pass 77 C-FEAT-12: `/add-dir <folder>` adds a read-only folder to this
+  # session (in memory; the next chat turn can read it with the file tools).
+  defp add_read_root(state, id, text) do
+    root = state.opts[:project_root]
+
+    arg =
+      case String.split(String.trim(text), ~r/\s+/u, parts: 2) do
+        [_command, arg] -> String.trim(arg)
+        _ -> ""
+      end
+
+    with {:arg, true} <- {:arg, arg != ""},
+         {:ok, dir} <- extra_root(Path.expand(arg, root), root),
+         {:room, true} <-
+           {:room,
+            dir in state.extra_read_roots or length(state.extra_read_roots) < @max_extra_roots} do
+      roots = Enum.uniq(state.extra_read_roots ++ [dir])
+      words = "Read-only folder added for this session: " <> dir
+      {accepted(id, [], notice("Folders", words)), %{state | extra_read_roots: roots}}
+    else
+      {:arg, false} ->
+        words = "/add-dir needs a folder, for example /add-dir ../docs."
+        {refuse(id, {:missing_argument, words}, text), state}
+
+      {:room, false} ->
+        words = "At most #{@max_extra_roots} extra folders can be added to a session."
+        {refuse(id, {:invalid_argument, words}, text), state}
+
+      :error ->
+        words =
+          "That is not a folder this session can add: it must exist, and not be / or the project."
+
+        {refuse(id, {:invalid_argument, words}, text), state}
+    end
+  end
+
   defp enqueue(state, id, text) do
     conversation_id = state.opts[:conversation_id]
-    conversation = Conversations.get!(conversation_id)
 
-    case Conversations.set_queued(conversation, (conversation.queued || []) ++ [text]) do
+    # pass 77 C-BUG-5: one retried IMMEDIATE append, not a read-modify-write.
+    case Conversations.append_queued(conversation_id, text) do
       {:ok, updated} ->
         count = length(updated.queued)
 
@@ -1826,9 +2176,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp activate_queue(state, conversation_id) do
     project_id = state.opts[:project_id]
+    held? = QueueState.held(QueueState.entry(state.queues, conversation_id)) != []
 
     case Conversations.get(conversation_id) do
-      %{project_id: ^project_id, queued: [_ | _]} ->
+      # A held prompt (popped, not yet stored again) keeps the queue alive.
+      %{project_id: ^project_id, queued: queued} when held? or queued not in [nil, []] ->
         {queues, generation} = QueueState.activate(state.queues, conversation_id)
 
         watch_queue(
@@ -1863,17 +2215,61 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
   end
 
   defp pop_and_start(state, conversation_id, generation) do
+    case put_back_held(state, conversation_id) do
+      {:ok, state} -> pop_head(state, conversation_id, generation)
+      {:retry, state} -> retry_queue(state, conversation_id, generation)
+    end
+  end
+
+  # pass 77 C-BUG-5: prompts held in memory (their put-back met a busy
+  # database) go back to the head of the stored queue before anything is
+  # popped, last first so they keep their order. Nothing is popped while one
+  # is still held.
+  defp put_back_held(state, conversation_id) do
+    case QueueState.held(QueueState.entry(state.queues, conversation_id)) do
+      [] ->
+        {:ok, state}
+
+      held ->
+        case QueueRecovery.store(conversation_id, held) do
+          [] ->
+            queues =
+              state.queues
+              |> QueueState.release(conversation_id)
+              |> QueueState.reset(conversation_id)
+
+            {:ok, %{state | queues: queues}}
+
+          rest ->
+            # RC-13: the once-only warning is not spent again by a failed put-back.
+            {:retry, %{state | queues: QueueState.keep_held(state.queues, conversation_id, rest)}}
+        end
+    end
+  end
+
+  defp pop_head(state, conversation_id, generation) do
     case Conversations.pop_queued(conversation_id) do
       {:ok, text, conversation} ->
-        case start_queued(conversation, text, approval_opts(state)) do
+        case start_queued(conversation, text, state) do
           {:ok, _} ->
             queues = QueueState.reset(state.queues, conversation_id)
             state = refresh_queue(%{state | queues: queues}, conversation_id)
             drain_queue(state, conversation_id, generation)
 
           {:error, reason} when reason in [:database_busy, :operation_failed] ->
-            Conversations.set_queued(conversation, [text | conversation.queued || []])
-            retry_queue(state, conversation_id, generation)
+            # A prompt is never lost: back at the head in one retried IMMEDIATE
+            # write, or held in memory until that write can be made.
+            case Conversations.requeue_head(conversation_id, text) do
+              {:ok, _} ->
+                retry_queue(state, conversation_id, generation)
+
+              {:error, :not_found} ->
+                remove_queue(state, conversation_id)
+
+              {:error, _busy} ->
+                queues = QueueState.hold(state.queues, conversation_id, text)
+                retry_queue(%{state | queues: queues}, conversation_id, generation)
+            end
 
           {:error, reason} ->
             # It can never start (nothing to compact, an unknown command):
@@ -2009,21 +2405,44 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
     do: %{state | queue_paused: MapSet.delete(state.queue_paused, state.opts[:conversation_id])}
 
   # cli020 fix S1: a queued item starts with the session's `--approval` mode
-  # like a send does (`approval`: `approval_opts/1`, [] outside `ncode -p`).
-  defp start_queued(conversation, text, approval) do
-    if command_name(text) != nil do
-      CommandDispatcher.dispatch(
-        conversation.id,
-        text,
-        [research_ids: [], attachments: []] ++ approval
-      )
-    else
-      # A prompt is never dropped: any failure puts it back to be retried.
-      case Engine.start_chat_turn(SessionConfiguration.overlay(conversation), text, [], approval) do
-        {:ok, _} = ok -> ok
-        {:error, _} -> {:error, :operation_failed}
+  # like a send does (`approval_opts/1`, [] outside `ncode -p`); a prompt also
+  # carries the session overlay (pass 77 C-BUG-12, `chat_turn_opts/2`).
+  defp start_queued(conversation, text, state) do
+    safe_start(fn ->
+      if command_name(text) != nil do
+        CommandDispatcher.dispatch(
+          conversation.id,
+          text,
+          [research_ids: [], attachments: []] ++ approval_opts(state) ++ extra_roots_opts(state)
+        )
+      else
+        # A prompt is never dropped: any failure puts it back to be retried.
+        case Engine.start_chat_turn(
+               SessionConfiguration.overlay(conversation),
+               text,
+               [],
+               chat_turn_opts(state, [])
+             ) do
+          {:ok, _} = ok -> ok
+          {:error, _} -> {:error, :operation_failed}
+        end
       end
-    end
+    end)
+  end
+
+  # pass 77 C-BUG-5: a queued item that raises (or exits) is a failed start
+  # like any other, so the popped prompt is put back instead of lost. The log
+  # line names the failure, never the prompt.
+  @doc false
+  def safe_start(fun) do
+    fun.()
+  catch
+    kind, reason ->
+      Logger.error(
+        "queue: a queued item raised: " <> Exception.format_banner(kind, reason, __STACKTRACE__)
+      )
+
+      {:error, :operation_failed}
   end
 
   # pass71 F8: a start refused by a passing condition (a busy database under
@@ -2043,10 +2462,43 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         %{state | queues: QueueState.put_timer(queues, conversation_id, timer)}
 
       {_, :exhausted} ->
-        state
-        |> remove_queue(conversation_id)
-        |> toast("error", "Queue", "The queued prompt could not start.", nil)
+        if QueueState.held(QueueState.entry(state.queues, conversation_id)) == [],
+          do: exhausted_queue(state, conversation_id),
+          else: keep_held_queue(state, conversation_id, generation)
     end
+  end
+
+  defp exhausted_queue(state, conversation_id) do
+    state
+    |> remove_queue(conversation_id)
+    |> toast("error", "Queue", "The queued prompt could not start.", nil)
+  end
+
+  # pass 77 C-BUG-5: a held prompt is the only copy, so the queue stays and
+  # tries again slowly; the user is told once.
+  @queue_held_retry_ms 5_000
+  defp keep_held_queue(state, conversation_id, generation) do
+    {queues, told} = QueueState.warn(state.queues, conversation_id)
+
+    timer =
+      :erlang.start_timer(
+        @queue_held_retry_ms,
+        self(),
+        {:queue_retry, conversation_id, generation}
+      )
+
+    state = %{state | queues: QueueState.put_timer(queues, conversation_id, timer)}
+
+    if told == :first,
+      do:
+        toast(
+          state,
+          "warning",
+          "Queue",
+          "A queued prompt could not be put back yet; ncode keeps it and tries again.",
+          nil
+        ),
+      else: state
   end
 
   defp refresh_queue(state, conversation_id) do
@@ -2058,6 +2510,18 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
          do: cancel_queue_effects(entry)
 
     %{state | queues: QueueState.remove(state.queues, conversation_id)}
+  end
+
+  # Review 1019 RC-3: a held prompt is the only copy of an accepted message, so a stopping
+  # backend journals it and tries to store it again (`QueueRecovery`); the next start finishes
+  # what the database refused.
+  defp keep_held_prompts(state) do
+    for {conversation_id, entry} <- state.queues.entries,
+        texts = QueueState.held(entry),
+        texts != [],
+        do: QueueRecovery.hand_over(conversation_id, texts)
+
+    :ok
   end
 
   defp cancel_queue_effects(entry) do
@@ -2125,10 +2589,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp conversation_list(rows, more?, cursor, id, state) do
     # The conversations with a running run: one registry select.
-    live =
-      MapSet.new(
-        Registry.select(SwarmCode.Domain.Registry, [{{{:run, :_}, :_, {:"$1", :_}}, [], [:"$1"]}])
-      )
+    live = MapSet.new(LiveRuns.conversation_ids())
 
     waiting =
       Questions.list()
@@ -3975,6 +4436,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
           pending
           |> Enum.filter(&(&1.run_id == row.id))
           |> Enum.flat_map(&pending_interaction(&1, run, state))
+          |> Kernel.++(workflow_gate(row, run, state))
 
         approval = Enum.find(interactions, &(&1["kind"] == "approval"))
 
@@ -4156,6 +4618,77 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       {:ok, temp, if(transcript_slot?, do: tb, else: rb), if(transcript_slot?, do: ta, else: ra)}
     end
   end
+
+  # pass 77 C-VER-1: the answer of a workflow's `await_user` gate (see
+  # `workflow_gate/3`) is the typed text, else the chosen options' labels; it
+  # resumes the run. Any other question goes to its RunServer.
+  defp answer_question(%{kind: "workflow"} = run, %{"node_id" => node_id} = item, p, _, indices)
+       when node_id == run.id do
+    custom = String.trim(p["custom_text"] || "")
+
+    answer =
+      if custom != "",
+        do: custom,
+        else:
+          indices
+          |> Enum.map(&get_in(item, ["question", "options", Access.at(&1), "label"]))
+          |> Enum.join(", ")
+
+    case SwarmCode.Domain.FeatureCatalog.control_workflow(run.id, :resume, answer: answer) do
+      {:ok, _} -> :ok
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  defp answer_question(run, _item, p, index, indices),
+    do: RunServer.answer_question(run.id, p["node_id"], index, indices, p["custom_text"] || "")
+
+  # pass 77 C-VER-1: a workflow parked on `await_user` holds its question on the
+  # workflow row, not in the engine's question table, so no pending interaction
+  # names it. It is projected as a one-question interaction whose id is the run
+  # (`node_id` = the run id): `question.answer` resumes the run with the answer
+  # (`execute/4`), the way the desktop's gate card does.
+  defp workflow_gate(%{kind: "workflow", status: "waiting_user"} = row, run, state) do
+    case SwarmCode.Domain.Workflows.get_run(row.id) do
+      %{gate_question: question} = wf when is_binary(question) and question != "" ->
+        revision = stamp(wf.updated_at)
+
+        base = %{
+          "id" => row.id,
+          "run_id" => run.id,
+          "node_id" => row.id,
+          "conversation_id" => state.opts[:conversation_id],
+          "kind" => "question",
+          "expected_revision" => revision,
+          "state" => "pending",
+          "question" => nil,
+          "approval" => nil,
+          "allowed_actions" => [],
+          "urgency" => "normal",
+          "deadline" => 0,
+          "created_at" => revision
+        }
+
+        SwarmCode.Daemon.Service.QuestionProjection.rows(
+          base,
+          [
+            %{
+              question: question,
+              options: Enum.map(wf.gate_options || [], &%{label: &1}),
+              multiple: false,
+              index: 0,
+              total: 1
+            }
+          ],
+          %{agent_id: nil, requested_at: nil}
+        )
+
+      _no_gate ->
+        []
+    end
+  end
+
+  defp workflow_gate(_row, _run, _state), do: []
 
   defp pending_interaction(p, run, state) do
     details = RunServer.pending_interactions(run.id)
@@ -4588,7 +5121,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
     waiting = Enum.group_by(interactions, owner)
     # Any agent's result may cite a sibling's worktree: strip them all.
-    roots = Enum.map(ns, & &1.workspace_path) ++ Map.get(state, :roots, [])
+    roots = Enum.map(ns, & &1.workspace_path) ++ state.roots
 
     agents =
       Enum.zip_with(ns, run.agents, fn n, body ->
@@ -4728,118 +5261,154 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   defp attachment_ids(_), do: []
 
+  # orbit S5: at most one `home_stale` per 500 ms window. The first trigger
+  # arms this process's own timer; the rest do nothing until it fires. The
+  # timer dies with the process (and `terminate/2` cancels it).
+  @home_stale_ms 500
+
+  # orbit int (DAEMON-F3): a chat or goal run (or a stopped swarm) ending in
+  # another conversation sends this backend nothing, yet Home shows it as a live
+  # bar and bead. The run processes the overview was read from are monitored (a
+  # DOWN arms `home_stale`; one already dead answers at once, so no end is lost
+  # between the read and now), monitors of runs a later overview no longer
+  # lists are dropped, and the monitors die with this process.
+  defp watch_live_runs(state, entries) do
+    listed = MapSet.new(entries, fn {_id, pid} -> pid end)
+
+    {kept, monitors} =
+      Enum.reduce(state.home_monitors, {MapSet.new(), %{}}, fn {ref, {_id, pid} = entry},
+                                                               {kept, monitors} ->
+        if MapSet.member?(listed, pid) do
+          {MapSet.put(kept, pid), Map.put(monitors, ref, entry)}
+        else
+          Process.demonitor(ref, [:flush])
+          {kept, monitors}
+        end
+      end)
+
+    monitors =
+      for {id, pid} <- entries, not MapSet.member?(kept, pid), into: monitors do
+        {Process.monitor(pid), {id, pid}}
+      end
+
+    %{state | home_monitors: monitors}
+  end
+
+  defp arm_home_stale(%{home_timer: nil} = state),
+    do: %{state | home_timer: Process.send_after(self(), :home_stale_due, @home_stale_ms)}
+
+  defp arm_home_stale(state), do: state
+
+  # pass 77 C-ARCH-2: which watch slots a delta kind reaches, in one table. A
+  # kind that is not listed is scoped (workspace, inspector and transcript
+  # windows, never the shell or the activity feed). The table lists every kind
+  # this module and `PersistedProjection` emit, so a new kind is a visible
+  # decision (`r1019_delta_routes_test.exs` reads the sources to prove it).
+  @scoped ~w(workspace inspector transcript)
+  # Scoped delta kinds, then the result/payload kinds the two sources also name
+  # (they ride request results, not watches; listed so the source scan holds).
+  @scoped_kinds ~w(node_upsert agent_update interaction_upsert interaction_remove
+                   transcript_remove change_upsert change_remove verdict_upsert
+                   stream_append stream_reset)
+  @payload_kinds ~w(report notice attachment rewound rewind_turns question navigate main history)
+  @routes Map.merge(
+            Map.new(@scoped_kinds ++ @payload_kinds, &{&1, @scoped}),
+            %{
+              "run_update" => ~w(shell workspace inspector transcript),
+              "toast" => ~w(shell),
+              "rate_limit" => ~w(shell),
+              "settings_update" => ~w(shell),
+              "settings_task" => ~w(shell),
+              "desktop_running" => ~w(shell),
+              "vitals" => ~w(shell),
+              "elsewhere" => ~w(shell),
+              "home_stale" => ~w(shell),
+              "activity_upsert" => ~w(activity),
+              "workspace_metadata" => ~w(workspace),
+              "background_upsert" => ~w(workspace inspector),
+              "background_remove" => ~w(workspace inspector),
+              "shell_upsert" => ~w(workspace inspector),
+              "shell_remove" => ~w(workspace inspector)
+            }
+          )
+
+  defp slot_class(slot) when slot in ["shell", "activity", "workspace", "inspector"], do: slot
+  defp slot_class(_transcript_or_pending), do: "transcript"
+
+  @doc false
+  def routed?(slot, kind), do: slot_class(slot) in Map.get(@routes, kind, @scoped)
+
+  @doc false
+  def routes, do: @routes
+
   defp broadcast(state, delta) do
+    # A run changing is a Home trigger; `home_stale` itself never is.
+    state = if delta["kind"] == "run_update", do: arm_home_stale(state), else: state
+
     # pass74 S1-10: settings deltas belong to no conversation (§3.4.4).
     delta =
       if delta["kind"] in ["settings_update", "settings_task"],
         do: delta,
         else: Map.put(delta, "conversation_id", state.opts[:conversation_id])
 
-    settings_delta? = delta["kind"] in ["settings_update", "settings_task"]
+    kind = delta["kind"]
 
-    Enum.reduce(state.watches, state, fn {key, entry}, acc ->
-      relevant =
-        member?(state, entry.scope) and
-          (entry.scope.kind != :run or entry.scope.id == delta["run_id"]) and
-          case entry.slot do
-            # pass70 C1: toasts and rate limits reach the shell watch alone.
-            # pass74 S1-10: settings deltas are global and ride the shell.
-            "shell" ->
-              delta["kind"] in [
-                "run_update",
-                "toast",
-                "rate_limit",
-                "settings_update",
-                "settings_task",
-                "desktop_running",
-                "vitals",
-                "elsewhere"
-              ]
+    # The cheap checks (route, run scope) come before `member?/2`, which reads
+    # the database for a run-scoped watch.
+    relevant =
+      for {key, entry} <- state.watches,
+          routed?(entry.slot, kind),
+          entry.scope.kind != :run or entry.scope.id == delta["run_id"],
+          member?(state, entry.scope),
+          do: {key, entry}
 
-            _other when settings_delta? ->
-              false
+    case relevant do
+      [] ->
+        state
 
-            "activity" ->
-              delta["kind"] == "activity_upsert"
-
-            "workspace" ->
-              delta["kind"] not in [
-                "activity_upsert",
-                "toast",
-                "rate_limit",
-                "desktop_running",
-                "vitals",
-                "elsewhere"
-              ]
-
-            # pass70 C6: background commands belong to the workspace and the
-            # run inspector, not to the transcript or pending windows.
-            "inspector" ->
-              delta["kind"] not in [
-                "activity_upsert",
-                "workspace_metadata",
-                "toast",
-                "rate_limit",
-                "desktop_running",
-                "vitals",
-                "elsewhere"
-              ]
-
-            _ ->
-              delta["kind"] not in [
-                "activity_upsert",
-                "workspace_metadata",
-                "toast",
-                "rate_limit",
-                "background_upsert",
-                "background_remove",
-                "desktop_running",
-                "vitals",
-                "elsewhere",
-                "shell_upsert",
-                "shell_remove"
-              ]
-          end
-
-      if relevant do
+      relevant ->
         size = byte_size(Jason.encode!(delta))
-        # Coalesce complete entity replacements only. Stream events must retain
-        # their channel and order: dropping an append loses tokens, and moving
-        # a reset across an append changes the resulting text.
-        pending = :queue.to_list(entry.queue)
 
-        pending =
-          Enum.reject(pending, fn {old, _} ->
-            delta["kind"] not in ["stream_append", "stream_reset", "settings_update"] and
-              old["kind"] == delta["kind"] and old["entity_id"] == delta["entity_id"] and
-              not (delta["kind"] == "node_upsert" and
-                     Enum.any?(pending, fn {queued, _} ->
-                       queued["kind"] in ["stream_append", "stream_reset"] and
-                         queued["entity_id"] == delta["entity_id"]
-                     end))
-          end)
+        Enum.reduce(relevant, state, fn {key, entry}, acc ->
+          deliver(acc, key, entry, delta, size)
+        end)
+    end
+  end
 
-        # pass72 G14 (QA Q7): an append to a stream whose newest queued event
-        # is an append of the same channel and attempt joins it (the text in
-        # order, the newer revision): a chat stream next to a swarm filled
-        # the queue with appends (115 of 128) and forced a resync.
-        {pending, merged?} = join_append(pending, delta)
+  defp deliver(acc, key, entry, delta, size) do
+    # Coalesce complete entity replacements only. Stream events must retain
+    # their channel and order: dropping an append loses tokens, and moving
+    # a reset across an append changes the resulting text.
+    pending = :queue.to_list(entry.queue)
 
-        entry = %{
-          entry
-          | queue: :queue.from_list(pending),
-            bytes: Enum.reduce(pending, 0, fn {_, bytes}, n -> n + bytes end)
-        }
+    pending =
+      Enum.reject(pending, fn {old, _} ->
+        delta["kind"] not in ["stream_append", "stream_reset", "settings_update"] and
+          old["kind"] == delta["kind"] and old["entity_id"] == delta["entity_id"] and
+          not (delta["kind"] == "node_upsert" and
+                 Enum.any?(pending, fn {queued, _} ->
+                   queued["kind"] in ["stream_append", "stream_reset"] and
+                     queued["entity_id"] == delta["entity_id"]
+                 end))
+      end)
 
-        if merged? do
-          flush(put_in(acc.watches[key], entry), key)
-        else
-          enqueue_delta(acc, key, entry, delta, size)
-        end
-      else
-        acc
-      end
-    end)
+    # pass72 G14 (QA Q7): an append to a stream whose newest queued event
+    # is an append of the same channel and attempt joins it (the text in
+    # order, the newer revision): a chat stream next to a swarm filled
+    # the queue with appends (115 of 128) and forced a resync.
+    {pending, merged?} = join_append(pending, delta)
+
+    entry = %{
+      entry
+      | queue: :queue.from_list(pending),
+        bytes: Enum.reduce(pending, 0, fn {_, bytes}, n -> n + bytes end)
+    }
+
+    if merged? do
+      flush(put_in(acc.watches[key], entry), key)
+    else
+      enqueue_delta(acc, key, entry, delta, size)
+    end
   end
 
   @join_bytes 16_384
@@ -5069,6 +5638,49 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       else: {:error, :capacity_exceeded}
   end
 
+  # orbit S4: the month spend read within the last 10 s, else nil (the job reads
+  # it again).
+  @home_month_ms 10_000
+
+  defp cached_month(%{home_month: {at, month}}) do
+    if System.monotonic_time(:millisecond) - at < @home_month_ms, do: month
+  end
+
+  defp cached_month(_state), do: nil
+
+  # orbit S4: a `home.overview` body within `limit` bytes. Conversations leave
+  # from the last project backwards (its oldest first, then the previous
+  # project's) until the encoding fits; with none left and still too large the
+  # reply is the closed `capacity_exceeded` error (`conversation.list`'s code).
+  defp fit_home(body, limit) do
+    cond do
+      byte_size(Jason.encode!(body)) <= limit ->
+        {:ok, body}
+
+      home_conversations?(body) ->
+        fit_home(drop_last_home_conversation(body), limit)
+
+      true ->
+        {:error, :capacity_exceeded}
+    end
+  end
+
+  defp home_conversations?(body),
+    do: Enum.any?(body["projects"], &(&1["conversations"] != []))
+
+  defp drop_last_home_conversation(body) do
+    index = Enum.find_index(Enum.reverse(body["projects"]), &(&1["conversations"] != []))
+    last = length(body["projects"]) - 1 - index
+
+    %{
+      body
+      | "projects" =>
+          List.update_at(body["projects"], last, fn project ->
+            %{project | "conversations" => Enum.drop(project["conversations"], -1)}
+          end)
+    }
+  end
+
   # `Next.local_zone/0` reads `/etc/localtime`; once per daemon is enough.
   defp local_zone do
     key = {__MODULE__, :local_zone}
@@ -5144,17 +5756,147 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "queue_paused" => MapSet.member?(state.queue_paused, conversation.id),
       "queue_revision" => queue_revision(conversation.queued || []),
       # cli020 C4: the ncode app is open on the same database.
-      "desktop_running" => Map.get(state, :desktop_running, false),
+      "desktop_running" => state.desktop_running,
       # cli020 C17: the levels the dispatcher accepts for this conversation
       # (`CommandDispatcher.efforts/2`), and who checks mission work.
       "effort_levels" => effort_levels(conversation, :chat),
       "swarm_effort_levels" => effort_levels(conversation, :swarm),
       "validator_model" => effective_model_name(conversation, :validator),
       # cli020 C22: the status line's Git facts.
-      "git_branch" => state |> Map.get(:git, %{}) |> Map.get(:branch),
-      "git_dirty" => state |> Map.get(:git, %{}) |> Map.get(:dirty)
+      "git_branch" => state.git.branch,
+      "git_dirty" => state.git.dirty,
+      # C-FEAT-1/8: the project's custom commands and workflows (names and
+      # descriptions only) for the `/` popup and /help.
+      "slash_extras" => slash_extras_items(state)
     }
   end
+
+  @slash_extras_empty %{"custom" => [], "workflows" => []}
+  @slash_extras_max 200
+  @slash_extras_bound_ms 5_000
+
+  defp slash_extras_items(%{slash_extras: %{items: %{} = items}}), do: items
+  defp slash_extras_items(_state), do: @slash_extras_empty
+
+  defp slash_extras_job(%{slash_extras: %{task: %Task{}} = extras} = state),
+    do: %{state | slash_extras: %{extras | pending: true}}
+
+  defp slash_extras_job(%{slash_extras: extras} = state) do
+    conversation_id = state.opts[:conversation_id]
+
+    task =
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+        {:slash_extras, slash_extras_for(conversation_id)}
+      end)
+
+    timer = Process.send_after(self(), {:slash_extras_timeout, task.ref}, @slash_extras_bound_ms)
+    %{state | slash_extras: %{extras | task: task, timer: timer, pending: false}}
+  rescue
+    _ -> state
+  end
+
+  defp slash_extras_job(state), do: state
+
+  # The task ended: keep its list (`nil`: it died, keep the previous one), run
+  # once more if another request came in meanwhile, and send the metadata
+  # delta when the list changed (no reload of the projection, as for Git).
+  defp slash_extras_done(%{slash_extras: extras} = state, items) do
+    if extras.timer, do: Process.cancel_timer(extras.timer)
+
+    state = %{
+      state
+      | slash_extras: %{extras | task: nil, timer: nil, items: items || extras.items}
+    }
+
+    state = if extras.pending, do: slash_extras_job(state), else: state
+
+    case state.metadata do
+      %{} = meta ->
+        facts = %{"slash_extras" => slash_extras_items(state)}
+
+        if Map.take(meta, Map.keys(facts)) == facts,
+          do: state,
+          else:
+            broadcast_metadata(%{
+              state
+              | metadata: Map.merge(meta, facts),
+                revision: state.revision + 1
+            })
+
+      _ ->
+        state
+    end
+  end
+
+  defp slash_extras_done(state, _items), do: state
+
+  # What the terminal's popup needs of `Commands.list/1` and `Workflows.list/1`
+  # (the sources `CommandDispatcher` parses with): names and one-line
+  # descriptions, never bodies; at most 200 entries in all, sorted by name
+  # (workflows keep up to 100 of them, the commands the rest).
+  defp slash_extras_for(conversation_id) do
+    project =
+      case Conversations.get(conversation_id) do
+        %{project: project} -> project
+        _ -> nil
+      end
+
+    workflows =
+      project
+      |> SwarmCode.Domain.Workflows.list()
+      |> Enum.flat_map(fn definition ->
+        meta = if is_map(definition.meta), do: definition.meta, else: %{}
+
+        if slash_name?(definition.name),
+          do: [
+            %{
+              "name" => definition.name,
+              "description" =>
+                slash_description(Map.get(meta, :description) || Map.get(meta, "description"))
+            }
+          ],
+          else: []
+      end)
+      |> Enum.sort_by(& &1["name"])
+      |> Enum.take(div(@slash_extras_max, 2))
+
+    custom =
+      project
+      |> SwarmCode.Domain.Commands.list()
+      |> Enum.flat_map(fn command ->
+        body = Map.get(command, :body)
+
+        if slash_name?(command.name),
+          do: [
+            %{
+              "name" => command.name,
+              "description" => slash_description(Map.get(command, :description)),
+              "args" =>
+                is_binary(body) and
+                  (String.contains?(body, "$ARGUMENTS") or Regex.match?(~r/\$[1-9]/, body))
+            }
+          ],
+          else: []
+      end)
+      |> Enum.sort_by(& &1["name"])
+      |> Enum.take(@slash_extras_max - length(workflows))
+
+    %{"custom" => custom, "workflows" => workflows}
+  rescue
+    _ -> @slash_extras_empty
+  catch
+    # The repo went away mid-read (the session is closing): an empty list.
+    :exit, _ -> @slash_extras_empty
+  end
+
+  defp slash_name?(name),
+    do: is_binary(name) and Regex.match?(~r/\A[A-Za-z0-9_.-]{1,64}\z/, name)
+
+  defp slash_description(text) when is_binary(text) do
+    text |> String.split(["\r\n", "\n"], parts: 2) |> hd() |> String.trim() |> preview(200)
+  end
+
+  defp slash_description(_), do: ""
 
   defp vitals_body(%{vitals: pid}) when is_pid(pid), do: Vitals.body(pid)
   defp vitals_body(_state), do: nil
@@ -5755,7 +6497,10 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       diff: &change_or_op_diff/2,
       change_diff: &SwarmCode.Domain.FeatureCatalog.change_diff/2,
       feature_query: &SwarmCode.Daemon.Service.FeatureRequest.execute/4,
-      summarize: &AgentStatus.summarize/2
+      summarize: &AgentStatus.summarize/2,
+      # orbit S4: `project |> build.(options, month, revision)` answers
+      # `{body, [{run_id, pid}]}` (DAEMON-F3: the registry rows it read).
+      home_overview: &HomeOverview.build_watched/4
     }
 
     if is_map(overrides),

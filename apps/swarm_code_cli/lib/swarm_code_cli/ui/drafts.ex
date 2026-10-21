@@ -1,5 +1,14 @@
 defmodule SwarmCodeCLI.UI.Drafts do
-  @moduledoc "Bounded in-memory drafts with exact submission settlement and no silent eviction."
+  @moduledoc """
+  Bounded in-memory drafts with exact submission settlement and no silent
+  eviction of unsent work.
+
+  At `max_drafts` a new key first reclaims one *settled empty* draft (C-BUG-15):
+  not dirty, not awaiting a submission answer, no undo or redo history and no
+  collapsed pastes, i.e. exactly what a fresh draft would hold. The smallest
+  such key goes, so the choice is deterministic. When every entry holds unsent
+  work or history the put raises, as before.
+  """
   alias SwarmCodeCLI.UI.{Draft, DraftKey, Editor, Intent}
   @derive {Inspect, only: []}
   defstruct entries: %{}, pending: %{}, max_drafts: 32, ambiguous_width: :narrow
@@ -34,13 +43,7 @@ defmodule SwarmCodeCLI.UI.Drafts do
 
   def put(%__MODULE__{} = store, %Draft{} = draft) do
     Draft.validate!(draft)
-
-    if not Map.has_key?(store.entries, draft.key) and map_size(store.entries) >= store.max_drafts,
-      do:
-        raise(
-          ArgumentError,
-          "draft capacity reached; preserve unsent work before opening another draft"
-        )
+    store = make_room(store, draft.key)
 
     pending =
       case Map.fetch(store.pending, draft.key) do
@@ -54,6 +57,39 @@ defmodule SwarmCodeCLI.UI.Drafts do
       end
 
     %{store | entries: Map.put(store.entries, draft.key, draft), pending: pending}
+  end
+
+  defp make_room(store, key) do
+    cond do
+      Map.has_key?(store.entries, key) ->
+        store
+
+      map_size(store.entries) < store.max_drafts ->
+        store
+
+      true ->
+        case reclaimable(store) do
+          nil ->
+            raise ArgumentError,
+                  "draft capacity reached; preserve unsent work before opening another draft"
+
+          victim ->
+            %{store | entries: Map.delete(store.entries, victim)}
+        end
+    end
+  end
+
+  defp reclaimable(store) do
+    store.entries
+    |> Enum.filter(fn {key, draft} -> settled_empty?(store, key, draft) end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.sort()
+    |> List.first()
+  end
+
+  defp settled_empty?(store, key, draft) do
+    not Draft.dirty?(draft) and not Map.has_key?(store.pending, key) and
+      draft.editor.undo == [] and draft.editor.redo == [] and draft.pastes == %{}
   end
 
   def mark_submitted(%__MODULE__{} = store, key, request_id) do
