@@ -566,7 +566,10 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
              cmd.control,
              if(cmd[:budget], do: [budget: cmd.budget], else: [])
            ) do
-      result(conv, cmd.name, :updated, %{control: cmd.control, run_id: wf.run_id})
+      # Review 1019 RC-6: a resume starts the run's runner again (it is work a headless
+      # session has to wait for); a pause or a stop launches nothing.
+      type = if cmd.control == :resume, do: :resumed, else: :updated
+      result(conv, cmd.name, type, %{control: cmd.control, run_id: wf.run_id})
     end
   end
 

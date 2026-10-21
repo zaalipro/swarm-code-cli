@@ -49,6 +49,12 @@ defmodule SwarmCode.Daemon.Service.LiveRuns do
     select([{{{:chain, conversation_id, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
   end
 
+  @doc "Whether any compaction chain is pending (any conversation)."
+  @spec any_chain?() :: boolean()
+  def any_chain? do
+    select([{{{:chain, :_, :_}, :"$1", :_}, [], [:"$1"]}]) |> Enum.any?(&Process.alive?/1)
+  end
+
   defp select(spec) do
     Registry.select(@registry, spec)
   rescue

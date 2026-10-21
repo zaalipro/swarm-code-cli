@@ -6,19 +6,23 @@ defmodule SwarmCodeCLI.Release.Detach do
   Before, a hang-up stopped every live run: closing the window threw away an
   hour of work. Now the session, with its terminal gone, keeps the runs going
   headless until none of them is progressing. A run is progressing when it is
-  live and does not wait for a person (an approval or an `ask_user`); a run
-  that waits cannot move without the terminal, so it is left to the normal
-  close (`stop_live_runs/0`), which stops it.
+  live, does not wait for a person (an approval or an `ask_user`) and was not
+  paused by hand; a run that waits or is paused cannot move without the terminal,
+  so it is left to the normal close (`stop_live_runs/0`), which stops it. A pending
+  automatic-compaction chain (`{:chain, conversation, compact_run}`) is work too:
+  between the compaction's end and the chat turn's registration no run is
+  registered, and the chain is what starts that turn (review 1019 RC-5).
 
   `await/1` is event driven: it wakes on a run's status change or a change of
   the waits, and rechecks every `recheck_ms` because the run registry can lag a
   status event. It holds no state and does no I/O besides reading the
-  registry and the waits.
+  registry, the waits and the status of each live run.
   """
 
   # The daemon app is not a compile-time dependency of this one.
   @compile {:no_warn_undefined,
             [
+              SwarmCode.Daemon.Service.LiveRuns,
               SwarmCode.Domain.Conversations,
               SwarmCode.Domain.Engine,
               SwarmCode.Domain.Engine.Events,
@@ -28,16 +32,25 @@ defmodule SwarmCodeCLI.Release.Detach do
 
   @recheck_ms 5_000
 
-  @doc "True when some live run is not waiting for a person."
+  # A run in one of these states cannot move without a person: paused by hand, or parked on a
+  # gate question of a workflow.
+  @stalled_statuses ["paused", "waiting_user"]
+
+  @doc """
+  True when some live run is neither waiting for a person nor paused, or a compaction
+  chain still has to start its turn.
+  """
   @spec progressing?() :: boolean()
   def progressing? do
-    progressing?(live_run_ids(), waiting_run_ids())
+    live = live_run_ids()
+    progressing?(live, waiting_run_ids() ++ paused_run_ids(live)) or chains?()
   end
 
   @doc false
   @spec progressing?([String.t()], [String.t()]) :: boolean()
-  def progressing?(live_ids, wait_run_ids) when is_list(live_ids) and is_list(wait_run_ids) do
-    Enum.any?(live_ids, &(&1 not in wait_run_ids))
+  def progressing?(live_ids, stalled_run_ids)
+      when is_list(live_ids) and is_list(stalled_run_ids) do
+    Enum.any?(live_ids, &(&1 not in stalled_run_ids))
   end
 
   @doc """
@@ -86,6 +99,25 @@ defmodule SwarmCodeCLI.Release.Detach do
     SwarmCode.Domain.Engine.running_run_ids()
   catch
     _kind, _reason -> []
+  end
+
+  # A run paused by hand stays registered (its server holds every agent) and sits in no waits
+  # list; the engine's own record of it is the run row's status.
+  defp paused_run_ids(live_ids) do
+    Enum.filter(
+      live_ids,
+      &(SwarmCode.Domain.Conversations.run_status(&1) in @stalled_statuses)
+    )
+  catch
+    _kind, _reason -> []
+  end
+
+  # A pending automatic-compaction chain: the engine registers its owner until the turn it
+  # waits to start has been written, so it is work whatever the run registry shows.
+  defp chains? do
+    SwarmCode.Daemon.Service.LiveRuns.any_chain?()
+  catch
+    _kind, _reason -> false
   end
 
   defp waiting_run_ids do

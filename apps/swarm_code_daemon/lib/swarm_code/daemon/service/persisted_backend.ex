@@ -2005,6 +2005,11 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         state = pause_queue(state, :run_control, %{"action" => "stop"})
         {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
 
+      # Review 1019 RC-6: a workflow resumed by `/workflow resume` runs again: it is named, with
+      # the started disposition, like a launch (staged attachments are not the resume's).
+      {:ok, %{type: :resumed, run_id: run_id}} when is_binary(run_id) ->
+        {accepted(id, [run_id], nil, "started"), refresh(state)}
+
       {:ok, %{type: type}} when type in [:updated, :controlled, :saved] ->
         {accepted(id, [state.opts[:conversation_id]]), refresh(state)}
 
