@@ -234,7 +234,11 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
 
       result =
         if mode == "swarm" do
-          Engine.start_swarm(SessionConfiguration.overlay(conv), goal.text, args ++ approval(opts))
+          Engine.start_swarm(
+            SessionConfiguration.overlay(conv),
+            goal.text,
+            args ++ approval(opts)
+          )
         else
           # `start_goal_turn/3` forwards neither `approval_mode:` nor the overlay nor the
           # extra read roots; this is the chat turn it starts, with the session's options.

@@ -72,7 +72,8 @@ defmodule SwarmCode.Daemon.Service.R1019SlashRootsTest do
       {:ok, _} = Conversations.set_queued(Conversations.get!(conv.id), [text])
       send(backend, {:drain_queue, conv.id})
     else
-      assert {:ok, %{"value" => %{"status" => "accepted"}}} = send_text(backend, scope(conv), text)
+      assert {:ok, %{"value" => %{"status" => "accepted"}}} =
+               send_text(backend, scope(conv), text)
     end
 
     assert eventually(fn -> read_result(conv.id) != nil end)
