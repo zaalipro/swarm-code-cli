@@ -128,6 +128,9 @@ defmodule SwarmCode.Domain.Agents do
   # (a file added, removed or renamed is seen at once; an edit in place inside
   # the window is the only stale case).
   @tier_ttl_ms 2_000
+  # How long an unused tier stays in the cache table (`Cache.put_derived/3`); freshness is
+  # still `@tier_ttl_ms` and the mtime.
+  @derived_ttl_ms 60_000
 
   @doc "Discover agents from three tiers, project > user > bundled."
   @spec list(String.t() | nil) :: [AgentDef.t()]
@@ -167,7 +170,13 @@ defmodule SwarmCode.Domain.Agents do
 
       _stale ->
         defs = read_tier(dir, source)
-        SwarmCode.Domain.Cache.put(key, %{defs: defs, mtime: mtime, at: now})
+        # pass 77 D-ARCH-7: derived from the directory, so it is byte-bounded and swept.
+        SwarmCode.Domain.Cache.put_derived(
+          key,
+          %{defs: defs, mtime: mtime, at: now},
+          @derived_ttl_ms
+        )
+
         defs
     end
   end

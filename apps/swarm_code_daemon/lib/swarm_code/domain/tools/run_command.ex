@@ -294,9 +294,26 @@ defmodule SwarmCode.Domain.Tools.RunCommand do
     end
   end
 
-  defp spawn_and_collect(args, ctx, cd, rc_file, {timeout, configured}, progress) do
+  defp spawn_and_collect(args, ctx, cd, rc_file, limits, progress) do
     settings = Map.get(ctx, :settings) || %{}
-    {shell, shell_args} = shell(settings, script(args["command"], rc_file))
+
+    # pass 77 C-FEAT-4: under `"sandbox": "workspace-write"` the shell is started
+    # by `sandbox-exec`; a profile that cannot be written safely refuses the
+    # command instead of running it unsandboxed.
+    case SwarmCode.Domain.Tools.Sandbox.wrap(
+           shell(settings, script(args["command"], rc_file)),
+           ctx
+         ) do
+      {:error, message} ->
+        {:error, message}
+
+      {shell, shell_args} ->
+        run_in_shell({shell, shell_args}, args, ctx, cd, rc_file, limits, progress)
+    end
+  end
+
+  defp run_in_shell({shell, shell_args}, args, ctx, cd, rc_file, {timeout, configured}, progress) do
+    settings = Map.get(ctx, :settings) || %{}
 
     port =
       Port.open({:spawn_executable, shell}, [

@@ -1,8 +1,8 @@
-# CLI-local change to lib/swarm_code/engine/run_server.ex at 68bc97c, after the rewrite
+# CLI-local change to lib/swarm_code/engine/run_server.ex at 86f0d08, after the rewrite
 # rules of provenance/sync-rules.json. Recorded by mix swarm_code.provenance.sync.
 --- a/apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex
 +++ b/apps/swarm_code_daemon/lib/swarm_code/domain/engine/run_server.ex
-@@ -258,11 +258,48 @@
+@@ -264,11 +264,48 @@
    def consensus_round(run_id, stage),
      do: GenServer.call(via(run_id), {:consensus_round, stage}, :infinity)
  
@@ -51,7 +51,7 @@
    @doc "The questions waiting for an answer in this run, or `[]`."
    @spec pending_questions(String.t()) :: [{String.t(), [map()]}]
    # Spec 43 §1.4: its own call — `get_state/1` copied the whole run (nodes,
-@@ -275,6 +312,7 @@
+@@ -281,6 +318,7 @@
    end
  
    @spec start_agent(String.t(), %{
@@ -59,7 +59,7 @@
            parent_id: String.t(),
            name: String.t(),
            task: String.t(),
-@@ -1223,7 +1261,8 @@
+@@ -1231,7 +1269,8 @@
              from: from,
              permission: permission,
              safety: safety,
@@ -69,7 +69,7 @@
            })
            # spec 66 T3: the card used to render the node title alone — "run: " and
            # 60 characters of the command — and `detail` said "awaiting approval".
-@@ -1529,7 +1568,7 @@
+@@ -1537,7 +1576,7 @@
            parent_id: attrs.parent_id,
            name: name,
            role: "sub",
@@ -78,7 +78,7 @@
            depth: attrs.depth,
            prompt: attrs.task,
            status: if(queued?, do: "queued", else: "running")
-@@ -1868,6 +1907,52 @@
+@@ -1876,6 +1915,52 @@
  
    def handle_call(:get_state, _from, state), do: {:reply, state, state}
  
@@ -131,7 +131,7 @@
    def handle_call(:finish_totals, _from, state) do
      state = flush(state)
      {:reply, Map.take(state.run, [:tokens_in, :tokens_out, :cost_usd]), state}
-@@ -4693,7 +4778,13 @@
+@@ -4738,7 +4823,13 @@
  
      state =
        state

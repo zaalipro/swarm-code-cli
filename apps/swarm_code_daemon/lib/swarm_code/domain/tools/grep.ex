@@ -52,7 +52,7 @@ defmodule SwarmCode.Domain.Tools.Grep do
 
   @impl true
   def run(args, ctx, progress) do
-    with {:ok, abs} <- Path.resolve(ctx.project_root, args["path"] || ".") do
+    with {:ok, abs} <- Path.resolve_read(ctx, args["path"] || ".") do
       source = to_string(args["pattern"])
       max = clamp(args["max_results"] || 100, 1, 500)
 
@@ -79,7 +79,8 @@ defmodule SwarmCode.Domain.Tools.Grep do
   @ignored_globs ~w(_build* .git deps node_modules .elixir_ls .superpowers .DS_Store cover doc)
 
   defp file_candidates(abs, glob, ctx, source) do
-    root = ctx.project_root
+    # pass 77 C-FEAT-12: a walk inside an extra read-only root is confined to it.
+    root = Path.read_root(ctx, abs)
     all_files = fn -> candidates(abs, glob, root) end
 
     if File.dir?(abs) and use_rg?() do

@@ -7,7 +7,17 @@ defmodule SwarmCode.Domain.Hooks do
     appended to the system context as extra project instructions.
   - `pre_tool_use` — fires before a tool runs (after approval); exit 2
     blocks the tool call, stderr is the reason.
-  - `post_tool_use` — fires after a tool returns; informational only.
+  - `post_tool_use` — fires after a tool returns, off the agent's path
+    (`SwarmCode.Domain.Engine.Operation` runs it in `SwarmCode.Domain.Hooks.TaskSupervisor`
+    and drops what it prints): its output is logged, not shown to the model.
+    `run/3` still returns the collected stdout as `{:inject, text}` for a
+    direct caller; no engine path feeds it back.
+
+  pass 77 D-FEAT-3: a tool event also exports the call as bounded, redacted
+  variables: `NCODE_TOOL_INPUT` (the arguments as JSON, first 8 KB),
+  `NCODE_TOOL_COMMAND` (`run_command`'s command) and `NCODE_TOOL_PATH` (a
+  file tool's path), and for `post_tool_use` `NCODE_TOOL_OK` (`1` or `0`) and
+  `NCODE_TOOL_OUTPUT` (the result text, first 4 KB).
 
   pass 72 F9 (CLI 0.2.0, competitors-10):
   - `stop` — a run finished (`NCODE_STATUS`, `NCODE_RUN_ID`); informational.
@@ -58,6 +68,8 @@ defmodule SwarmCode.Domain.Hooks do
   # pass 72 F9: what an event's context may export, and how much of the prompt.
   @context_env [run_id: "NCODE_RUN_ID", status: "NCODE_STATUS", kind: "NCODE_KIND"]
   @prompt_env_bytes 8_192
+  # pass 77 D-FEAT-3: the tool call's arguments and result, cut the same way.
+  @tool_output_env_bytes 4_096
 
   @doc """
   pass 72 F9: `run/3` as owned work under `SwarmCode.Domain.Hooks.TaskSupervisor`,
@@ -295,6 +307,9 @@ defmodule SwarmCode.Domain.Hooks do
   # pass 72 F9: the event's facts as `NCODE_*` variables. Only short plain
   # values go out (a port refuses a NUL byte in its environment), and the
   # prompt is cut to its first 8 KB on a character boundary.
+  # pass 77 D-FEAT-3: the tool call's input and outcome go out the same way
+  # (`env_text/2`: invalid UTF-8 replaced, NUL removed, secrets redacted, cut
+  # on a character boundary).
   defp context_env(context) do
     facts =
       for {key, name} <- @context_env,
@@ -305,21 +320,88 @@ defmodule SwarmCode.Domain.Hooks do
     prompt =
       case context[:prompt] do
         text when is_binary(text) and text != "" ->
-          text = text |> String.replace_invalid() |> String.replace(<<0>>, "")
-
-          text =
-            if byte_size(text) > @prompt_env_bytes,
-              do: text |> binary_part(0, @prompt_env_bytes) |> String.replace_invalid(""),
-              else: text
-
-          [{"NCODE_PROMPT", text}]
+          [{"NCODE_PROMPT", prompt_text(text)}]
 
         _none ->
           []
       end
 
-    facts ++ prompt
+    facts ++ prompt ++ tool_env(context)
   end
+
+  # The prompt keeps its historical shape (no redaction: it is the user's own
+  # text and a hook that guards it needs it verbatim).
+  defp prompt_text(text) do
+    text = text |> String.replace_invalid() |> String.replace(<<0>>, "")
+
+    if byte_size(text) > @prompt_env_bytes,
+      do: text |> binary_part(0, @prompt_env_bytes) |> String.replace_invalid(""),
+      else: text
+  end
+
+  defp tool_env(context) do
+    args = context[:args]
+
+    input =
+      with true <- is_map(args),
+           {:ok, json} <- Jason.encode(args) do
+        [{"NCODE_TOOL_INPUT", env_text(json, @prompt_env_bytes)}]
+      else
+        _ -> []
+      end
+
+    command =
+      case is_map(args) && args["command"] do
+        text when is_binary(text) and text != "" ->
+          [{"NCODE_TOOL_COMMAND", env_text(text, @prompt_env_bytes)}]
+
+        _ ->
+          []
+      end
+
+    path =
+      case is_map(args) && args["path"] do
+        text when is_binary(text) and text != "" ->
+          [{"NCODE_TOOL_PATH", env_text(text, @prompt_env_bytes)}]
+
+        _ ->
+          []
+      end
+
+    ok =
+      case context[:result] do
+        :ok -> [{"NCODE_TOOL_OK", "1"}]
+        :error -> [{"NCODE_TOOL_OK", "0"}]
+        _ -> []
+      end
+
+    output =
+      case context[:output] do
+        text when is_binary(text) and text != "" ->
+          [{"NCODE_TOOL_OUTPUT", env_text(text, @tool_output_env_bytes)}]
+
+        _ ->
+          []
+      end
+
+    input ++ command ++ path ++ ok ++ output
+  end
+
+  # Sanitised like NCODE_PROMPT, then redacted. The cut before the redaction
+  # bounds the regex work; the final cut is on the redacted text.
+  defp env_text(text, max) do
+    text
+    |> String.replace_invalid()
+    |> String.replace(<<0>>, "")
+    |> cut_chars(max * 4)
+    |> SwarmCode.Domain.LLM.HTTP.redact()
+    |> cut_chars(max)
+  end
+
+  defp cut_chars(text, max) when byte_size(text) > max,
+    do: text |> binary_part(0, max) |> String.replace_invalid("")
+
+  defp cut_chars(text, _max), do: text
 
   # spec 73 T16: a Port instead of `Task.async` + `System.cmd`: the OS pid is
   # known, so a timeout reaps the whole tree (brutal_kill only closed the pipe

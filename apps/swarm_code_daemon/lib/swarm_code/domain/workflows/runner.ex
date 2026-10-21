@@ -21,6 +21,7 @@ defmodule SwarmCode.Domain.Workflows.Runner do
   @max_logs 500
   # spec 55 T10 (55a A3): the reply of a host call whose journal INSERT was refused.
   @journal_refused "journal write refused (database busy) — resume the run"
+  @journal_unreadable "journal read failed (database busy) — resume the run"
 
   def start_link(args),
     do: GenServer.start_link(__MODULE__, args, name: via(args.run_id), hibernate_after: 15_000)
@@ -55,6 +56,9 @@ defmodule SwarmCode.Domain.Workflows.Runner do
 
     defaults = %{
       journal: %{},
+      # pass 77 D-ARCH-4: the journal keys whose `result` was not loaded at boot; a replay
+      # reads that one blob from the database when its call comes up (`replay_result/3`).
+      unloaded: MapSet.new(),
       seq: 0,
       script: nil,
       finished?: false,
@@ -88,10 +92,11 @@ defmodule SwarmCode.Domain.Workflows.Runner do
 
   @impl true
   def handle_continue(:run, state) do
-    journal =
-      state.run_id
-      |> Workflows.journal()
-      |> Map.new(fn entry -> {{entry.seq, entry.slot}, entry} end)
+    entries = Workflows.journal_index(state.run_id)
+    journal = Map.new(entries, fn entry -> {{entry.seq, entry.slot}, entry} end)
+
+    unloaded =
+      for entry <- entries, entry.kind != "panel", into: MapSet.new(), do: {entry.seq, entry.slot}
 
     ctx = %{
       run_id: state.run_id,
@@ -115,7 +120,7 @@ defmodule SwarmCode.Domain.Workflows.Runner do
         :ok
       end)
 
-    {:noreply, %{state | journal: journal, script: task}}
+    {:noreply, %{state | journal: journal, unloaded: unloaded, script: task}}
   end
 
   def handle_continue(:shutdown, state), do: {:stop, :normal, state}
@@ -233,9 +238,15 @@ defmodule SwarmCode.Domain.Workflows.Runner do
     fingerprint = :erlang.phash2({kind, payload, opts})
 
     case state.journal[{seq, slot}] do
-      %{fingerprint: ^fingerprint, result: result} = entry ->
-        {:reply, {:replay, decode_result(result)},
-         state |> restore_last_error(entry) |> consumed({seq, slot})}
+      %{fingerprint: ^fingerprint} = entry ->
+        case replay_result(state, {seq, slot}, entry) do
+          {:ok, result} ->
+            {:reply, {:replay, decode_result(result)},
+             state |> restore_last_error(entry, result) |> consumed({seq, slot})}
+
+          {:error, :database_busy} ->
+            {:reply, {:failed, @journal_unreadable}, state}
+        end
 
       %{} ->
         # pass74 (spec 74) BUGS-58: after "Retry failed", a call a retried
@@ -293,8 +304,15 @@ defmodule SwarmCode.Domain.Workflows.Runner do
     fingerprint = :erlang.phash2({:read, what})
 
     case state.journal[{seq, slot}] do
-      %{kind: "read", fingerprint: ^fingerprint, result: result} ->
-        {:reply, {:value, read_value(what, decode_result(result))}, consumed(state, {seq, slot})}
+      %{kind: "read", fingerprint: ^fingerprint} = entry ->
+        case replay_result(state, {seq, slot}, entry) do
+          {:ok, result} ->
+            {:reply, {:value, read_value(what, decode_result(result))},
+             consumed(state, {seq, slot})}
+
+          {:error, :database_busy} ->
+            {:reply, {:failed, @journal_unreadable}, state}
+        end
 
       %{} ->
         case rewrite(state, seq, slot) do
@@ -404,8 +422,10 @@ defmodule SwarmCode.Domain.Workflows.Runner do
 
     case Workflows.delete_journal(state.run_id, Enum.map(doomed, fn {_key, e} -> e.id end)) do
       :ok ->
-        journal = Map.drop(state.journal, Enum.map(doomed, &elem(&1, 0)))
-        state = %{state | journal: journal}
+        doomed_keys = Enum.map(doomed, &elem(&1, 0))
+        journal = Map.drop(state.journal, doomed_keys)
+        unloaded = MapSet.difference(state.unloaded, MapSet.new(doomed_keys))
+        state = %{state | journal: journal, unloaded: unloaded}
         admitted = Workflows.admitted(Map.values(journal))
 
         state =
@@ -491,7 +511,7 @@ defmodule SwarmCode.Domain.Workflows.Runner do
   defp read_value(_what, _other), do: nil
 
   # A replayed failed agent entry puts its error back where `last_error()` reads.
-  defp restore_last_error(state, %{kind: "agent", result: result}) when is_binary(result) do
+  defp restore_last_error(state, %{kind: "agent"}, result) when is_binary(result) do
     case Jason.decode(result) do
       {:ok, %{"ok" => false, "error" => error}} when is_binary(error) and error != "no result" ->
         %{state | last_error: error}
@@ -501,7 +521,16 @@ defmodule SwarmCode.Domain.Workflows.Runner do
     end
   end
 
-  defp restore_last_error(state, _entry), do: state
+  defp restore_last_error(state, _entry, _result), do: state
+
+  # pass 77 D-ARCH-4: the blob a replay hands back. Loaded at boot for a panel marker (its
+  # count is read all the time); one primary-key read for any other entry, when its call comes
+  # up and never before — so the Runner never holds every result of a long run at once.
+  defp replay_result(state, {seq, slot} = key, entry) do
+    if MapSet.member?(state.unloaded, key),
+      do: Workflows.journal_result(state.run_id, seq, slot),
+      else: {:ok, entry.result}
+  end
 
   defp journal_insert_failed(state, seq, slot, kind, fingerprint) do
     case safe_json(%{"ok" => false, "error" => state.last_error || "no result"}) do
@@ -878,8 +907,15 @@ defmodule SwarmCode.Domain.Workflows.Runner do
   # A replayed entry has handed its result to the script: keep the rest.
   defp consumed(state, key) do
     case state.journal do
-      %{^key => entry} -> %{state | journal: Map.put(state.journal, key, slim(entry))}
-      _none -> state
+      %{^key => entry} ->
+        %{
+          state
+          | journal: Map.put(state.journal, key, slim(entry)),
+            unloaded: MapSet.delete(state.unloaded, key)
+        }
+
+      _none ->
+        state
     end
   end
 

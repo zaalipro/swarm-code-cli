@@ -204,3 +204,21 @@ the frozen `domain/format.ex`, records `4c7c577aa909274b009dc1bf0f216e5179acddc9
 admits version 2 records at ten adaptation pins: the nine named above and this commit. The
 recorded copyright, MIT license and NOTICE terms remain in place. This addendum does not publish
 or modify the desktop repository.
+
+## Addendum: desktop commit 86f0d083 (pass 77, review 1019, 2026-10-21)
+
+**Date:** 2026-10-21
+
+The review-1019 integration re-pins the extracted domain to desktop commit
+`86f0d083c99d7fcb70e831bf7f93770c67ec492b`, the desktop pass 77 integration commit (branch
+`r1019/Dint`), the same project and owner as the commits named above. It follows
+`68bc97cd37ff3f2c5fed18f8c5e36ad46d24a9ab` with the pass 77 engine, tools and data-layer changes
+(command safety, the sandbox, `load_skill`, image reads, extra read roots, the engine notifier
+port, the queue drain, MCP prompts, positional command arguments and the built-in `/init`
+command). It adds no migration, so the schema contract stays `desktop-4c7c577` (58 migrations).
+The provenance sync pins this commit (`provenance/sync-rules.json`), and 276 of the 300 entries in
+`provenance/extracted-files.json` record it as their upstream commit; 23 record
+`fb1b4ff82354ac8ff2e82d4f6516121fd55ff212` and one, the frozen `domain/format.ex`, records
+`4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier admits version 2 records at eleven
+adaptation pins: the ten named above and this commit. The recorded copyright, MIT license and
+NOTICE terms remain in place. This addendum does not publish or modify the desktop repository.

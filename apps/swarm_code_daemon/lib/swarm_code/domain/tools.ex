@@ -16,6 +16,8 @@ defmodule SwarmCode.Domain.Tools do
     # `run_command find`, which is an approval in every asking mode and walks
     # `node_modules`.
     SwarmCode.Domain.Tools.FindFiles,
+    # pass 77 C-FEAT-2: an agent can list and load the skills of the project.
+    SwarmCode.Domain.Tools.LoadSkill,
     # spec 70 B5: semantic code navigation via language servers.
     SwarmCode.Domain.Tools.Lsp,
     SwarmCode.Domain.Tools.WriteFile,
@@ -74,7 +76,7 @@ defmodule SwarmCode.Domain.Tools do
 
   @max_output 100_000
 
-  @read_only ~w(read_file list_dir find_files lsp grep web_search web_fetch git_status git_diff
+  @read_only ~w(read_file list_dir find_files load_skill lsp grep web_search web_fetch git_status git_diff
                 git_log ask_user submit_plan inbox wait_for_message agent_result update_plan)
   # Sakana task 19: `workflow_control` left this list — it mutates live runs, so
   # a plan-mode assistant must not be offered it. Spec 50 §6.3:

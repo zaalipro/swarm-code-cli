@@ -18,6 +18,9 @@ defmodule SwarmCode.Domain.CommandsTest do
     %{dir: dir, project: %SwarmCode.Domain.Projects.Project{name: "p", root_path: dir}}
   end
 
+  # pass 77 D3-3: ncode ships `/init` (scope :builtin); these tests are about files on disk.
+  defp user_commands(project), do: Enum.reject(Commands.list(project), &(&1.scope == :builtin))
+
   defp write_project(dir, name, text),
     do: File.write!(Path.join(Workspace.commands_dir(dir), name), text)
 
@@ -36,7 +39,7 @@ defmodule SwarmCode.Domain.CommandsTest do
     Please tidy: $ARGUMENTS
     """)
 
-    assert [command] = Commands.list(project)
+    assert [command] = user_commands(project)
     assert command.name == "tidy"
     assert command.description == "Tidy the code"
     assert command.swarm
@@ -49,19 +52,19 @@ defmodule SwarmCode.Domain.CommandsTest do
     write_project(dir, "plain.md", "just do the thing")
 
     assert [%{name: "plain", description: "plain", swarm: false, mode: nil}] =
-             Commands.list(project)
+             user_commands(project)
   end
 
   test "project commands override global ones", %{dir: dir, project: project} do
     write_global("dup.md", "---\ndescription: global one\n---\nglobal body")
     write_project(dir, "dup.md", "---\ndescription: project one\n---\nproject body")
 
-    assert [command] = Commands.list(project)
+    assert [command] = user_commands(project)
     assert command.description == "project one"
     assert command.scope == :project
 
     # Without a project only the global one is visible.
-    assert [%{scope: :global}] = Commands.list(nil)
+    assert [%{scope: :global}] = user_commands(nil)
   end
 
   test "$ARGUMENTS is replaced and trimmed", %{dir: dir, project: project} do
@@ -86,6 +89,6 @@ defmodule SwarmCode.Domain.CommandsTest do
 
   test "no commands folder means no commands" do
     empty = %SwarmCode.Domain.Projects.Project{name: "e", root_path: System.tmp_dir!()}
-    assert Commands.list(empty) == []
+    assert user_commands(empty) == []
   end
 end

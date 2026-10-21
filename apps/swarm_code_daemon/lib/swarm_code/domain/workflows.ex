@@ -483,7 +483,11 @@ defmodule SwarmCode.Domain.Workflows do
   def get_run(run_id), do: Repo.get(Run, run_id)
 
   def get_run_by_display_name(name) do
-    Repo.one(from(w in Run, where: w.display_name == ^name, limit: 1))
+    # pass 77 D-BUG-6: names are allocated inside the insert transaction, but a legacy
+    # database may still hold duplicates — the oldest wins, deterministically.
+    Repo.one(
+      from(w in Run, where: w.display_name == ^name, order_by: [asc: w.inserted_at], limit: 1)
+    )
   end
 
   def insert_run(attrs), do: %Run{} |> Run.changeset(attrs) |> Repo.insert()
@@ -514,6 +518,51 @@ defmodule SwarmCode.Domain.Workflows do
       |> then(&"#{base}-#{&1}")
     else
       base
+    end
+  end
+
+  @doc """
+  pass 77 D-ARCH-4: the journal of a run as the Runner boots from it — every entry with its
+  `result` except the panel markers' (a panel's count is read by `admitted/1`). The other
+  results are what a replay hands back to the script, and a long run's can be megabytes; the
+  Runner reads one at a time with `journal_result/3` when its call comes up. In
+  `{seq, slot}` order, like `journal/1`.
+  """
+  @spec journal_index(String.t()) :: [JournalEntry.t()]
+  def journal_index(run_id) do
+    fields = JournalEntry.__schema__(:fields) -- [:result]
+
+    panels =
+      Repo.all(from(e in JournalEntry, where: e.run_id == ^run_id and e.kind == "panel"))
+
+    others =
+      Repo.all(
+        from(e in JournalEntry,
+          where: e.run_id == ^run_id and (is_nil(e.kind) or e.kind != "panel"),
+          select: struct(e, ^fields)
+        )
+      )
+
+    Enum.sort_by(panels ++ others, &{&1.seq, &1.slot})
+  end
+
+  @doc """
+  pass 77 D-ARCH-4: the `result` of one journal entry (one primary-key read), for a replay.
+  `{:ok, result | nil}` or `{:error, :database_busy}`.
+  """
+  @spec journal_result(String.t(), integer(), integer()) ::
+          {:ok, String.t() | nil} | {:error, :database_busy}
+  def journal_result(run_id, seq, slot) do
+    case Repo.retry(:journal_result, fn ->
+           Repo.one(
+             from(e in JournalEntry,
+               where: e.run_id == ^run_id and e.seq == ^seq and e.slot == ^slot,
+               select: e.result
+             )
+           )
+         end) do
+      {:error, :database_busy} = busy -> busy
+      result -> {:ok, result}
     end
   end
 
@@ -713,7 +762,9 @@ defmodule SwarmCode.Domain.Workflows do
         |> Map.put("carry", :carry)
 
       args = merge_carry(cast, attrs[:carry], declared)
-      display_name = next_display_name(definition.name || "adhoc")
+      # pass 77 D-BUG-6: only the base name here; `create_rows/5` numbers it inside the
+      # insert transaction so two simultaneous launches cannot take the same name.
+      display_name = definition.name || "adhoc"
       budget = attrs[:budget] || definition.meta[:budget] || settings.workflow_budget || 128
 
       max_live =
@@ -806,28 +857,39 @@ defmodule SwarmCode.Domain.Workflows do
   # Both rows or neither — and the `{:run_created, …}` broadcast only once the
   # transaction has committed, so the sidebar never sees a run that is gone.
   defp create_rows(conversation, prompt, model, launched_by_run_id, wf_attrs) do
+    # pass 77 D-BUG-6: `next_display_name/1` (a read) and the insert share one IMMEDIATE
+    # transaction, so the write lock serialises the allocation; `Repo.retry/2` wraps the
+    # whole transaction, never a statement inside it.
     result =
-      Repo.transaction(fn ->
-        {:ok, run} =
-          Conversations.insert_run_row(%{
-            conversation_id: conversation.id,
-            # CLI: the run whose tool launched this workflow, so `ncode -p`
-            # follows it like a swarm (`StartSwarm` records the same link).
-            launched_by_run_id: launched_by_run_id,
-            kind: "workflow",
-            prompt: String.trim(prompt),
-            model: model && model.model,
-            started_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
-          })
+      Repo.retry(:workflow_create_rows, fn ->
+        Repo.transaction(
+          fn ->
+            display_name = next_display_name(wf_attrs.display_name)
 
-        case insert_run(%{wf_attrs | run_id: run.id}) do
-          {:ok, wf} -> {run, wf}
-          {:error, changeset} -> Repo.rollback(changeset_message(changeset))
-        end
+            {:ok, run} =
+              Conversations.insert_run_row(%{
+                conversation_id: conversation.id,
+                # CLI: the run whose tool launched this workflow, so `ncode -p`
+                # follows it like a swarm (`StartSwarm` records the same link).
+                launched_by_run_id: launched_by_run_id,
+                kind: "workflow",
+                prompt: String.trim(prompt),
+                model: model && model.model,
+                started_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+              })
+
+            case insert_run(%{wf_attrs | run_id: run.id, display_name: display_name}) do
+              {:ok, wf} -> {run, wf}
+              {:error, changeset} -> Repo.rollback(changeset_message(changeset))
+            end
+          end,
+          mode: :immediate
+        )
       end)
 
     case result do
       {:ok, pair} -> {:ok, pair}
+      {:error, :database_busy} -> {:error, "the database is busy — launch it again"}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -1127,6 +1189,13 @@ defmodule SwarmCode.Domain.Workflows do
       wf.pause_kind == "budget" and
           (not is_integer(opts[:budget]) or opts[:budget] <= wf.agents_admitted) ->
         {:error, :budget_too_low}
+
+      # pass 77 X-3: a stopped run that had admitted agents resumes by replaying its journal;
+      # one whose journal was cleaned up would re-run everything from the start (and spend
+      # its budget again) while reading as "resumed".
+      run.status == "stopped" and (wf.agents_admitted || 0) > 0 and
+          not Repo.exists?(from(e in JournalEntry, where: e.run_id == ^run.id)) ->
+        {:error, :journal_pruned}
 
       true ->
         do_resume(wf, run, opts)

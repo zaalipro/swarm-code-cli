@@ -325,10 +325,17 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
 
       {[argv0 | rest], meta} ->
         name = base(argv0)
+        shell = if name in @shells, do: shell_script(rest)
 
         cond do
           name in @escalations ->
             {:dangerous, meta}
+
+          # pass 77 X-6 (C-BUG-2): only a system program is peeled as a wrapper or a shell.
+          # `./env pwd`, `./bash -c pwd`, `/tmp/x/nohup ls` run the project's own executable,
+          # so they are classified as that program, never as the `pwd` behind it.
+          not system_argv0?(argv0) ->
+            {[argv0 | rest], meta}
 
           name == "env" and split_string(rest) != nil ->
             {{:shell, split_string(rest)}, meta}
@@ -337,8 +344,9 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
             {rest, meta} = wrapper_rest(name, rest, meta)
             peel(rest, depth + 1, meta)
 
-          name in @shells and shell_script(rest) != nil ->
-            {{:shell, shell_script(rest)}, meta}
+          shell != nil ->
+            {script, unsafe?} = shell
+            {{:shell, script}, %{meta | unsafe?: meta.unsafe? or unsafe?}}
 
           true ->
             {[argv0 | rest], meta}
@@ -433,18 +441,46 @@ defmodule SwarmCode.Domain.Tools.CommandSafety do
   # script, and every word after it (joined, so a split script fails closed).
   # Only the shell's own options count — in `bash x.sh -c ls` the `-c` is an
   # argument of `x.sh`, and `x.sh` is what runs.
-  defp shell_script(rest), do: rest |> Enum.map(&unquote_word/1) |> shell_c()
+  #
+  # pass 77 X-6 (C-BUG-3): only these options may stand before `-c` and leave the script's
+  # class standing. Anything else — `--rcfile f`, `--init-file f`, `-i`, fish's `-C cmd` /
+  # `--init-command=cmd`, any other long option — can run code before the script, so the
+  # invocation is never :safe; its script is still classified, so a dangerous body stays
+  # dangerous. Returns `{script, unsafe?}` or nil.
+  @shell_plain_flags ~r/^[-+][elnuvxf]+$/
+  @shell_value_flags ~w(-o +o -O +O)
+  @shell_plain_long ~w(--norc --noprofile --posix)
+  @shell_file_flags ~w(--rcfile --init-file -C --init-command)
 
-  defp shell_c([word | rest]) do
+  defp shell_script(rest), do: rest |> Enum.map(&unquote_word/1) |> shell_c(false)
+
+  defp shell_c([word | rest], unsafe?) do
     cond do
-      Regex.match?(~r/^-[A-Za-z]*c[A-Za-z]*$/, word) -> rest |> Enum.join(" ") |> String.trim()
-      word in ~w(-o +o -O +O --rcfile --init-file) -> shell_c(Enum.drop(rest, 1))
-      String.starts_with?(word, ["-", "+"]) and word != "--" -> shell_c(rest)
-      true -> nil
+      Regex.match?(~r/^-[A-Za-z]*c[A-Za-z]*$/, word) ->
+        {rest |> Enum.join(" ") |> String.trim(),
+         unsafe? or not Regex.match?(~r/^-[elnuvxfc]+$/, word)}
+
+      word in @shell_value_flags ->
+        shell_c(Enum.drop(rest, 1), unsafe?)
+
+      word in @shell_plain_long ->
+        shell_c(rest, unsafe?)
+
+      word in @shell_file_flags ->
+        shell_c(Enum.drop(rest, 1), true)
+
+      Regex.match?(@shell_plain_flags, word) ->
+        shell_c(rest, unsafe?)
+
+      String.starts_with?(word, ["-", "+"]) and word != "--" ->
+        shell_c(rest, true)
+
+      true ->
+        nil
     end
   end
 
-  defp shell_c([]), do: nil
+  defp shell_c([], _unsafe?), do: nil
 
   defp base(argv0), do: Elixir.Path.basename(argv0)
 

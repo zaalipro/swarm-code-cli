@@ -37,6 +37,9 @@ defmodule SwarmCode.Domain.Storage do
 
   @topic "storage"
   @finished ~w(done failed stopped)
+  # pass 77 X-3: a stopped workflow run can still be resumed, and a resume replays its
+  # journal, so only the journals of runs that ended for good are offered for cleanup.
+  @journal_finished ~w(done failed)
   # Spec 49 §1.5: one transaction per batch, so a cleanup of a million rows
   # never holds the write lock long enough to make a live agent wait.
   @batch 500
@@ -686,7 +689,7 @@ defmodule SwarmCode.Domain.Storage do
       join: w in WorkflowRun,
       on: w.run_id == r.id,
       where:
-        r.status in @finished and not is_nil(r.finished_at) and
+        r.status in @journal_finished and not is_nil(r.finished_at) and
           r.finished_at < ^cutoff(days, now)
     )
     |> exclude_run_conversations(session_ids)

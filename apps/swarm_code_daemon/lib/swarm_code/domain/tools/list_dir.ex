@@ -43,13 +43,13 @@ defmodule SwarmCode.Domain.Tools.ListDir do
 
   @impl true
   def run(args, ctx, progress) do
-    with {:ok, abs} <- Path.resolve(ctx.project_root, args["path"] || ".") do
+    with {:ok, abs} <- Path.resolve_read(ctx, args["path"] || ".") do
       rel = Path.relative(ctx.project_root, abs)
 
       if File.dir?(abs) do
         depth = (args["depth"] || 1) |> max(1) |> min(3)
         progress.(50, "listing")
-        {lines, emitted, counted} = walk(abs, "", 1, depth, [], 0, 0, root_pair(ctx))
+        {lines, emitted, counted} = walk(abs, "", 1, depth, [], 0, 0, root_pair(ctx, abs))
         lines = Enum.reverse(lines)
         extra = counted - emitted
 
@@ -70,8 +70,9 @@ defmodule SwarmCode.Domain.Tools.ListDir do
 
   # Spec 51 §7.1 (E3): the root's symlinks were re-resolved once per entry.
   # `real_path/1` runs once per op now and travels down the walk.
-  defp root_pair(ctx) do
-    root = Elixir.Path.expand(ctx.project_root)
+  # pass 77 C-FEAT-12: the root is the extra read-only root when `abs` is in one.
+  defp root_pair(ctx, abs) do
+    root = Path.read_root(ctx, abs)
 
     case Path.real_path(root) do
       {:ok, real_root} -> {real_root, root}

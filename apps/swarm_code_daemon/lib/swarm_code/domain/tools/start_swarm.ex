@@ -53,6 +53,11 @@ defmodule SwarmCode.Domain.Tools.StartSwarm do
   @impl true
   def permission(_args), do: :read
 
+  # pass 77 D-BUG-7: one swarm per conversation is a check-then-start; two calls in one
+  # assistant batch run one after the other, so the second sees the first swarm.
+  @impl true
+  def parallel?, do: false
+
   @impl true
   def title(args),
     do: "start_swarm " <> String.slice(SwarmCode.Domain.Tools.arg_text(args["task"] || ""), 0, 60)
@@ -80,10 +85,26 @@ defmodule SwarmCode.Domain.Tools.StartSwarm do
   defp launch(task, agents, conversation, caller_run_id, approval_override) do
     # Spec 51 §5.9 (d): `max_concurrent_agents` is per run — a second swarm in
     # the conversation would double the fan-out, not share it.
-    if swarm_running?(conversation.id) do
-      {:error, "a swarm is already running in this conversation — wait for it or stop it"}
-    else
-      do_launch(task, agents, conversation, caller_run_id, approval_override)
+    #
+    # pass 77 D-BUG-7: "is a swarm running?" then "start one" is check-then-act. The
+    # claim below is a unique Registry key held by this op task from the check until
+    # `Engine.start_swarm` has returned (the new RunServer registers itself before
+    # that), so a concurrent call cannot slip between the two.
+    key = {:swarm_launch, conversation.id}
+
+    case Registry.register(SwarmCode.Domain.Registry, key, nil) do
+      {:ok, _owner} ->
+        try do
+          if swarm_running?(conversation.id),
+            do:
+              {:error, "a swarm is already running in this conversation — wait for it or stop it"},
+            else: do_launch(task, agents, conversation, caller_run_id, approval_override)
+        after
+          Registry.unregister(SwarmCode.Domain.Registry, key)
+        end
+
+      {:error, {:already_registered, _pid}} ->
+        {:error, "a swarm is already starting in this conversation — wait for it or stop it"}
     end
   end
 

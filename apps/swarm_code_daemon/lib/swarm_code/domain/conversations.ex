@@ -1072,10 +1072,8 @@ defmodule SwarmCode.Domain.Conversations do
     SwarmCode.Domain.MarkdownCache.delete_conversation(conversation.id)
     result = Repo.delete(conversation)
 
-    if match?({:ok, _}, result) do
-      SwarmCode.Domain.UIState.delete(conversation.id)
-      broadcast_deleted(conversation.id)
-    end
+    # pass 77 D-ARCH-11: UIState drops its copy on this notice (it subscribes).
+    if match?({:ok, _}, result), do: broadcast_deleted(conversation.id)
 
     Projects.broadcast()
     result
@@ -1085,7 +1083,8 @@ defmodule SwarmCode.Domain.Conversations do
   The data layer's delete notice (spec 74 ARCHITECTURE-21): `{:conversation_deleted, id}`
   on the `"conversations"` topic, after a successful delete. Web-side caches
   (UIState, MarkdownCache) can subscribe and evict there instead of being
-  called from here; until they do, `delete/1` still calls them directly.
+  called from here. `UIState` does (pass 77 D-ARCH-11); `MarkdownCache` is still
+  evicted by `delete/1` itself, before the rows go.
   """
   @spec deleted_topic() :: String.t()
   def deleted_topic, do: "conversations"
@@ -1491,41 +1490,95 @@ defmodule SwarmCode.Domain.Conversations do
     Enum.sort_by(Enum.concat(shown, report_previews(closed_ids)), & &1.position)
   end
 
-  # A closed turn shows its report as a #{@report_preview}-character line, so
-  # that is all that is read; `clipped` says the text goes on. Whitespace-heavy
-  # text whose window does not fill the line is read whole, to keep the line exact.
+  # pass 77 D-ARCH-5: the codepoints `SwarmCode.Domain.Format.clip_line/3` trims and collapses
+  # (its `space?/1` guard: PCRE's `\s` under /u plus U+180E), as one string for SQLite's
+  # `ltrim/2`. A report that starts with thousands of blanks has the same preview line
+  # as the one without them, so the window is taken after them.
+  @sql_spaces [
+                0x09..0x0D,
+                [0x20, 0x85, 0xA0, 0x1680, 0x180E],
+                0x2000..0x200A,
+                [0x2028, 0x2029, 0x202F, 0x205F, 0x3000]
+              ]
+              |> Enum.flat_map(&Enum.to_list/1)
+              |> List.to_string()
+  @report_rounds 3
+
+  # A closed turn shows its report as a #{@report_preview}-character line, so that is
+  # all that is read; `clipped` says the content here is not the whole body (it goes on, or
+  # leading whitespace was dropped), so an expansion reloads it. A line the window could not
+  # fill (a body of mostly interior whitespace) is read again with the window ×8, at most
+  # #{@report_rounds} rounds in all; only a row still undecided after that is read whole.
   defp report_previews([]), do: []
 
-  defp report_previews(ids) do
-    Repo.all(
-      from(m in Message,
-        where: m.id in ^ids,
-        select: %{
-          struct(m, ^@transcript_fields)
-          | content: fragment("substr(?, 1, ?)", m.content, ^@report_window),
-            clipped: type(fragment("length(?) > ?", m.content, ^@report_window), :boolean),
-            has_reasoning:
-              type(fragment("coalesce(octet_length(?), 0) > 0", m.reasoning), :boolean)
-        }
-      )
-    )
-    |> Enum.map(fn
-      %{clipped: true} = m ->
-        case SwarmCode.Domain.Format.clip_line(m.content, @report_preview, @report_preview) do
-          {_line, true} ->
-            m
+  defp report_previews(ids), do: preview_rounds(ids, @report_window, @report_rounds, [])
 
-          {_line, false} ->
+  defp preview_rounds([], _window, _rounds, done), do: done
+
+  defp preview_rounds(ids, window, rounds, done) do
+    {decided, open} =
+      ids
+      |> read_previews(window)
+      |> Enum.split_with(fn {m, cut?} ->
+        not (cut? and match?({_line, false}, preview_line(m)))
+      end)
+
+    done = Enum.map(decided, &elem(&1, 0)) ++ done
+
+    cond do
+      open == [] ->
+        done
+
+      rounds > 1 ->
+        preview_rounds(Enum.map(open, fn {m, _cut?} -> m.id end), window * 8, rounds - 1, done)
+
+      true ->
+        # Practically never: a body of tens of thousands of blank characters between words.
+        whole =
+          for {m, _cut?} <- open do
             %{
               m
               | content: Repo.one!(from(r in Message, where: r.id == ^m.id, select: r.content)),
                 clipped: false
             }
-        end
+          end
 
-      m ->
-        m
-    end)
+        whole ++ done
+    end
+  end
+
+  defp preview_line(m),
+    do: SwarmCode.Domain.Format.clip_line(m.content, @report_preview, @report_preview)
+
+  # `{message, cut?}`: `cut?` is "the body goes on past the window", `clipped` the wider
+  # "this content is not the body".
+  defp read_previews(ids, window) do
+    Repo.all(
+      from(m in Message,
+        where: m.id in ^ids,
+        select:
+          {%{
+             struct(m, ^@transcript_fields)
+             | content: fragment("substr(ltrim(?, ?), 1, ?)", m.content, ^@sql_spaces, ^window),
+               clipped:
+                 type(
+                   fragment(
+                     "length(ltrim(?, ?)) > ? OR length(?) != length(ltrim(?, ?))",
+                     m.content,
+                     ^@sql_spaces,
+                     ^window,
+                     m.content,
+                     m.content,
+                     ^@sql_spaces
+                   ),
+                   :boolean
+                 ),
+               has_reasoning:
+                 type(fragment("coalesce(octet_length(?), 0) > 0", m.reasoning), :boolean)
+           },
+           type(fragment("length(ltrim(?, ?)) > ?", m.content, ^@sql_spaces, ^window), :boolean)}
+      )
+    )
   end
 
   @doc "The whole text of message `id`, for a row `goal_board_messages/4` clipped."
@@ -1862,6 +1915,74 @@ defmodule SwarmCode.Domain.Conversations do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @doc """
+  pass 77 D-BUG-4: supersedes every run launched (transitively) by `run_id`, and their
+  messages; returns their ids. `supersede/2` folds the edited turn's own run and messages;
+  what that run started (a swarm, a workflow, the continuation turn behind them) is the
+  same turn's work and has to fold with it. Stopping the live ones is the caller's job
+  (`Engine.stop_superseded_family/2`). Rows already superseded keep their mark.
+  """
+  @spec supersede_launched(String.t(), String.t()) ::
+          {:ok, [String.t()]} | {:error, :database_busy}
+  def supersede_launched(conv_id, run_id) do
+    at = now()
+
+    result =
+      with_busy_retry(fn ->
+        Repo.transaction(
+          fn ->
+            family = conv_id |> launched_family([run_id]) |> List.delete(run_id)
+
+            if family == [] do
+              {family, []}
+            else
+              open_ids =
+                Repo.all(
+                  from(r in Run, where: r.id in ^family and is_nil(r.superseded_at), select: r.id)
+                )
+
+              Repo.update_all(from(r in Run, where: r.id in ^open_ids), set: [superseded_at: at])
+
+              message_ids =
+                Repo.all(
+                  from(m in Message,
+                    where:
+                      m.conversation_id == ^conv_id and is_nil(m.superseded_at) and
+                        (m.run_id in ^family or m.reply_to_run_id in ^family),
+                    select: m.id
+                  )
+                )
+
+              Repo.update_all(from(m in Message, where: m.id in ^message_ids),
+                set: [superseded_at: at]
+              )
+
+              {family, open_ids, message_ids}
+            end
+          end,
+          mode: :immediate
+        )
+      end)
+
+    case result do
+      {:ok, {family, []}} ->
+        {:ok, family}
+
+      {:ok, {family, open_ids, message_ids}} ->
+        # Outside the transaction, as in `supersede/2`: every open view folds the cards at once.
+        for m <- Repo.all(from(m in Message, where: m.id in ^message_ids)),
+            do: broadcast(conv_id, {:message_updated, m})
+
+        for r <- Repo.all(from(r in Run, where: r.id in ^open_ids)),
+            do: broadcast(conv_id, {:run_updated, r})
+
+        {:ok, family}
+
+      {:error, :database_busy} = busy ->
+        busy
     end
   end
 
@@ -2230,15 +2351,18 @@ defmodule SwarmCode.Domain.Conversations do
 
   # Every write that turns `interrupted` from true to false announces it here,
   # so a caller cannot forget (resume, workflow control, dismiss).
-  defp announce_interrupted_cleared(%Run{interrupted: true}, %Run{interrupted: false} = updated) do
-    event = {:interrupted_changed, updated.conversation_id}
+  defp announce_interrupted_cleared(%Run{interrupted: true}, %Run{interrupted: false} = updated),
+    do: announce_interrupted_changed(updated.conversation_id)
+
+  defp announce_interrupted_cleared(_before, _after), do: :ok
+
+  defp announce_interrupted_changed(conversation_id) do
+    event = {:interrupted_changed, conversation_id}
     SwarmCode.Domain.PubSub.broadcast(SwarmCode.Domain.PubSub, @runs_topic, event)
     # The secondary pages that show the sidebar listen here, so they do not
     # also receive every run status.
     SwarmCode.Domain.PubSub.broadcast(SwarmCode.Domain.PubSub, @interruptions_topic, event)
   end
-
-  defp announce_interrupted_cleared(_before, _after), do: :ok
 
   @doc "The most recent distinct user prompts across every conversation, newest first."
   @spec recent_prompts(pos_integer()) :: [String.t()]
@@ -2815,6 +2939,42 @@ defmodule SwarmCode.Domain.Conversations do
     Repo.all(from(n in Node, where: n.run_id == ^run_id, order_by: [asc: :position]))
   end
 
+  @boot_blobs [:result, :detail, :input, :error]
+  @boot_fields Node.__schema__(:fields) -- @boot_blobs
+
+  @doc """
+  pass 77 D-ARCH-3: a resuming workflow's nodes; finished non-whole ops arrive without the
+  four blob columns (`result`, `detail`, `input`, `error`; the rows are untouched). The
+  RunServer used to load every row whole and then discard those columns for exactly these
+  ops (`light?/1`), so a long workflow's tool output crossed the database boundary only to be
+  dropped. `finished_statuses` and `whole_ops` are the RunServer's own lists, so this is the
+  same predicate evaluated in SQL: a NULL `op_type` is light (`nil not in whole_ops`), which
+  is why it is tested explicitly — SQL `NOT IN` skips NULL. Ordered by `position`.
+  """
+  @spec list_nodes_for_boot(String.t(), [String.t()], [String.t()]) :: [Node.t()]
+  def list_nodes_for_boot(run_id, finished_statuses, whole_ops) do
+    light? =
+      dynamic(
+        [n],
+        n.kind == "op" and n.status in ^finished_statuses and
+          (is_nil(n.op_type) or n.op_type not in ^whole_ops)
+      )
+
+    light =
+      Repo.all(
+        from(n in Node,
+          where: n.run_id == ^run_id,
+          where: ^light?,
+          select: struct(n, ^@boot_fields)
+        )
+      )
+
+    heavy? = dynamic([n], not (^light?))
+    rest = Repo.all(from(n in Node, where: n.run_id == ^run_id, where: ^heavy?))
+
+    Enum.sort_by(light ++ rest, & &1.position)
+  end
+
   @node_light_fields Node.__schema__(:fields) -- [:prompt, :result, :input]
 
   @resume_fields ~w(id run_id parent_id kind op_type name role title status position finished_at
@@ -3291,17 +3451,7 @@ defmodule SwarmCode.Domain.Conversations do
   """
   @spec interrupted_page(non_neg_integer()) :: {non_neg_integer(), [interrupted_entry()]}
   def interrupted_page(page) when is_integer(page) and page >= 0 do
-    settled =
-      from(r in Run,
-        join: c in Conversation,
-        on: c.id == r.conversation_id,
-        left_join: p in Projects.Project,
-        on: p.id == c.project_id,
-        where:
-          r.interrupted == true and
-            r.status in ["stopped", "interrupted"] and r.kind in ["chat", "swarm", "workflow"] and
-            is_nil(c.research_id)
-      )
+    settled = unresolved_interruptions()
 
     total = Repo.aggregate(settled, :count)
 
@@ -3327,6 +3477,52 @@ defmodule SwarmCode.Domain.Conversations do
       end)
 
     {total, runs}
+  end
+
+  # The runs the restart notice and its page list: still `interrupted`, ended by the restart,
+  # and not folded away by an edit (pass 77 X-4: a superseded run is not the user's to resume).
+  # Bindings: run, conversation, project.
+  defp unresolved_interruptions do
+    from(r in Run,
+      join: c in Conversation,
+      on: c.id == r.conversation_id,
+      left_join: p in Projects.Project,
+      on: p.id == c.project_id,
+      where:
+        r.interrupted == true and is_nil(r.superseded_at) and
+          r.status in ["stopped", "interrupted"] and r.kind in ["chat", "swarm", "workflow"] and
+          is_nil(c.research_id)
+    )
+  end
+
+  @doc """
+  pass 77 X-4: the restart notice's Dismiss, persisted. Clears `interrupted` on every run the
+  notice lists, so the notice does not come back at the next mount or boot. The runs stay
+  `stopped` / `interrupted` and keep their own Resume. Returns how many runs were cleared.
+  """
+  @spec dismiss_interrupted_all() :: {:ok, non_neg_integer()} | {:error, :database_busy}
+  def dismiss_interrupted_all do
+    conversation_ids =
+      Repo.all(from([r, c] in unresolved_interruptions(), distinct: true, select: c.id))
+
+    result =
+      Repo.retry(:dismiss_interrupted, fn ->
+        Repo.update_all(
+          from(r in Run,
+            where: r.id in subquery(from(q in unresolved_interruptions(), select: q.id))
+          ),
+          set: [interrupted: false]
+        )
+      end)
+
+    case result do
+      {count, _} when is_integer(count) ->
+        Enum.each(conversation_ids, &announce_interrupted_changed/1)
+        {:ok, count}
+
+      {:error, :database_busy} = busy ->
+        busy
+    end
   end
 
   @doc """

@@ -123,6 +123,11 @@ defmodule SwarmCode.Domain.MCP.Client do
       buffer_size: 0,
       next_id: 1,
       tools: [],
+      # pass 77 D-FEAT-12: what the server's `initialize` result advertised
+      # (`capabilities`), and its prompts (`prompts/list`, one page) when it
+      # advertised `prompts`. Client capabilities stay `%{}`.
+      capabilities: %{},
+      prompts: [],
       session_id: nil,
       # spec 61 T3: the version the server negotiated in the initialize result.
       # MCP 2025-06-18 wants it back on every later HTTP request; `nil` until
@@ -425,6 +430,17 @@ defmodule SwarmCode.Domain.MCP.Client do
     list_tools_async(state, nil, [], MapSet.new(), 1)
   end
 
+  # pass 77 D-FEAT-12: the same for the prompt catalogue (stdio only, like tools).
+  defp notification(
+         %{status: :ready, server: %Server{transport: "stdio"}} = state,
+         "notifications/prompts/list_changed",
+         _params
+       ) do
+    if prompts?(state),
+      do: start_request(state, {:list_prompts, nil}, "prompts/list", %{}, @handshake_timeout),
+      else: state
+  end
+
   defp notification(state, _method, _params), do: state
 
   # spec 73 T15: one `tools/list` page as a pending request; the accumulator
@@ -461,14 +477,33 @@ defmodule SwarmCode.Domain.MCP.Client do
     e -> fail(state, "malformed response: " <> Exception.message(e))
   end
 
-  defp rpc_reply(state, %{"result" => result}), do: tool_result(state, result)
-  defp rpc_reply(state, %{"error" => err}), do: {:error, rpc_error(state, err)}
-  defp rpc_reply(_state, _other), do: {:error, "unexpected response"}
+  defp rpc_reply(state, %{"result" => result}, method), do: method_result(method, state, result)
+  defp rpc_reply(state, %{"error" => err}, _method), do: {:error, rpc_error(state, err)}
+  defp rpc_reply(_state, _other, _method), do: {:error, "unexpected response"}
+
+  # pass 77 D-FEAT-12: a `tools/call` result is shaped into text and images;
+  # any other method (`prompts/get`) hands its result map back, redacted.
+  defp method_result("tools/call", state, result), do: tool_result(state, result)
+
+  defp method_result(_method, state, result) when is_map(result),
+    do: {:ok, redact_deep(state, result)}
+
+  defp method_result(_method, _state, _other), do: {:error, "unexpected response"}
+
+  defp redact_deep(state, value) when is_binary(value), do: safe(state, value)
+  defp redact_deep(state, value) when is_list(value), do: Enum.map(value, &redact_deep(state, &1))
+
+  defp redact_deep(state, value) when is_map(value),
+    do: Map.new(value, fn {key, item} -> {key, redact_deep(state, item)} end)
+
+  defp redact_deep(_state, value), do: value
 
   @impl true
   def handle_call(:status, _from, state), do: {:reply, state.status, state}
 
   def handle_call(:tools, _from, state), do: {:reply, state.tools, state}
+
+  def handle_call(:prompts, _from, state), do: {:reply, state.prompts, state}
 
   # Spec 13 §11 A-9: a tool call used to hold this GenServer for up to two
   # minutes, so a second concurrent call died on the client-side call timeout
@@ -477,11 +512,20 @@ defmodule SwarmCode.Domain.MCP.Client do
   # `GenServer.reply/2`.
   def handle_call({:call_tool, tool_name, args, timeout}, from, state) do
     params = %{"name" => tool_name, "arguments" => args || %{}}
+    admit_request(state, from, "tools/call", params, timeout)
+  end
 
+  # pass 77 D-FEAT-12: `prompts/get` goes through the same admission pipeline.
+  def handle_call({:get_prompt, name, args, timeout}, from, state) do
+    params = %{"name" => name, "arguments" => args || %{}}
+    admit_request(state, from, "prompts/get", params, timeout)
+  end
+
+  defp admit_request(state, from, method, params, timeout) do
     if state.handshake == nil and state.status != :ready do
       {:reply, {:error, "MCP server #{state.server.name} is not connected"}, state}
     else
-      call = admit_call(from, "tools/call", params, timeout, System.monotonic_time(:millisecond))
+      call = admit_call(from, method, params, timeout, System.monotonic_time(:millisecond))
       state = %{state | calls: Map.put(state.calls, call.ref, call)}
 
       state =
@@ -745,7 +789,7 @@ defmodule SwarmCode.Domain.MCP.Client do
       try do
         case send_message(snapshot, request_message(id, method, params), id, timeout) do
           {:ok, %{"result" => result}, new_state} ->
-            {tool_result(new_state, result), learned(had, new_state.session_id), :ok}
+            {method_result(method, new_state, result), learned(had, new_state.session_id), :ok}
 
           {:ok, %{"error" => err}, new_state} ->
             {{:error, rpc_error(new_state, err)}, learned(had, new_state.session_id), :ok}
@@ -1058,7 +1102,7 @@ defmodule SwarmCode.Domain.MCP.Client do
 
         case live_call(state, ref) do
           {:gone, state} -> state
-          {:ok, _call} -> finish_call(state, ref, call_reply(state, reply))
+          {:ok, call} -> finish_call(state, ref, call_reply(state, reply, call.method))
         end
 
       {{from, timer, mref}, pending} ->
@@ -1086,13 +1130,23 @@ defmodule SwarmCode.Domain.MCP.Client do
     e -> handshake_failed(state, "malformed response: " <> Exception.message(e))
   end
 
+  # pass 77 D-FEAT-12: the prompt catalogue was re-listed after
+  # `notifications/prompts/list_changed`.
+  defp answer(state, {:list_prompts, _ctx}, reply) do
+    prompts = prompts_from(state, reply)
+    state = %{state | prompts: prompts}
+    MCP.put_prompts(state.server, prompts)
+    MCP.broadcast()
+    push_output(state, "prompts/list_changed: #{length(prompts)} prompts")
+  end
+
   defp answer(state, from, reply) do
-    GenServer.reply(from, call_reply(state, reply))
+    GenServer.reply(from, call_reply(state, reply, "tools/call"))
     state
   end
 
-  defp call_reply(state, %{} = json), do: rpc_reply(state, json)
-  defp call_reply(_state, {:error, _reason} = error), do: error
+  defp call_reply(state, %{} = json, method), do: rpc_reply(state, json, method)
+  defp call_reply(_state, {:error, _reason} = error, _method), do: error
 
   defp list_reply(_state, %{"result" => result}), do: {:ok, result}
   defp list_reply(state, %{"error" => err}), do: {:error, rpc_error(state, err)}
@@ -1214,7 +1268,9 @@ defmodule SwarmCode.Domain.MCP.Client do
         :protocol_version,
         :http_stateless?,
         :next_id,
-        :tools
+        :tools,
+        :capabilities,
+        :prompts
       ])
 
     task =
@@ -1253,7 +1309,12 @@ defmodule SwarmCode.Domain.MCP.Client do
 
   defp handshake_step(state, :initialize, %{"result" => info}) do
     # spec 61 T3: from here on every request carries the negotiated version.
-    state = %{state | protocol_version: negotiated_version(info)}
+    state = %{
+      state
+      | protocol_version: negotiated_version(info),
+        capabilities: capabilities(info)
+    }
+
     state = notify(state, "notifications/initialized", %{})
     handshake_request(state, {:tools, {[], MapSet.new(), 1}}, "tools/list", %{})
   end
@@ -1261,12 +1322,21 @@ defmodule SwarmCode.Domain.MCP.Client do
   defp handshake_step(state, {:tools, {acc, seen, pages}}, %{"result" => result}) do
     case next_tools_page(state, result, acc, seen, pages) do
       {:done, tools} ->
-        handshake_done(%{state | tools: tools})
+        state = %{state | tools: tools}
+
+        # pass 77 D-FEAT-12: a server that advertised `prompts` is asked for
+        # them (one page); a failure there never fails the connection.
+        if prompts?(state),
+          do: handshake_request(state, :prompts, "prompts/list", %{}),
+          else: handshake_done(state)
 
       {:more, next, acc, seen, pages} ->
         handshake_request(state, {:tools, {acc, seen, pages}}, "tools/list", %{"cursor" => next})
     end
   end
+
+  defp handshake_step(state, :prompts, reply),
+    do: handshake_done(%{state | prompts: prompts_from(state, reply)})
 
   defp handshake_step(state, step, reply),
     do: handshake_failed(state, handshake_error(state, step, reply))
@@ -1288,7 +1358,9 @@ defmodule SwarmCode.Domain.MCP.Client do
       | session_id: learned.session_id,
         protocol_version: learned.protocol_version,
         next_id: max(state.next_id, learned.next_id),
-        tools: learned.tools
+        tools: learned.tools,
+        capabilities: learned.capabilities,
+        prompts: learned.prompts
     }
 
     case outcome do
@@ -1305,6 +1377,7 @@ defmodule SwarmCode.Domain.MCP.Client do
     then = state.handshake.then
     state = cancel_handshake(state)
     MCP.put_tools(state.server, state.tools)
+    MCP.put_prompts(state.server, state.prompts)
     MCP.put_status(state.server.id, :ready)
     state = %{state | status: :ready, attempt: 0}
 
@@ -1383,14 +1456,84 @@ defmodule SwarmCode.Domain.MCP.Client do
 
     with {:ok, info, state} <- request(state, "initialize", params, @handshake_timeout),
          # spec 61 T3: from here on every HTTP request carries the negotiated version.
-         state = %{state | protocol_version: negotiated_version(info)},
+         state = %{
+           state
+           | protocol_version: negotiated_version(info),
+             capabilities: capabilities(info)
+         },
          state <- notify(state, "notifications/initialized", %{}),
          {:ok, tools, state} <- list_tools(state, nil, []) do
-      {:ok, %{state | tools: tools}}
+      {:ok, list_prompts(%{state | tools: tools})}
     else
       {:error, reason, state} -> {:error, reason, state}
     end
   end
+
+  # pass 77 D-FEAT-12: the blocking `prompts/list` of the HTTP handshake and the
+  # probe. A server that fails it simply has no prompts.
+  defp list_prompts(state) do
+    if prompts?(state) do
+      case request(state, "prompts/list", %{}, @handshake_timeout) do
+        {:ok, result, state} -> %{state | prompts: prompts_from(state, %{"result" => result})}
+        {:error, _reason, state} -> %{state | prompts: []}
+      end
+    else
+      %{state | prompts: []}
+    end
+  end
+
+  defp capabilities(%{"capabilities" => %{} = caps}), do: caps
+  defp capabilities(_info), do: %{}
+
+  defp prompts?(%{capabilities: %{"prompts" => %{}}}), do: true
+  defp prompts?(_state), do: false
+
+  @max_prompts 100
+  @max_prompt_args 20
+
+  # pass 77 D-FEAT-12: the prompt catalogue is the server's JSON, not a contract
+  # (like `sanitize_tools/2`): one page, at most 100 prompts, each with a
+  # non-empty name; names and descriptions are redacted and clipped.
+  defp prompts_from(state, %{"result" => %{"prompts" => list}}) when is_list(list) do
+    list
+    |> Enum.flat_map(&sanitize_prompt(state, &1))
+    |> Enum.take(@max_prompts)
+  end
+
+  defp prompts_from(_state, _reply), do: []
+
+  defp sanitize_prompt(state, %{"name" => name} = prompt) when is_binary(name) and name != "" do
+    args =
+      case prompt["arguments"] do
+        list when is_list(list) ->
+          for %{"name" => arg} = a <- Enum.take(list, @max_prompt_args),
+              is_binary(arg) and arg != "" do
+            %{
+              name: safe(state, arg),
+              description: clipped(state, a["description"], 300),
+              required: a["required"] == true
+            }
+          end
+
+        _none ->
+          []
+      end
+
+    [
+      %{
+        name: name,
+        description: clipped(state, prompt["description"] || prompt["title"], 300),
+        arguments: args
+      }
+    ]
+  end
+
+  defp sanitize_prompt(_state, _other), do: []
+
+  defp clipped(state, text, max) when is_binary(text),
+    do: state |> safe(text) |> String.slice(0, max)
+
+  defp clipped(_state, _other, _max), do: nil
 
   # spec 61 T3: a server that answers without one gets the version we asked for.
   defp negotiated_version(%{"protocolVersion" => v}) when is_binary(v) and v != "", do: v

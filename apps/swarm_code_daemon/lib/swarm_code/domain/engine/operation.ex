@@ -333,6 +333,9 @@ defmodule SwarmCode.Domain.Engine.Operation do
     # pass 72 F1: the mode is read once per op and travels with the approval,
     # so a card raised in read-only keeps its read-only answers.
     mode = current_mode(ctx)
+    # pass 77 C-FEAT-4: the sandbox opens the network only in Full access, so the
+    # tool sees the mode this op was decided in.
+    ctx = Map.put(ctx, :live_mode, mode)
 
     # pass 72 F10: the project's permission rules come first (trusted projects
     # only, `Rules.for_root/1`). Deny beats ask beats allow; an ask asks in
@@ -419,14 +422,31 @@ defmodule SwarmCode.Domain.Engine.Operation do
     # spec 73 T6: `:project_root`, the key the ctx actually carries.
     if root = ctx[:project_root] do
       tool_name = ref.name
+      # pass 77 D-FEAT-3: the hook sees the call and how it ended (a refused
+      # or failed call used to report `:ok`).
+      context = %{
+        tool_name: tool_name,
+        args: args,
+        result: post_status(result),
+        output: post_output(result)
+      }
 
       Task.Supervisor.start_child(SwarmCode.Domain.Hooks.TaskSupervisor, fn ->
-        Hooks.run(:post_tool_use, %{tool_name: tool_name, result: :ok}, root)
+        Hooks.run(:post_tool_use, context, root)
       end)
     end
 
     result
   end
+
+  defp post_status({:ok, _text}), do: :ok
+  defp post_status({:ok, _text, _images}), do: :ok
+  defp post_status(_error), do: :error
+
+  defp post_output({:ok, text}) when is_binary(text), do: text
+  defp post_output({:ok, text, _images}) when is_binary(text), do: text
+  defp post_output({:error, reason}) when is_binary(reason), do: reason
+  defp post_output(_other), do: ""
 
   # spec 66 T4: only a shell command has a class; every other tool is `:normal`,
   # which is the behaviour every mode had before the task.

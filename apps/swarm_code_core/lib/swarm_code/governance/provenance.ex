@@ -12,7 +12,8 @@ defmodule SwarmCode.Governance.Provenance do
     "a93d6d8ee74358749e157e91dea46ad8c0d66722",
     "04baeb1c87cf8c9682ecafb8290e831c664f9f05",
     "2552de92c4136a7dd88bb707902d2814bc26e263",
-    "68bc97cd37ff3f2c5fed18f8c5e36ad46d24a9ab"
+    "68bc97cd37ff3f2c5fed18f8c5e36ad46d24a9ab",
+    "86f0d083c99d7fcb70e831bf7f93770c67ec492b"
   ]
   @authorization_flags ~w(public_source_copying_allowed copyright_terms_recorded license_terms_recorded notice_terms_recorded)
   @classifications ~w(source test spec)

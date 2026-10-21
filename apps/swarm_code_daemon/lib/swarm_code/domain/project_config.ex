@@ -1,8 +1,12 @@
 defmodule SwarmCode.Domain.ProjectConfig do
   @moduledoc """
-  Reads `.swarm_code/config.json` from a project root and layers it
-  under the user's Settings row. Project config provides defaults;
-  the Settings row wins on conflict.
+  Reads `.swarm_code/config.json` from a project root: hooks, permission
+  rules and profiles.
+
+  `effort`, `swarm_effort`, `model` and `swarm_model` are read and shown in
+  Settings → Project rules, but not applied: a conversation's own choice and
+  your Settings decide (pass 77; changing that precedence is an owner
+  decision).
   """
 
   # spec 70 D1
@@ -44,6 +48,9 @@ defmodule SwarmCode.Domain.ProjectConfig do
           },
           profiles: %{String.t() => map()},
           permissions: SwarmCode.Domain.Engine.Rules.t(),
+          # pass 77 C-FEAT-4: `"workspace-write"` runs model commands under
+          # macOS Seatbelt (`SwarmCode.Domain.Tools.Sandbox`); nil is off.
+          sandbox: String.t() | nil,
           raw: map()
         }
 
@@ -61,8 +68,19 @@ defmodule SwarmCode.Domain.ProjectConfig do
     case read_bounded(path) do
       {:ok, data} ->
         case Jason.decode(data) do
-          {:ok, map} when is_map(map) -> {:ok, parse(strip_denied(map))}
-          _ -> {:ok, nil}
+          {:ok, map} when is_map(map) ->
+            {:ok, parse(strip_denied(map))}
+
+          other ->
+            # pass 77 D-FEAT-15: fail-safe as before, but no longer silent.
+            line = if match?({:error, %Jason.DecodeError{}}, other), do: error_line(other, data)
+            where = if line, do: " (line #{line})", else: ""
+
+            Logger.warning(
+              "project config: #{path} is not valid JSON#{where} — its hooks and rules are ignored"
+            )
+
+            {:ok, nil}
         end
 
       {:error, :enoent} ->
@@ -71,6 +89,73 @@ defmodule SwarmCode.Domain.ProjectConfig do
       _ ->
         {:ok, nil}
     end
+  end
+
+  @typedoc "What `inspect_file/1` found in a project's config.json."
+  @type inspection :: %{
+          status: :missing | :ok | :invalid_json | :too_large | :unreadable,
+          line: pos_integer() | nil,
+          message: String.t() | nil,
+          config: t() | nil,
+          rule_errors: [String.t()]
+        }
+
+  @doc """
+  pass 77 D-FEAT-15: `load/1` with the reason. Same bounded read; reports a
+  missing, oversized, unreadable or invalid file (with the line of a JSON
+  error) and, for a valid one, the parsed config plus every permission rule
+  that was dropped. Never raises.
+  """
+  @spec inspect_file(String.t()) :: inspection()
+  def inspect_file(root) when is_binary(root) do
+    path = Path.join(root, @config_file)
+
+    case read_bounded(path) do
+      {:ok, data} ->
+        case Jason.decode(data) do
+          {:ok, map} when is_map(map) ->
+            map = strip_denied(map)
+            {_rules, dropped} = SwarmCode.Domain.Engine.Rules.parse_report(map["permissions"])
+
+            %{
+              status: :ok,
+              line: nil,
+              message: nil,
+              config: parse(map),
+              rule_errors: dropped ++ sandbox_errors(map)
+            }
+
+          {:ok, _not_an_object} ->
+            report(:invalid_json, nil, "the top level must be a JSON object")
+
+          {:error, %Jason.DecodeError{} = error} ->
+            line = error_line({:error, error}, data)
+            report(:invalid_json, line, error |> Exception.message() |> clip_message())
+        end
+
+      {:error, :enoent} ->
+        report(:missing, nil, nil)
+
+      {:error, :too_large} ->
+        report(:too_large, nil, "is over #{@max_bytes} bytes")
+
+      {:error, reason} ->
+        report(:unreadable, nil, "could not be read (#{inspect(reason)})")
+    end
+  end
+
+  defp report(status, line, message),
+    do: %{status: status, line: line, message: message, config: nil, rule_errors: []}
+
+  defp error_line({:error, %Jason.DecodeError{position: pos}}, data) when is_integer(pos) do
+    head = binary_part(data, 0, min(pos, byte_size(data)))
+    length(:binary.matches(head, "\n")) + 1
+  end
+
+  defp error_line(_other, _data), do: nil
+
+  defp clip_message(text) do
+    text |> SwarmCode.Domain.LLM.HTTP.redact() |> String.slice(0, 200)
   end
 
   defp read_bounded(path) do
@@ -85,15 +170,6 @@ defmodule SwarmCode.Domain.ProjectConfig do
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  @spec merge_defaults(t() | nil, map()) :: map()
-  def merge_defaults(nil, settings), do: settings
-
-  def merge_defaults(config, settings) do
-    settings
-    |> maybe_default(:default_effort, config.effort)
-    |> maybe_default(:default_swarm_effort, config.swarm_effort)
   end
 
   # -- private ---------------------------------------------------------------
@@ -119,9 +195,23 @@ defmodule SwarmCode.Domain.ProjectConfig do
       profiles: parse_profiles(map["profiles"]),
       # pass 72 F10: `{"allow", "ask", "deny"}` rule lists (`Engine.Rules`).
       permissions: SwarmCode.Domain.Engine.Rules.parse(map["permissions"]),
+      sandbox: parse_sandbox(map["sandbox"]),
       raw: map
     }
   end
+
+  defp parse_sandbox("workspace-write"), do: "workspace-write"
+  defp parse_sandbox(_other), do: nil
+
+  # pass 77 D-FEAT-15: a `"sandbox"` value that is not understood is reported
+  # beside the dropped rules instead of silently meaning "off".
+  defp sandbox_errors(%{"sandbox" => value}) when value != nil do
+    if parse_sandbox(value) == nil,
+      do: [~s(sandbox: #{inspect(value)} is not supported — the only value is "workspace-write")],
+      else: []
+  end
+
+  defp sandbox_errors(_map), do: []
 
   defp safe_string(v) when is_binary(v) and v != "", do: v
   defp safe_string(_), do: nil
@@ -188,13 +278,4 @@ defmodule SwarmCode.Domain.ProjectConfig do
   end
 
   defp valid_profile_name?(_), do: false
-
-  defp maybe_default(settings, _key, nil), do: settings
-
-  defp maybe_default(settings, key, value) do
-    case Map.get(settings, key) do
-      nil -> Map.put(settings, key, value)
-      _ -> settings
-    end
-  end
 end

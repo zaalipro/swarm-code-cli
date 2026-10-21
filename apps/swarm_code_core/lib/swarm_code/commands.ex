@@ -87,6 +87,8 @@ defmodule SwarmCode.Commands do
   @aliases %{"swarm_effort" => "worker_effort", "swarm_model" => "worker_model"}
 
   @max_text 262_144
+  @placeholder ~r/\$ARGUMENTS|\$([1-9])(?![0-9])/
+  @positional ~r/\$[1-9]/
   @max_label 256
   @max_entries 1_024
   @efforts %{
@@ -226,7 +228,7 @@ defmodule SwarmCode.Commands do
       true ->
         ok(item, if(swarm == true, do: :start_swarm, else: :start_turn), %{
           arguments: args,
-          prompt: String.trim(String.replace(body, "$ARGUMENTS", args)),
+          prompt: String.trim(expand_template(body, args)),
           mode: mode_atom(mode),
           swarm: swarm == true,
           scope: item.scope
@@ -603,7 +605,11 @@ defmodule SwarmCode.Commands do
   end
 
   defp args_hint(entry, :custom) do
-    if String.contains?(value(entry, :body), "$ARGUMENTS"), do: "<args>", else: ""
+    body = value(entry, :body)
+
+    if String.contains?(body, "$ARGUMENTS") or Regex.match?(@positional, body),
+      do: "<args>",
+      else: ""
   end
 
   defp args_hint(entry, :workflow) do
@@ -670,10 +676,57 @@ defmodule SwarmCode.Commands do
   defp effort_atom(value) when is_atom(value), do: Map.get(@efforts, Atom.to_string(value))
   defp effort_atom(value), do: Map.get(@efforts, value)
 
-  defp expanded_size(body, args) do
-    count = length(:binary.matches(body, "$ARGUMENTS"))
-    byte_size(body) + count * (byte_size(args) - byte_size("$ARGUMENTS"))
+  # pass 77 C-FEAT-8 (desktop D3-3, `SwarmCode.Domain.Commands.expand/2`): one
+  # pass fills `$ARGUMENTS` with everything typed after the command and `$1`-`$9`
+  # with its words (`split_args/1`), so typed text is never expanded again.
+  defp expand_template(body, args) do
+    words = split_args(args)
+
+    Regex.replace(@placeholder, body, fn
+      "$ARGUMENTS", _ -> args
+      _whole, n -> Enum.at(words, String.to_integer(n) - 1, "")
+    end)
   end
+
+  defp expanded_size(body, args) do
+    words = split_args(args)
+
+    @placeholder
+    |> Regex.scan(body)
+    |> Enum.reduce(byte_size(body), fn
+      ["$ARGUMENTS" | _], size ->
+        size + byte_size(args) - byte_size("$ARGUMENTS")
+
+      [whole, n], size ->
+        size + byte_size(Enum.at(words, String.to_integer(n) - 1, "")) - byte_size(whole)
+    end)
+  end
+
+  # The desktop's `Commands.split_args/1`: words on whitespace; "double" and
+  # 'single' quotes group a phrase (quotes removed, `\"` inside double quotes is
+  # a literal `"`); an unterminated quote runs to the end.
+  defp split_args(text), do: scan_args(to_string(text), [], "", false, nil)
+
+  defp scan_args(<<>>, args, cur, started?, _quote),
+    do: Enum.reverse(push_arg(args, cur, started?))
+
+  defp scan_args(<<?\\, ?", rest::binary>>, args, cur, _started?, ?"),
+    do: scan_args(rest, args, cur <> "\"", true, ?")
+
+  defp scan_args(<<q, rest::binary>>, args, cur, _started?, q) when q in [?", ?'],
+    do: scan_args(rest, args, cur, true, nil)
+
+  defp scan_args(<<q, rest::binary>>, args, cur, _started?, nil) when q in [?", ?'],
+    do: scan_args(rest, args, cur, true, q)
+
+  defp scan_args(<<c, rest::binary>>, args, cur, started?, nil) when c in [?\s, ?\t, ?\n, ?\r],
+    do: scan_args(rest, push_arg(args, cur, started?), "", false, nil)
+
+  defp scan_args(<<c, rest::binary>>, args, cur, _started?, quote),
+    do: scan_args(rest, args, cur <> <<c>>, true, quote)
+
+  defp push_arg(args, cur, true), do: [cur | args]
+  defp push_arg(args, _cur, false), do: args
 
   defp split_first(text) do
     case String.split(String.trim(text), ~r/\s+/, parts: 2, trim: true) do
