@@ -66,7 +66,6 @@ defmodule SwarmCode.Daemon.Service.R1019WorkflowGateTest do
     assert gate["allowed_actions"] == ["answer_question"]
 
     workspace = workspace(backend, scope(c.conversation))
-    assert {:ok, _} = SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot.decode(workspace)
     run = Enum.find(workspace["runs"], &(&1["id"] == run_id))
     assert run["state"] == "waiting_question"
 

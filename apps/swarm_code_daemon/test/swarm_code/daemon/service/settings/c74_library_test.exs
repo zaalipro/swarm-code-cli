@@ -27,8 +27,14 @@ defmodule SwarmCode.Daemon.Service.Settings.C74LibraryTest do
 
       rows = records(c, "commands")
 
+      # pass 77 C-FEAT-8: `/init` ships with ncode (scope `builtin`, read-only).
       assert Enum.map(rows, &{&1["name"], &1["scope"]}) ==
-               [{"deploy", "project"}, {"review", "project"}, {"settings", "global"}]
+               [
+                 {"deploy", "project"},
+                 {"init", "builtin"},
+                 {"review", "project"},
+                 {"settings", "global"}
+               ]
 
       named = Map.new(rows, &{&1["name"], &1})
       assert named["review"]["overrides_global"]
@@ -37,6 +43,8 @@ defmodule SwarmCode.Daemon.Service.Settings.C74LibraryTest do
       assert named["settings"]["shadowed_by_builtin"]
       assert named["deploy"]["ref"] == "command:project:#{c.ailogic.id}:deploy"
       assert {:ok, _} = Files.resolve(named["settings"]["ref"])
+      assert {:ok, %{read_only?: true, path: init_path}} = Files.resolve(named["init"]["ref"])
+      assert File.regular?(init_path)
     end
 
     test "agent definitions: three tiers, shadowing, parse errors kept", c do

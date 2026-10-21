@@ -28,7 +28,7 @@ defmodule SwarmCode.Daemon.Service.Settings.Files do
     "memory_global" => {["global"], {:one_of, ["MEMORY"]}},
     "instructions" => {["project"], {:one_of, ["AGENTS", "SWARMCODE", "CLAUDE"]}},
     "project_config" => {["project"], {:one_of, ["config"]}},
-    "command" => {["project", "global"], :command},
+    "command" => {["project", "global", "builtin"], :command},
     "agent" => {["project", "user", "bundled"], :file_name},
     "skill" => {["project", "user", "builtin"], :file_name},
     "workflow" => {["project", "user", "builtin"], :workflow}
@@ -110,10 +110,14 @@ defmodule SwarmCode.Daemon.Service.Settings.Files do
     do: {project.root_path, Path.join([project.root_path, ".swarm_code", "config.json"])}
 
   defp place("command", scope, project, name) do
+    # pass 77 C-FEAT-8: the commands that ship with ncode (`/init`) are listed
+    # with scope `builtin` and open read-only, like a built-in skill.
     dir =
-      if scope == "project",
-        do: Workspace.commands_dir(project.root_path),
-        else: Workspace.global_commands_dir()
+      case scope do
+        "project" -> Workspace.commands_dir(project.root_path)
+        "global" -> Workspace.global_commands_dir()
+        "builtin" -> SwarmCode.Domain.Commands.builtin_dir()
+      end
 
     {dir, Path.join(dir, name <> ".md")}
   end
