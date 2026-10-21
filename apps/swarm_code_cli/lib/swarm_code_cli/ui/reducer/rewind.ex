@@ -16,6 +16,12 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
   payload identity). A draft edited meanwhile is kept: the old prompt goes to
   the stash when that is free, else it stays in the transcript.
 
+  Review 1019 RC-10: `state.rewind` is `nil` or a map `request_id => origin` of
+  the requests in flight (`%{mode: :pick | :undo}` for `rewind.turns`,
+  `%{mode: :apply, turn:, scope:, key:, identity:}` for `rewind.apply`), so
+  overlapping requests each answer to their own origin, and an answer or a
+  refusal clears only its own.
+
   The layers open only once the client can draw them (`LayerSpec.validate/1`
   knows them; lane E adds the drawing).
   """
@@ -33,7 +39,7 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
 
       conversation ->
         {next, effects} = Remote.send(state, {:rewind_turns, conversation}, :rewind)
-        if effects == [], do: {next, []}, else: {%{next | rewind: %{mode: mode}}, effects}
+        {remember(next, effects, %{mode: mode}), effects}
     end
   end
 
@@ -61,20 +67,42 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
   defp draft_empty?(state), do: String.trim(SwarmCodeCLI.UI.Keymap.draft_text(state)) == ""
 
   @doc "The turns' answer (newest first)."
-  def turns_answer(state, _request, payload) do
+  def turns_answer(state, request, payload) do
     turns = payload |> List.wrap() |> Enum.flat_map(&turn/1) |> Enum.take(200)
-    mode = get_in(state.rewind || %{}, [:mode]) || :pick
+    {origin, state} = forget(state, request)
+    mode = Map.get(origin, :mode) || :pick
 
     cond do
       turns == [] ->
-        {%{state | rewind: nil, notice: {:command_feedback, "Nothing to rewind yet."}}, []}
+        {%{state | notice: {:command_feedback, "Nothing to rewind yet."}}, []}
 
       mode == :undo ->
-        open(%{state | rewind: nil}, {:rewind_confirm, hd(turns)})
+        open(state, {:rewind_confirm, hd(turns)})
 
       true ->
-        open(%{state | rewind: nil}, {:rewind, %{turns: turns, selected: 0}})
+        open(state, {:rewind, %{turns: turns, selected: 0}})
     end
+  end
+
+  # The origin of the request just sent (its id is the one in `effects`). Only the origins of
+  # requests still in flight are kept, so a request that never answers does not pile up.
+  defp remember(state, [{:command, %{request_id: id}}], origin) do
+    kept = Map.take(state.rewind || %{}, Map.keys(state.requests))
+    %{state | rewind: Map.put(kept, id, origin)}
+  end
+
+  defp remember(state, _effects, _origin), do: state
+
+  # `{origin, state}` of `request`, the state without it (`nil` when none is left).
+  defp forget(state, request) do
+    {origin, rest} = Map.pop(state.rewind || %{}, Map.get(request, :request_id))
+    {origin || %{}, %{state | rewind: if(rest == %{}, do: nil, else: rest)}}
+  end
+
+  @doc "A refused or expired rewind request: its remembered origin goes, the others stay."
+  def refused(state, request) do
+    {_origin, state} = forget(state, request)
+    state
   end
 
   defp turn(row) when is_map(row) do
@@ -137,26 +165,20 @@ defmodule SwarmCodeCLI.UI.Reducer.Rewind do
     {next, effects} =
       Remote.send(state, {:rewind_apply, conversation, turn.message_id, scope}, :rewind)
 
-    if effects == [],
-      do: {next, []},
-      else:
-        {%{
-           next
-           | rewind: %{mode: :apply, turn: turn, scope: scope, key: key, identity: identity}
-         }, effects}
+    origin = %{mode: :apply, turn: turn, scope: scope, key: key, identity: identity}
+    {remember(next, effects, origin), effects}
   end
 
   def apply(state, _scope), do: {state, []}
 
   @doc "The answer of `rewind.apply`."
-  def apply_answer(state, %{kind: {:rewind_apply, _, _, scope}}, payload) do
-    origin = state.rewind || %{}
+  def apply_answer(state, %{kind: {:rewind_apply, _, _, scope}} = request, payload) do
+    {origin, state} = forget(state, request)
     turn = Map.get(origin, :turn) || %{turn: "?"}
     restored = count(Remote.field(payload, :restored))
     skipped = count(Remote.field(payload, :skipped))
     text = Remote.field(payload, :text)
     skipped_words = if skipped > 0, do: " · #{skipped} skipped (see the transcript)", else: ""
-    state = %{state | rewind: nil}
 
     case scope do
       :files ->

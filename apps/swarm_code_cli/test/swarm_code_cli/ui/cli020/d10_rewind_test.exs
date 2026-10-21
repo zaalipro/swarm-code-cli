@@ -41,12 +41,18 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
     {state, effects} = ready() |> type("/rewind") |> send_draft()
 
     assert commands(effects) == [{:rewind_turns, @c}]
-    assert state.rewind == %{mode: :pick}
+    [request] = for {:command, request} <- effects, do: request
+    assert state.rewind == %{request.request_id => %{mode: :pick}}
   end
 
   test "the turns' answer opens the list, or says there is nothing" do
-    state = %{ready() | rewind: %{mode: :pick}}
-    request = %{kind: {:rewind_turns, @c}, origin: {:conversation, :rewind}}
+    state = %{ready() | rewind: %{"turns-1" => %{mode: :pick}}}
+
+    request = %{
+      request_id: "turns-1",
+      kind: {:rewind_turns, @c},
+      origin: {:conversation, :rewind}
+    }
 
     rows = [
       %{
@@ -112,7 +118,7 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
   test "the answer fills the draft as one undoable edit and says what came back" do
     state = ready() |> type("draft before")
     {state, request} = chosen(state, :both)
-    assert %{key: {@c, :main}, identity: identity} = state.rewind
+    assert %{key: {@c, :main}, identity: identity} = state.rewind[request.request_id]
     assert is_binary(identity)
 
     {state, _} =
@@ -190,9 +196,11 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
 
   test "C-BUG-17: an answer with no remembered origin changes no draft" do
     state = ready() |> type("keep")
-    state = %{state | rewind: %{mode: :apply, turn: @t1, scope: :both, key: nil, identity: nil}}
+    origin = %{mode: :apply, turn: @t1, scope: :both, key: nil, identity: nil}
+    state = %{state | rewind: %{"apply-1" => origin}}
 
     request = %{
+      request_id: "apply-1",
       kind: {:rewind_apply, @c, "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603", :both},
       origin: {:conversation, :rewind}
     }
@@ -202,11 +210,77 @@ defmodule SwarmCodeCLI.UI.Cli020.D10RewindTest do
     assert state.stashes == %{}
   end
 
+  # Review 1019 RC-10: two rewinds in flight each answer to their own origin.
+  test "RC-10: overlapping rewind.apply answers use their own composer, in any order" do
+    state = ready()
+    {state, first} = chosen(state, :both)
+
+    # A second rewind from the other composer while the first answer is delayed.
+    other_key = {@c, {:agent, "node-a"}}
+
+    {:ok, editor} = SwarmCodeCLI.UI.Editor.apply(SwarmCodeCLI.UI.Editor.new(), {:insert, "steer"})
+
+    drafts =
+      SwarmCodeCLI.UI.Drafts.put(state.drafts, SwarmCodeCLI.UI.Draft.new(other_key, editor))
+
+    state = %{
+      state
+      | drafts: drafts,
+        overlay: %{run_id: "r", node_id: "node-a", draft_key: other_key, focus: :composer}
+    }
+
+    {state, second} = chosen(state, :both)
+    assert first.request_id != second.request_id
+    assert %{key: {@c, :main}} = state.rewind[first.request_id]
+    assert %{key: ^other_key} = state.rewind[second.request_id]
+
+    # The second answer arrives first: only its own origin goes.
+    {state, _} = answer(state, second, "second prompt")
+    assert Map.keys(state.rewind) == [first.request_id]
+
+    {state, _} = answer(state, first, "third")
+    assert state.rewind == nil
+
+    assert SwarmCodeCLI.UI.Editor.text(
+             SwarmCodeCLI.UI.Drafts.fetch(state.drafts, {@c, :main}).editor
+           ) ==
+             "third"
+
+    assert SwarmCodeCLI.UI.Editor.text(
+             SwarmCodeCLI.UI.Drafts.fetch(state.drafts, other_key).editor
+           ) ==
+             "second prompt"
+  end
+
+  test "RC-10: a refused rewind.apply clears only its own origin" do
+    {state, first} = chosen(ready(), :both)
+    {state, second} = chosen(state, :both)
+
+    {state, _} = Remote.answer(state, first, {:error, "Nothing was rewound."})
+    assert Map.keys(state.rewind) == [second.request_id]
+    assert state.notice == {:command_feedback, "Nothing was rewound."}
+  end
+
+  test "RC-10: two turn lists in flight keep their own mode" do
+    {state, effects} = ready() |> type("/undo") |> send_draft()
+    [undo] = for {:command, request} <- effects, do: request
+    {state, effects} = state |> type("/rewind") |> send_draft()
+    [pick] = for {:command, request} <- effects, do: request
+    assert %{mode: :undo} = state.rewind[undo.request_id]
+    assert %{mode: :pick} = state.rewind[pick.request_id]
+
+    rows = [%{message_id: @t1.message_id, turn: 3, prompt: "third"}]
+    {state, []} = Remote.answer(state, undo, {:ok, rows})
+    assert [{:rewind_confirm, %{turn: 3}}] = state.layers
+    assert Map.keys(state.rewind) == [pick.request_id]
+  end
+
   test "files only leaves the draft and says the files came back" do
     state = ready() |> type("keep")
-    state = %{state | rewind: %{mode: :apply, turn: @t1, scope: :files}}
+    state = %{state | rewind: %{"apply-1" => %{mode: :apply, turn: @t1, scope: :files}}}
 
     request = %{
+      request_id: "apply-1",
       kind: {:rewind_apply, @c, "3f0c1a2b-4d5e-4f60-8a71-b2c3d4e5f603", :files},
       origin: {:conversation, :rewind}
     }
