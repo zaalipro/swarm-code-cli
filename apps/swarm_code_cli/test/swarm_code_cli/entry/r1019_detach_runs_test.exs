@@ -101,4 +101,57 @@ defmodule SwarmCodeCLI.Release.R1019DetachRunsTest do
     assert Task.await(task, 10_000) == :settled
     refute Detach.progressing?()
   end
+
+  # Validator 1019, C-FEAT-3: a registry registration links its owner to the registry, so a
+  # subscription that outlives the wait takes the session owner down with the daemon's
+  # shutdown (`:shutdown`, exit 1 instead of 129) before the normal close.
+  describe "the wait's subscriptions" do
+    defp links, do: Process.info(self(), :links) |> elem(1) |> Enum.sort()
+    defp keys, do: Registry.keys(SwarmCode.Domain.PubSub, self()) |> Enum.sort()
+
+    test "end with the wait: no topic and no registry link stay on the caller" do
+      test = self()
+
+      task =
+        Task.async(fn ->
+          before = {keys(), links()}
+
+          Detach.await(
+            progressing?: fn ->
+              send(test, {:during, keys()})
+              not Process.get(:woke, false) and Process.put(:woke, true) == nil
+            end,
+            count: fn -> 1 end,
+            recheck_ms: 10
+          )
+
+          {before, keys(), links()}
+        end)
+
+      assert {{no_keys, no_links}, after_keys, after_links} = Task.await(task, 10_000)
+      assert_received {:during, during}
+      assert Enum.sort(during) == ["run_lifecycle", "ui"]
+      assert after_keys == no_keys
+      assert after_links == no_links
+    end
+
+    test "end when the wait raises, and a subscription held before stays" do
+      task =
+        Task.async(fn ->
+          :ok = SwarmCode.Domain.Engine.Events.subscribe("held-before")
+          before = {keys(), links()}
+
+          assert_raise RuntimeError, "boom", fn ->
+            Detach.await(progressing?: fn -> raise "boom" end, count: fn -> 1 end)
+          end
+
+          {before, keys(), links()}
+        end)
+
+      assert {{held_keys, held_links}, after_keys, after_links} = Task.await(task, 10_000)
+      assert held_keys == ["conversation:held-before"]
+      assert after_keys == held_keys
+      assert after_links == held_links
+    end
+  end
 end

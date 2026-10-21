@@ -16,7 +16,11 @@ defmodule SwarmCodeCLI.Release.Detach do
   `await/1` is event driven: it wakes on a run's status change or a change of
   the waits, and rechecks every `recheck_ms` because the run registry can lag a
   status event. It holds no state and does no I/O besides reading the
-  registry, the waits and the status of each live run.
+  registry, the waits and the status of each live run. Its subscriptions end
+  with the wait, whatever way it ends: a registry registration links the caller
+  to the registry, so a subscription left behind would take the session owner
+  down with the daemon's shutdown (`:shutdown`) before the normal close and
+  exit (validator 1019, C-FEAT-3).
   """
 
   # The daemon app is not a compile-time dependency of this one.
@@ -26,7 +30,8 @@ defmodule SwarmCodeCLI.Release.Detach do
               SwarmCode.Domain.Conversations,
               SwarmCode.Domain.Engine,
               SwarmCode.Domain.Engine.Events,
-              SwarmCode.Domain.Engine.Questions
+              SwarmCode.Domain.Engine.Questions,
+              SwarmCode.Domain.PubSub
             ]}
   require Logger
 
@@ -64,9 +69,16 @@ defmodule SwarmCodeCLI.Release.Detach do
     count = Keyword.get(opts, :count, fn -> length(live_run_ids()) end)
     recheck_ms = Keyword.get(opts, :recheck_ms, @recheck_ms)
 
-    subscribe()
-    Logger.info("detached: #{count.()} live runs still working")
-    wait(check, recheck_ms)
+    held = subscribed_topics()
+
+    try do
+      subscribe()
+      Logger.info("detached: #{count.()} live runs still working")
+      wait(check, recheck_ms)
+    after
+      release(held)
+    end
+
     Logger.info("detached: settled")
     :settled
   end
@@ -90,6 +102,24 @@ defmodule SwarmCodeCLI.Release.Detach do
   defp subscribe do
     SwarmCode.Domain.Conversations.subscribe_run_lifecycle()
     SwarmCode.Domain.Engine.Events.ui_subscribe()
+    :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  # The topics the caller is registered on: `release/1` ends only the ones `await/1` added, so
+  # a subscription the caller held before stays.
+  defp subscribed_topics do
+    Registry.keys(SwarmCode.Domain.PubSub, self())
+  catch
+    _kind, _reason -> []
+  end
+
+  defp release(held) do
+    for topic <- subscribed_topics() -- held do
+      SwarmCode.Domain.PubSub.unsubscribe(SwarmCode.Domain.PubSub, topic)
+    end
+
     :ok
   catch
     _kind, _reason -> :ok
