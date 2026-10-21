@@ -249,7 +249,9 @@ ncode acp
   and can be answered there and with the feature commands; under `-p` it ends the
   run with exit `1` and the reason `question_asked` (the question is in the
   summary). Typing `/` lists the custom commands, the workflows and the builtin
-  `/init` along with the builtins.
+  `/init` along with the builtins. In a custom command's body `$ARGUMENTS` is
+  everything typed after the command and `$1` to `$9` its words one by one (a
+  quoted phrase is one word, a missing one is empty).
 - `--plain` is the line presenter for pipes, CI and SSH (one command per line,
   `help` lists them); it is chosen by itself when stdin or stdout is not a
   terminal. `--ndjson` prints one JSON record per line.
@@ -399,8 +401,8 @@ persisted features unavailable because it has no Domain Repo.
 
 ### Hooks and the sandbox (desktop pass 77)
 
-These two arrive with the desktop's pass-77 code (the synced domain), so they
-work once the CLI is built from that sync.
+These two come with the desktop's pass-77 code (the synced domain, desktop
+`86f0d083`).
 
 - A tool hook (`pre_tool_use`, `post_tool_use` in `.swarm_code/config.json`, run
   only in a trusted project) gets the call in its environment, bounded and with

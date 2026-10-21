@@ -111,8 +111,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `68bc97cd` (desktop pass
-  76, branch `pass76-reliability`, CLI pass 76; merge it into desktop `main` without squashing, the CLI pins this sha; before it `2552de92`, `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `86f0d083` (desktop pass
+  77 integration, branch `r1019/Dint`, CLI review 1019; merge it into desktop `main` without squashing, the CLI pins this sha; before it `68bc97cd`, pass 76, `2552de92`, `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
   `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
@@ -185,7 +185,7 @@ Invariants that the code base defends and tests pin:
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
   (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
   (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `68bc97cd` (desktop pass 76, no
-  migration); its schema contract is
+  migration), then to `86f0d083` (desktop pass 77, no migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
   `20261016000002`, `20261017000004` and `20261018000001` itself after the verified backup.
@@ -588,8 +588,8 @@ The pass's brief is `docs/superpowers/plans/2026-10-08-cli-0.2.1/00_brief.md` (r
 0.2.0 contract), its lane notes are in `notes/{K,B,C,U}.md`, the outcome is the "CLI 0.2.1"
 section of `docs/research/2026-10-07-cli020-outcome.md`.
 
-- Domain (pass 76): synced to desktop `68bc97cd` (see the lineage above); the K7 notes below
-  describe the earlier pin.
+- Domain (pass 76): synced to desktop `68bc97cd`, since review 1019 to `86f0d083` (see the
+  lineage above and "Review 1019 (pass 77) facts"); the K7 notes below describe an earlier pin.
 - Domain (K7): synced to desktop `a93d6d8e` (desktop pass 74 = desktop 0.2.2's engine, no
   migration). Every model without a configured `context_window` has a 1,000,000-token window
   (`Engine.Context.default_window/0`, `effective_window/2`), the trim budget stays 75 %
@@ -682,3 +682,41 @@ of `docs/research/2026-10-07-cli020-outcome.md`. No desktop change, no sync, no 
   sample by its whole value; `{:speed_call, cid, slot, value}` is accepted (one sample each) but
   nothing sends it until the desktop's `LLM.Speed` broadcasts it (notes/Y.md, open); until then
   two parallel calls of one slot can show as one bar. A lone sample draws at most half height.
+
+## Review 1019 (pass 77) facts
+
+The review's kept findings are in the desktop repo's `.claude/specs/77_review_1019/` (git-ignored);
+lanes C1, C2 and C3 were merged into one branch and the domain re-synced to desktop `86f0d083`
+(desktop pass 77, no migration).
+
+- Pin: `provenance/sync-rules.json` pins `86f0d083`; the sha is in
+  `Governance.Provenance`'s `@adaptation_pins` with a `SOURCE_AUTHORIZATION.md` addendum (a new
+  pin needs both, or `verify` reports every entry as "not pinned to the audit baseline"). The
+  recorded patches are the same 14 as at pass 76.
+- New synced files: `engine/notifier.ex` (+ `notifier/noop.ex`), `engine/queue_drain.ex`,
+  `tools/load_skill.ex`, `tools/sandbox.ex`, and `priv/commands/init.md` through a new
+  `priv/commands/` mapping (the built-in command tier, `Commands.builtin_dir/0` on
+  `:swarm_code_daemon`'s priv). The desktop's DB-free pass-77 tests (`pass77_flush_batch`,
+  `pass77_live_runs`, `pass77_commands_args`, `pass77_command_safety`, `pass77_load_skill`,
+  `pass77_sandbox`) run from the test mapping.
+- Notifications: the synced `RunServer` calls `Engine.Notifier`, not `SwarmCode.Desktop.*`;
+  `config :swarm_code_daemon, :engine_notifier, SwarmCode.Domain.Notifications` routes a run's
+  waits and ends to the `"notifications"` topic (the `desktop-notify` rewrite rule no longer
+  matches RunServer). `UIState` drops a deleted conversation's state on
+  `{:conversation_deleted, id}`.
+- Queue: the CLI keeps `PersistedBackend`'s own drain (requeue through
+  `Conversations.requeue_head/2`, waiting for a `{:chain, conv, _}` compaction owner) and does
+  not set `:engine_queue_drain`, so `QueueDrain` is inert and its `{:queue_*}` events never
+  fire; the backend ignores conversation events it does not route, `{:context_usage, …}`
+  included (no context meter yet).
+- Chained turns: every chat turn the backend starts passes
+  `conversation_overlay: &SessionConfiguration.overlay/1`; the engine applies it to the
+  conversation it reloads after an automatic compaction (`r1019_compact_overlay_test.exs`).
+- `--add-dir`/`/add-dir` reach the engine as `extra_read_roots:` (session memory, at most 8);
+  the read tools accept absolute paths under them (`r1019_add_dir_e2e_test.exs`). The frozen
+  live-runtime tools (`lib/swarm_code/tools/*`, unsaved sessions) have neither extra roots nor
+  the sandbox.
+- Custom commands: the core parser (`apps/swarm_code_core/lib/swarm_code/commands.ex`, a frozen
+  copy of the desktop's `chat.ex` parser) fills `$ARGUMENTS` and `$1`-`$9` in one pass with the
+  desktop's `Commands.split_args/1` rules; keep it in step with `Domain.Commands.expand/2` and
+  repin it after an edit.
