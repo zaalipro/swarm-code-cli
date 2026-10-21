@@ -60,6 +60,8 @@ defmodule SwarmCode.Daemon.R1019AppBoundaryTest do
     "swarm_code_cli/entry/exit_summary_test.exs",
     "swarm_code_cli/entry/headless_follow_test.exs",
     "swarm_code_cli/entry/orbit_e2e_test.exs",
+    "swarm_code_cli/entry/r1019_acp_headless_test.exs",
+    "swarm_code_cli/entry/r1019_detach_runs_test.exs",
     "swarm_code_cli/entry/reasons_test.exs",
     "swarm_code_cli/entry/resume_selection_test.exs",
     "swarm_code_cli/entry/signals_close_test.exs",

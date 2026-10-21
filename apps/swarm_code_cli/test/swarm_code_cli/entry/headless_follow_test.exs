@@ -419,28 +419,32 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
   end
 
   # Review 1019 RC-6: `ncode -p "/workflow resume <run>"` launches work, so it waits for it.
-  # The first request of the workflow's agent is held (the run is parked by hand and its
-  # processes are killed); the second, made by the resumed runner, is held until the test
-  # releases it; the continuation answers.
+  # Before the run is left paused, a request of the workflow's agent (if one is made at all
+  # before the pause) is held. After it, the first request, made by the resumed runner, is held
+  # until the test releases it; the continuation answers.
   test "a resumed workflow is waited for, not reported as a finished command", c do
     test = self()
+    {:ok, phase} = Agent.start_link(fn -> :first end)
     {:ok, requests} = Agent.start_link(fn -> 0 end)
 
     resumed = fn socket ->
-      case Agent.get_and_update(requests, &{&1, &1 + 1}) do
-        0 ->
-          # Held until the test has left the run paused: the fixture serves one
-          # request at a time.
+      case Agent.get(phase, & &1) do
+        :first ->
+          # The fixture serves one request at a time: held until the test has left the
+          # run paused.
           send(test, {:first_request, self()})
           receive(do: (:release -> :ok))
 
-        1 ->
-          send(test, {:resumed_request, self()})
-          receive(do: (:release -> :ok))
-          sse(socket, %{"content" => "resumed report"}, "stop")
+        :resumed ->
+          case Agent.get_and_update(requests, &{&1, &1 + 1}) do
+            0 ->
+              send(test, {:resumed_request, self()})
+              receive(do: (:release -> :ok))
+              sse(socket, %{"content" => "resumed report"}, "stop")
 
-        _continuation ->
-          continuation_answers(socket)
+            _continuation ->
+              continuation_answers(socket)
+          end
       end
     end
 
@@ -468,8 +472,14 @@ defmodule SwarmCodeCLI.Release.HeadlessFollowTest do
     # The paused run's processes belonged to the first session, which a real
     # `ncode -p` left with its VM; a resume starts them anew.
     leave_paused(flow_id)
-    assert_receive {:first_request, first}, 30_000
-    send(first, :release)
+    Agent.update(phase, fn _ -> :resumed end)
+
+    # The agent's first request is made only if the pause came after it.
+    receive do
+      {:first_request, first} -> send(first, :release)
+    after
+      500 -> :ok
+    end
 
     second =
       start_one_shot(c, [approval_mode: "full_access"], :json,
