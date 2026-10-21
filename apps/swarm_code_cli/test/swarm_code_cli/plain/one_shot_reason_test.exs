@@ -200,6 +200,43 @@ defmodule SwarmCodeCLI.Plain.OneShotReasonTest do
                summary(context)
     end
 
+    # pass 77 C-VER-1: a workflow parked on `await_user` shows as a pending
+    # question of its run; with nobody to answer, `-p` stops it and says why
+    # rather than waiting for ever.
+    test "a workflow's await_user gate is question_asked", context do
+      gate = %DTO.PendingInteraction{
+        id: @interaction,
+        run_id: H.run_id(),
+        node_id: H.run_id(),
+        conversation_id: H.conversation(),
+        kind: :question,
+        expected_revision: 1,
+        allowed_actions: [:answer_question],
+        question: %DTO.Question{
+          prompt: "Apply the fixes?",
+          options: [
+            %DTO.QuestionOption{id: "yes", label: "yes"},
+            %DTO.QuestionOption{id: "no", label: "no"}
+          ]
+        }
+      }
+
+      session =
+        start(context, format: :json)
+        |> accept()
+        |> run_update(:waiting_question, kind: :workflow)
+        |> interaction(gate)
+
+      assert {:run_control, :stop, _} = stop_request()
+      session = run_update(session, :stopped, kind: :workflow)
+      complete(session, [run(:stopped, kind: :workflow)], [])
+
+      assert code(session) == 1
+
+      assert %{"reason" => "question_asked", "question" => "Apply the fixes?"} =
+               summary(context)
+    end
+
     test "an approval the service will not deny is approval_required", context do
       session =
         start(context, format: :json)

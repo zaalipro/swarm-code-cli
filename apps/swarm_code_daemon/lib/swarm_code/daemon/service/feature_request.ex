@@ -183,6 +183,12 @@ defmodule SwarmCode.Daemon.Service.FeatureRequest do
       else: {:error, :invalid_request}
   end
 
+  # pass 77 C-VER-1: `workflows resume ID` with an answer resumes a run parked
+  # on an `await_user` gate (`FeatureCatalog` allows the `:answer` option).
+  defp mutate("workflows", "resume", id, %{"answer" => answer} = attrs, _)
+       when map_size(attrs) == 1 and is_binary(answer) and byte_size(answer) <= 4_000,
+       do: FeatureCatalog.control_workflow(id, :resume, answer: answer)
+
   defp mutate("workflows", action, id, attrs, _) when map_size(attrs) == 0,
     do: FeatureCatalog.control_workflow(id, action_atom(action))
 

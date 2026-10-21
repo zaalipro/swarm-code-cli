@@ -130,7 +130,12 @@ defmodule SwarmCodeCLI.Test.OneShotHarness do
   end
 
   def accept(session),
-    do: respond(session, session.dispatch, %DTO.Outcome{status: :accepted, identifiers: [@run]})
+    do:
+      respond(session, session.dispatch, %DTO.Outcome{
+        status: :accepted,
+        identifiers: [@run],
+        disposition: :started
+      })
 
   def delta(session, %Delta{} = delta) do
     sequence = session.sequence + 1

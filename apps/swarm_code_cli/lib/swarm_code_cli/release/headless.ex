@@ -148,6 +148,10 @@ defmodule SwarmCodeCLI.Release.Headless do
     end
   end
 
+  # `-o FILE` is written from a session that may have another working folder.
+  defp expand_output_file(file) when is_binary(file) and file != "", do: Path.expand(file)
+  defp expand_output_file(file), do: file
+
   defp trusted?(%{trusted_at: %DateTime{}}), do: true
   defp trusted?(_project), do: false
 
@@ -174,7 +178,9 @@ defmodule SwarmCodeCLI.Release.Headless do
                project_id: session.project.id,
                conversation_id: session.conversation.id,
                source_epoch: source_epoch,
-               approval_mode: approval
+               approval_mode: approval,
+               # pass 77 C-FEAT-12: `--add-dir` folders, read-only for this run.
+               extra_read_roots: Keyword.get(options, :extra_read_roots, [])
              ),
            {:ok, _service} <-
              child(supervisor, SwarmCode.Daemon.Service,
@@ -194,7 +200,12 @@ defmodule SwarmCodeCLI.Release.Headless do
           project_root: session.project.root_path,
           # cli020 B23
           max_turns: Keyword.get(options, :max_turns),
-          max_budget_usd: Keyword.get(options, :max_budget_usd)
+          max_budget_usd: Keyword.get(options, :max_budget_usd),
+          # pass 77 C-FEAT-10: `--image` files (attached before the prompt) and
+          # `-o`, the file the final answer is also written to.
+          images: Keyword.get(options, :images, []),
+          output_file: expand_output_file(Keyword.get(options, :output_file)),
+          output: Keyword.get(options, :output, :standard_io)
         )
       else
         _ ->

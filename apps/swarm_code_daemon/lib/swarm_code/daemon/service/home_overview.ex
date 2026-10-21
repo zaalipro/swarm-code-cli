@@ -15,6 +15,7 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
   """
   import Ecto.Query
 
+  alias SwarmCode.Daemon.Service.LiveRuns
   alias SwarmCode.Daemon.Service.Settings.Usage
   alias SwarmCode.Domain.Conversations.{Conversation, Message, Node, Run}
   alias SwarmCode.Domain.Engine.Questions
@@ -212,9 +213,8 @@ defmodule SwarmCode.Daemon.Service.HomeOverview do
 
   # The engine registry's runs (this VM's) as `{run_id, pid}`, read once.
   defp live_entries do
-    Registry.select(SwarmCode.Domain.Registry, [
-      {{{:run, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
-    ])
+    LiveRuns.all()
+    |> Enum.map(&{&1.run_id, &1.pid})
     |> Enum.take(@live_cap)
   end
 

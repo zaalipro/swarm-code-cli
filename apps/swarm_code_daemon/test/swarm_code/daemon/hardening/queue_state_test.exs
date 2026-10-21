@@ -40,4 +40,27 @@ defmodule SwarmCode.Daemon.Hardening.QueueStateTest do
     assert Q.entry(q, "a").timer == nil
     assert Q.entry(Q.remove(q, "a"), "a") == nil
   end
+
+  test "a held prompt survives an exhausted retry and is released once stored again" do
+    {q, _} = Q.activate(Q.new(), "a")
+    assert Q.held(Q.entry(q, "a")) == []
+    assert Q.held(nil) == []
+    q = q |> Q.hold("a", "first") |> Q.hold("a", "second")
+    assert Q.held(Q.entry(q, "a")) == ["first", "second"]
+
+    q =
+      Enum.reduce(1..8, q, fn _, q ->
+        {q, :retry} = Q.retry(q, "a")
+        q
+      end)
+
+    assert {q, :exhausted} = Q.retry(q, "a")
+    assert Q.held(Q.entry(q, "a")) == ["first", "second"]
+    assert {q, :first} = Q.warn(q, "a")
+    assert {q, :again} = Q.warn(q, "a")
+
+    q = Q.release(q, "a")
+    assert Q.held(Q.entry(q, "a")) == []
+    assert {_, :first} = Q.warn(q, "a")
+  end
 end
