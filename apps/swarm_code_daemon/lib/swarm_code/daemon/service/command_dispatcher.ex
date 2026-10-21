@@ -616,6 +616,30 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     })
   end
 
+  # pass 77 C-FEAT-7: `/btw <question>` is a follow-up of the newest finished
+  # run, threaded under it like the desktop's side chat: the user message
+  # carries `reply_to_run_id`, and a workflow's summary goes in as context.
+  defp execute(conv, %{action: :reply_run} = cmd, opts) do
+    with :ok <- no_chat_running(conv),
+         {:ok, root} <- reply_root(conv) do
+      started(
+        conv,
+        cmd.name,
+        Engine.start_chat_turn(
+          SessionConfiguration.overlay(conv),
+          cmd.text,
+          [],
+          [reply_to_run_id: root.id, context: reply_context(root)] ++ approval(opts)
+        )
+      )
+    end
+  end
+
+  # pass 77 C-FEAT-12: `/add-dir <folder>` widens this session's read roots; the
+  # backend answers it before the dispatcher, so reaching here is a client
+  # that sent it where it cannot work.
+  defp execute(_conv, %{action: :add_read_root}, _), do: {:error, :client_only}
+
   # cli020 C11 (tui-code-14): /rename <title>, /delete, /fork.
   defp execute(conv, %{action: :rename_conversation} = cmd, _) do
     title = cmd |> Map.get(:title, "") |> to_string() |> String.trim()
@@ -1136,6 +1160,62 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
     end
   end
 
+  @reply_kinds ["chat", "swarm", "workflow"]
+  @settled_statuses ["done", "failed", "stopped", "interrupted"]
+
+  defp no_chat_running(conv) do
+    if Engine.chat_run_ids(conv.id) == [],
+      do: :ok,
+      else:
+        {:error,
+         {:busy,
+          "A turn is still running here. /btw asks about a finished run: wait for it or /stop first."}}
+  end
+
+  # The newest settled top-level run: not superseded, not itself a follow-up
+  # (its launching message names no run it replies to) and not launched by
+  # another run. A steer is a reply to the run it steers, so it does not hide it.
+  defp reply_root(conv) do
+    query =
+      from(r in Run,
+        as: :run,
+        where:
+          r.conversation_id == ^conv.id and r.kind in @reply_kinds and
+            r.status in @settled_statuses and is_nil(r.superseded_at) and
+            is_nil(r.launched_by_run_id) and
+            not exists(
+              from(m in SwarmCode.Domain.Conversations.Message,
+                where:
+                  m.run_id == parent_as(:run).id and not is_nil(m.reply_to_run_id) and
+                    m.reply_to_run_id != m.run_id,
+                select: 1
+              )
+            ),
+        order_by: [desc: r.inserted_at, desc: r.id],
+        limit: 1
+      )
+
+    case Repo.one(query) do
+      nil ->
+        {:error, {:nothing_to_reply, "There is no finished run to ask about yet."}}
+
+      root ->
+        {:ok, root}
+    end
+  end
+
+  defp reply_context(%{kind: "workflow", id: id}) do
+    case Workflows.get_run(id) do
+      %{display_name: name} = wf ->
+        "[workflow #{name} finished]\n" <> SwarmCode.Domain.Engine.RunServer.workflow_summary(wf)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp reply_context(_root), do: nil
+
   defp set_mode(conv, command, mode) do
     with {:ok, _} <- persist_mode(conv, mode),
          do: result(conv, command, :updated, %{mode: mode, fields: mode_fields(mode)})
@@ -1191,6 +1271,9 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp failure(:invalid_workflow_arguments), do: {:error, :invalid_workflow_arguments}
   # cli020: a refusal in words (C11 /delete of a live conversation).
   defp failure({:busy, words}) when is_binary(words), do: {:error, {:busy, words}}
+
+  defp failure({:nothing_to_reply, words}) when is_binary(words),
+    do: {:error, {:nothing_to_reply, words}}
 
   defp failure({:untrusted_project, words}) when is_binary(words),
     do: {:error, {:untrusted_project, words}}

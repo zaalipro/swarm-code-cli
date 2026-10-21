@@ -465,90 +465,9 @@ defmodule SwarmCode.Daemon.Service.Connection do
 
   defp watch_capacity(_, _), do: :ok
 
+  # C-ARCH-9: the table is `ServiceRequest.capability/2`, the client's too.
   defp capability?(%ServiceRequest{operation: operation, params: params}, state) do
-    capability =
-      case operation do
-        op when op in [:feature_query, :agent_detail] ->
-          :query
-
-        :feature_command ->
-          :feature_command
-
-        # pass74 S1-5: both settings operations ride the `settings` capability.
-        op when op in [:settings_query, :settings_command] ->
-          :settings
-
-        :question_answer ->
-          :question_answer
-
-        # cli020 C1: the conversation's queue.
-        op when op in [:queue_resume, :queue_edit] ->
-          :queue
-
-        :run_retry ->
-          :run_retry
-
-        :history_search ->
-          :history
-
-        # orbit S4: Home's overview and the conversation search.
-        op when op in [:home_overview, :conversation_search] ->
-          :home
-
-        :rewind_apply ->
-          :rewind
-
-        :rewind_turns ->
-          :rewind
-
-        :shell_stop ->
-          :shell
-
-        :shell_run ->
-          :shell
-
-        :attachment_attach ->
-          :attachment
-
-        :attachment_slot ->
-          :attachment
-
-        op
-        when op in [
-               :query,
-               :detail,
-               :watch,
-               :conversation_open,
-               :conversation_list,
-               :conversation_new,
-               :mark_seen,
-               :project_update
-             ] ->
-          operation
-
-        op when op in [:ack, :unwatch, :resync] ->
-          :watch
-
-        :dispatch_send ->
-          :dispatch_send
-
-        :run_steer ->
-          :run_steer
-
-        :approval_resolve ->
-          :approval_resolve
-
-        :run_control ->
-          Map.get(
-            %{"pause" => :run_pause, "continue" => :run_continue, "stop" => :run_stop},
-            params["action"]
-          )
-
-        _ ->
-          nil
-      end
-
-    capability in state.config.capabilities
+    ServiceRequest.capability(operation, params) in state.config.capabilities
   end
 
   # pass73 T11: the root cause of "the daemon connection closed". When a watch

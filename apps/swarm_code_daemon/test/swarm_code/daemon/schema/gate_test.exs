@@ -201,7 +201,7 @@ defmodule SwarmCode.Daemon.Schema.GateTest do
     assert {:error, error} = Gate.check(database, manifest, "0.1.0")
     assert error.code == :schema_incompatible
     assert error.message =~ "newer ncode app"
-    assert error.action =~ "Install the ncode CLI that matches your ncode app"
+    assert error.action =~ "Run: ncode update"
     assert source_bytes(database) == before
   end
 

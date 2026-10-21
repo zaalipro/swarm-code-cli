@@ -140,7 +140,8 @@ defmodule SwarmCodeCLI.UI.Settings.C74ModelPickerTest do
     {{:task, task, _}, state} =
       I.command(state, %{
         "action" => "provider.fetch_models",
-        "target" => %{"id" => @ids.deepseek}
+        "target" => %{"id" => @ids.deepseek},
+        "attributes" => %{"apply" => "none"}
       })
 
     {{:done, _, _}, state} = I.run_task(state, Map.put(task, "task_id", "f1"))

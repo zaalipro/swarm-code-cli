@@ -26,6 +26,12 @@ defmodule SwarmCodeCLI.Release.Signals do
   while the close is still going. `install/1` takes that answer away and
   keeps OTP's other two, halting on SIGQUIT and SIGUSR1.
 
+  pass 77 C-FEAT-3: a SIGHUP with live runs keeps them going until they finish
+  (`SwarmCodeCLI.Release.Detach`). The deadline is held for that wait
+  (`hold_deadline/1`) and starts afresh when the wait ends (`release_deadline/1`),
+  so the close that follows still gets its whole budget. A second signal still
+  halts the VM at once.
+
   SIGINT cannot be trapped (`os:set_signal(sigint, handle)` raises `badarg`
   on OTP 28) and stays under `+Bd` (`rel/env.sh.eex`, unchanged).
   """
@@ -104,10 +110,33 @@ defmodule SwarmCodeCLI.Release.Signals do
   def exit_code(:sigterm), do: 143
   def exit_code(:sighup), do: 129
 
+  @doc """
+  Holds the close deadline: the watchdog does not end the VM at it while a
+  detached session finishes its runs. A no-op when no signal has arrived.
+  """
+  @spec hold_deadline(atom()) :: :ok
+  def hold_deadline(name \\ @watchdog), do: nudge(name, {:hold})
+
+  @doc "Starts a fresh close deadline after `hold_deadline/1`."
+  @spec release_deadline(atom()) :: :ok
+  def release_deadline(name \\ @watchdog), do: nudge(name, {:release})
+
+  defp nudge(name, message) do
+    case Process.whereis(name) do
+      nil -> :ok
+      watchdog -> send(watchdog, message) && :ok
+    end
+  end
+
   @doc "The words a session says when a signal closes it."
-  @spec words(:sigterm | :sighup) :: String.t()
-  def words(:sigterm), do: "stopped by SIGTERM; the live runs were stopped."
-  def words(:sighup), do: "stopped by SIGHUP (the terminal closed); the live runs were stopped."
+  @spec words(:sigterm | :sighup, boolean()) :: String.t()
+  def words(signal, detached? \\ false)
+  def words(:sigterm, _detached?), do: "stopped by SIGTERM; the live runs were stopped."
+
+  def words(:sighup, true), do: "the terminal closed; the live runs finished first."
+
+  def words(:sighup, false),
+    do: "stopped by SIGHUP (the terminal closed); the live runs were stopped."
 
   # A trap that raises is removed by the signal server, and the signal after
   # it would find the VM's own answer again.
@@ -155,25 +184,35 @@ defmodule SwarmCodeCLI.Release.Signals do
     first_at = System.monotonic_time(:millisecond)
 
     watchdog =
-      spawn(fn -> watch(signal, first_at, first_at + deadline, repeat, halt) end)
+      spawn(fn -> watch(signal, first_at, first_at + deadline, deadline, repeat, halt) end)
 
     true = Process.register(watchdog, name)
     :ok
   end
 
-  defp watch(signal, first_at, due, repeat, halt) do
+  defp watch(signal, first_at, due, deadline, repeat, halt) do
     receive do
       {:again, _signal, at} when at - first_at < repeat ->
-        watch(signal, first_at, due, repeat, halt)
+        watch(signal, first_at, due, deadline, repeat, halt)
 
       {:again, again, _at} ->
         halt.(exit_code(again), :again)
+
+      {:hold} ->
+        watch(signal, first_at, :infinity, deadline, repeat, halt)
+
+      {:release} ->
+        due = System.monotonic_time(:millisecond) + deadline
+        watch(signal, first_at, due, deadline, repeat, halt)
     after
-      max(due - System.monotonic_time(:millisecond), 0) ->
+      wait_ms(due) ->
         Logger.warning("closing on #{signal} took longer than #{due - first_at} ms")
         halt.(exit_code(signal), :deadline)
     end
   end
+
+  defp wait_ms(:infinity), do: :infinity
+  defp wait_ms(due), do: max(due - System.monotonic_time(:millisecond), 0)
 
   # Neither way out waits for the VM's ports to drain: the other end of one
   # may be the terminal that is gone.

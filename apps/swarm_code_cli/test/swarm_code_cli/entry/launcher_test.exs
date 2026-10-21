@@ -24,6 +24,7 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
     printf 'PIPED=%s\\n' "${SWARM_STDIN_PIPED-<unset>}"
     printf 'PICKER=%s\\n' "${SWARM_RESUME_PICKER-<unset>}"
     printf 'APPROVAL=%s\\n' "${SWARM_HEADLESS_APPROVAL-<unset>}"
+    printf 'ADD_DIRS=%s\\n' "$(printf '%s' "${SWARM_ADD_DIRS-<unset>}" | tr '\\n' '|')"
   } >"$STUB_LOG"
   exit "${STUB_EXIT:-0}"
   """
@@ -421,6 +422,254 @@ defmodule SwarmCodeCLI.Release.LauncherTest do
       assert stub(context)["CONVERSATION"] == "new"
       launch(context, ["-c", "-p", "hi"])
       assert stub(context)["CONVERSATION"] == "latest"
+    end
+  end
+
+  # C-FEAT-10: -p takes --image PATH (repeatable) and -o FILE; both reach the
+  # release as absolute paths, resolved where the command ran.
+  describe "images and the output file" do
+    test "-p passes absolute paths for --image (repeated) and -o", context do
+      assert {0, _} =
+               launch(context, [
+                 "-p",
+                 "x",
+                 "--image",
+                 "a.png",
+                 "--image=sub/b.png",
+                 "-o",
+                 "out.txt"
+               ])
+
+      cwd = resolved(context.project, "-P")
+      args = stub(context)["ARGS"]
+
+      assert args =~ "[--image] [#{cwd}/a.png] [--image] [#{cwd}/sub/b.png]"
+      assert args =~ "[--output-last-message] [#{cwd}/out.txt]"
+    end
+
+    test "an absolute path is kept as it is", context do
+      assert {0, _} =
+               launch(context, ["-p", "x", "-i", "/tmp/c.png", "--output-last-message=/tmp/o"])
+
+      args = stub(context)["ARGS"]
+      assert args =~ "[--image] [/tmp/c.png]"
+      assert args =~ "[--output-last-message] [/tmp/o]"
+    end
+
+    test "without -p, with a fifth image, a blank or a repeated -o: exit 2", context do
+      five = Enum.flat_map(1..5, &["--image", "#{&1}.png"])
+
+      for {args, text} <- [
+            {["--image", "a.png"], "--image goes with -p."},
+            {["-o", "out.txt"], "-o goes with -p."},
+            {["-p", "x"] ++ five, "at most 4 --image."},
+            {["-p", "x", "--image", " "], "--image needs a file."},
+            {["-p", "x", "-o", "a", "-o", "b"], "-o is given twice."}
+          ] do
+        assert {2, output} = launch(context, args), inspect(args)
+        assert output =~ text, inspect(args)
+      end
+
+      refute File.exists?(context.log)
+    end
+
+    test "four images are accepted", context do
+      four = Enum.flat_map(1..4, &["--image", "#{&1}.png"])
+      assert {0, _} = launch(context, ["-p", "x"] ++ four)
+    end
+
+    test "the release parses them into options and headless_options/1" do
+      assert {:ok, options} =
+               SwarmCodeCLI.Release.parse([
+                 "-p",
+                 "x",
+                 "--image",
+                 "/tmp/a.png",
+                 "-i",
+                 "/tmp/b.png",
+                 "-o",
+                 "/tmp/out.txt"
+               ])
+
+      assert options.images == ["/tmp/a.png", "/tmp/b.png"]
+      assert options.output_file == "/tmp/out.txt"
+      headless = SwarmCodeCLI.Release.headless_options(options)
+      assert headless[:images] == ["/tmp/a.png", "/tmp/b.png"]
+      assert headless[:output_file] == "/tmp/out.txt"
+
+      assert {:ok, bare} = SwarmCodeCLI.Release.parse(["-p", "x"])
+      assert bare.images == []
+      bare_headless = SwarmCodeCLI.Release.headless_options(bare)
+      refute Keyword.has_key?(bare_headless, :images)
+      refute Keyword.has_key?(bare_headless, :output_file)
+
+      assert {:error, "--image goes with -p."} = SwarmCodeCLI.Release.parse(["--image", "a"])
+      assert {:error, "-o goes with -p."} = SwarmCodeCLI.Release.parse(["-o", "a"])
+
+      assert {:error, "at most 4 --image."} =
+               SwarmCodeCLI.Release.parse(
+                 ["-p", "x"] ++ Enum.flat_map(1..5, &["--image", "#{&1}.png"])
+               )
+    end
+  end
+
+  # C-FEAT-12: --add-dir DIR (repeatable, at most 8) exports SWARM_ADD_DIRS, the
+  # real paths one per line, for the TUI and for -p.
+  describe "--add-dir" do
+    test "two folders reach the release as real paths, one per line", context do
+      a = Path.join(context.project, "a")
+      b = Path.join(context.project, "b")
+      File.mkdir_p!(a)
+      File.mkdir_p!(b)
+
+      assert {0, _} = launch(context, ["-p", "x", "--add-dir", "a", "--add-dir=" <> b])
+
+      cwd = resolved(context.project, "-P")
+      assert stub(context)["ADD_DIRS"] == "#{cwd}/a|#{cwd}/b"
+    end
+
+    test "without the flag the variable is not set, even if the shell had one", context do
+      assert {0, _} = launch(context, ["-p", "x"], [{"SWARM_ADD_DIRS", "/elsewhere"}])
+      assert stub(context)["ADD_DIRS"] == "<unset>"
+    end
+
+    test "a file, a missing folder, a blank value or a ninth folder: exit 2", context do
+      File.write!(Path.join(context.project, "file.txt"), "x")
+
+      nine =
+        Enum.flat_map(1..9, fn n ->
+          dir = Path.join(context.project, "d#{n}")
+          File.mkdir_p!(dir)
+          ["--add-dir", dir]
+        end)
+
+      for {args, text} <- [
+            {["--add-dir", "file.txt"], "--add-dir needs a directory."},
+            {["--add-dir", "nope"], "--add-dir needs a directory."},
+            {["--add-dir", " "], "--add-dir needs a directory."},
+            {["--add-dir"], "--add-dir needs a value."},
+            {nine, "at most 8 --add-dir."}
+          ] do
+        assert {2, output} = launch(context, args), inspect(args)
+        assert output =~ text, inspect(args)
+      end
+    end
+  end
+
+  # C-FEAT-13: `ncode acp` goes straight to the release's ACP entry.
+  describe "acp" do
+    test "evaluates the ACP entry and nothing else", context do
+      assert {0, ""} = launch(context, ["acp"], [{"SWARM_CONVERSATION", @conversation}])
+      log = stub(context)
+
+      assert log["ARGS"] == "[eval] [SwarmCodeCLI.Release.main(System.argv())] [acp]"
+      assert log["CONVERSATION"] == "<unset>"
+      assert log["TUI"] == "<unset>"
+    end
+
+    test "takes no arguments", context do
+      assert {2, output} = launch(context, ["acp", "--verbose"])
+      assert output =~ "acp takes no arguments."
+      refute File.exists?(context.log)
+    end
+
+    test "the release routes it and lists it in its usage" do
+      assert SwarmCodeCLI.Release.usage() =~ "ncode acp"
+      assert {:module, _} = Code.ensure_loaded(SwarmCodeCLI.Release.Acp)
+      assert function_exported?(SwarmCodeCLI.Release.Acp, :main, 1)
+    end
+  end
+
+  describe "--add-dir in the release" do
+    alias SwarmCodeCLI.Release
+    alias SwarmCodeCLI.Release.PersistedSession
+
+    test "SWARM_ADD_DIRS becomes absolute, unique folders, eight at most" do
+      assert Release.extra_read_roots(nil) == []
+      assert Release.extra_read_roots("") == []
+      assert Release.extra_read_roots("/a\n\nrelative\n/b\n/a\n") == ["/a", "/b"]
+
+      nine = Enum.map_join(1..9, "\n", &"/d#{&1}")
+      assert Release.extra_read_roots(nine) == Enum.map(1..8, &"/d#{&1}")
+    end
+
+    test "headless_options/1 carries them, and leaves the key out without any" do
+      assert {:ok, options} = Release.parse(["-p", "x"])
+      refute Keyword.has_key?(Release.headless_options(options), :extra_read_roots)
+
+      options = Map.put(options, :extra_read_roots, ["/a", "/b"])
+      assert Release.headless_options(options)[:extra_read_roots] == ["/a", "/b"]
+    end
+
+    test "the persisted backend child gets them as extra_read_roots" do
+      session = %{project: %{root_path: "/p", id: "pid"}}
+      env = %{"SWARM_ADD_DIRS" => "/a\n/b"}
+
+      opts = PersistedSession.backend_options(session, "cid", "epoch", env)
+      assert opts[:extra_read_roots] == ["/a", "/b"]
+      assert opts[:project_root] == "/p"
+      assert opts[:conversation_id] == "cid"
+
+      assert PersistedSession.backend_options(session, "cid", "epoch", %{})[:extra_read_roots] ==
+               []
+    end
+  end
+
+  # C-FEAT-9: `ncode update` runs the hosted installer; the tests point
+  # NCODE_INSTALL_URL at a local script.
+  describe "update" do
+    test "--yes downloads the installer and runs it", context do
+      dir = Path.dirname(context.log)
+      marker = Path.join(dir, "installer-ran")
+
+      File.write!(
+        Path.join(dir, "fake.sh"),
+        "#!/bin/sh\necho ran > \"" <> marker <> "\"\n"
+      )
+
+      assert {0, _} =
+               launch(context, ["update", "--yes"], [
+                 {"NCODE_INSTALL_URL", "file://" <> Path.join(dir, "fake.sh")}
+               ])
+
+      assert File.read!(marker) == "ran\n"
+      refute File.exists?(context.log)
+    end
+
+    test "a failing download is the command's status", context do
+      dir = Path.dirname(context.log)
+
+      assert {code, _} =
+               launch(context, ["update", "--yes"], [
+                 {"NCODE_INSTALL_URL", "file://" <> Path.join(dir, "missing.sh")}
+               ])
+
+      assert code != 0
+    end
+
+    test "without --yes and without a terminal it is a usage error", context do
+      assert {2, output} = launch(context, ["update"])
+      assert output =~ "ncode: ncode update needs --yes without a terminal. Run 'ncode --help'."
+    end
+
+    test "anything but --yes is a usage error and runs nothing", context do
+      dir = Path.dirname(context.log)
+      marker = Path.join(dir, "installer-ran")
+      File.write!(Path.join(dir, "fake.sh"), "#!/bin/sh\necho ran > \"" <> marker <> "\"\n")
+      env = [{"NCODE_INSTALL_URL", "file://" <> Path.join(dir, "fake.sh")}]
+
+      for args <- [["update", "--bogus"], ["update", "--yes", "x"], ["update", "-y"]] do
+        assert {2, output} = launch(context, args, env), inspect(args)
+        assert output =~ "update takes --yes only."
+      end
+
+      refute File.exists?(marker)
+    end
+
+    test "--help lists it, in the launcher and in the release", context do
+      assert {0, help} = launch(context, ["--help"])
+      assert help =~ "ncode update [--yes]"
+      assert SwarmCodeCLI.Release.usage() =~ "ncode update [--yes]"
     end
   end
 

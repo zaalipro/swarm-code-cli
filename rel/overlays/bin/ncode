@@ -20,6 +20,8 @@ usage() {
              [-p PROMPT [--json] [--fail-on-denied]] [--plain [--ndjson]]
        ncode settings [QUERY] [--dir DIR]
        ncode config COMMAND [ARGS]     (ncode config help lists them)
+       ncode update [--yes]            install the latest ncode CLI
+       ncode acp                       Agent Client Protocol agent over stdio (for editors)
        ncode help | version | doctor
 
 Opens the saved session for DIR (default: the current directory).
@@ -48,6 +50,11 @@ With no flag it opens Home: recent work, live runs, resume (Esc continues the la
   --max-turns N     with -p: stop the run after N turns of its lead (1-200)
   --max-budget-usd X  with -p: stop the run once it costs more than $X
   --approval MODE   with -p: read-only, auto or full for this run only
+  --add-dir DIR     let agents read another folder (read-only, this session only;
+                    repeat it, up to 8); works with the full-screen view and -p
+  --image, -i PATH  with -p: attach an image (PNG, JPEG, GIF or WebP inside the
+                    project folder; repeat it, up to 4)
+  -o, --output-last-message FILE  with -p: also write the final answer to FILE
   --plain           line-by-line presenter for pipes, CI and SSH (type `help`);
                     chosen by itself when stdin or stdout is not a terminal
   --ndjson          with --plain: one JSON record per line
@@ -174,6 +181,9 @@ output_format=""
 max_turns=""
 max_budget=""
 approval=""
+images=()
+output_file=""
+add_dirs=()
 plain=0
 ndjson=0
 seen=" "
@@ -196,8 +206,54 @@ set_project() {
   project_set=1
 }
 
+# C-FEAT-10: a path given on the command line is the user's, relative to where
+# the command ran; it is made absolute before anything changes directory.
+abs_path() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$PWD" "$1" ;;
+  esac
+}
+
+needs_file() {
+  [[ -n "${2//[[:space:]]/}" ]] || die_usage "$1 needs a file."
+}
+
+# C-FEAT-12: --add-dir names a folder the agents may read (read-only, this
+# session); it is resolved to its real path here, relative to where the command ran.
+add_dir() {
+  local resolved
+  [[ -n "${1//[[:space:]]/}" ]] || die_usage "--add-dir needs a directory."
+  resolved=$(cd -- "$1" 2>/dev/null && pwd -P) || die_usage "--add-dir needs a directory."
+  add_dirs+=("$resolved")
+}
+
 needs_value() {
   [[ $2 -ge 2 && "$3" != "--" ]] || die_usage "$1 needs a value."
+}
+
+# C-FEAT-9: `ncode update [--yes]` downloads and runs the hosted installer
+# (it checks the download's SHA-256). NCODE_INSTALL_URL points the download
+# elsewhere; it exists for the tests and is not in --help.
+update_cli() {
+  local yes=0 answer=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) yes=1 ;;
+      *) die_usage "update takes --yes only." ;;
+    esac
+    shift
+  done
+  if [[ $yes -eq 0 ]]; then
+    [[ -t 0 ]] || die_usage "ncode update needs --yes without a terminal."
+    printf '%s' 'This downloads and runs the ncode installer from https://code.llmotions.com/install.sh (it checks the download'\''s SHA-256). Continue? [y/N] ' >&2
+    read -r answer || true
+    case "$answer" in
+      y | Y) ;;
+      *) echo "ncode: update cancelled." >&2; return 1 ;;
+    esac
+  fi
+  curl -fsSL "${NCODE_INSTALL_URL:-https://code.llmotions.com/install.sh}" | sh
 }
 
 # pass74 S1-13/S1-14: `settings` and `config` as the first word are the
@@ -211,6 +267,17 @@ if [[ $# -gt 0 ]]; then
     help) usage; exit 0 ;;
     version) version; exit 0 ;;
     doctor) shift; set -- config doctor "$@" ;;
+    update) shift; update_cli "$@"; exit $? ;;
+    # C-FEAT-13: an Agent Client Protocol agent on stdin and stdout. Nothing
+    # else may reach stdout; the provider settings load as for -p.
+    acp)
+      shift
+      [[ $# -eq 0 ]] || die_usage "acp takes no arguments."
+      # shellcheck source=/dev/null
+      . "$root/bin/load_provider_env.sh"
+      unset SWARM_MODEL_OVERRIDE SWARM_CONVERSATION SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN \
+        SWARM_SETTINGS_ONLY SWARM_RESUME_PICKER SWARM_ADD_DIRS
+      exec "$root/bin/swarm_code_cli" eval 'SwarmCodeCLI.Release.main(System.argv())' acp ;;
   esac
 fi
 if [[ $# -gt 0 && "$1" == "config" ]]; then
@@ -283,6 +350,12 @@ while [[ $# -gt 0 ]]; do
     --max-budget-usd=*) once --max-budget-usd; max_budget="${1#--max-budget-usd=}" ;;
     --approval) needs_value "$1" $# "${2:-}"; once --approval; approval="$2"; shift ;;
     --approval=*) once --approval; approval="${1#--approval=}" ;;
+    --image | -i) needs_value "$1" $# "${2:-}"; needs_file "$1" "$2"; images+=("$(abs_path "$2")"); shift ;;
+    --image=*) needs_file --image "${1#--image=}"; images+=("$(abs_path "${1#--image=}")") ;;
+    -o | --output-last-message) needs_value "$1" $# "${2:-}"; needs_file "$1" "$2"; once -o; output_file="$(abs_path "$2")"; shift ;;
+    --output-last-message=*) needs_file -o "${1#--output-last-message=}"; once -o; output_file="$(abs_path "${1#--output-last-message=}")" ;;
+    --add-dir) needs_value "$1" $# "${2:-}"; add_dir "$2"; shift ;;
+    --add-dir=*) add_dir "${1#--add-dir=}" ;;
     --plain) once --plain; plain=1 ;;
     --ndjson) once --ndjson; ndjson=1 ;;
     --)
@@ -324,6 +397,10 @@ case "$approval" in
   full) export SWARM_HEADLESS_APPROVAL=full_access ;;
   *) die_usage "--approval is read-only, auto or full." ;;
 esac
+[[ ${#images[@]} -eq 0 || $prompt_set -eq 1 ]] || die_usage "--image goes with -p."
+[[ ${#images[@]} -le 4 ]] || die_usage "at most 4 --image."
+[[ -z "$output_file" || $prompt_set -eq 1 ]] || die_usage "-o goes with -p."
+[[ ${#add_dirs[@]} -le 8 ]] || die_usage "at most 8 --add-dir."
 [[ $ndjson -eq 0 || $plain -eq 1 ]] || die_usage "--ndjson goes with --plain."
 [[ $plain -eq 0 || $prompt_set -eq 0 ]] || die_usage "-p and --plain do not go together."
 if [[ $fail_on_denied -eq 1 && $prompt_set -eq 0 && $plain -eq 0 ]]; then
@@ -385,7 +462,12 @@ if [[ $model_set -eq 1 ]]; then
 else
   unset SWARM_MODEL_OVERRIDE
 fi
-unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY SWARM_RESUME_PICKER
+unset SWARM_RELEASE_TUI SWARM_SETTINGS_OPEN SWARM_SETTINGS_ONLY SWARM_RESUME_PICKER SWARM_ADD_DIRS
+# C-FEAT-12: the extra read folders, one per line, for the release to read.
+if [[ ${#add_dirs[@]} -gt 0 ]]; then
+  SWARM_ADD_DIRS=$(printf '%s\n' "${add_dirs[@]}")
+  export SWARM_ADD_DIRS
+fi
 
 # cli020 B20 (onboarding-18): something on the terminal while the VM boots;
 # the release erases it ("\r\e[2K") before its exit summary.
@@ -411,6 +493,8 @@ if [[ $prompt_set -eq 1 ]]; then
   if [[ "$output_format" == stream-json ]]; then set -- "$@" --output-format stream-json; fi
   if [[ -n "$max_turns" ]]; then set -- "$@" --max-turns "$max_turns"; fi
   if [[ -n "$max_budget" ]]; then set -- "$@" --max-budget-usd "$max_budget"; fi
+  for image in ${images[@]+"${images[@]}"}; do set -- "$@" --image "$image"; done
+  if [[ -n "$output_file" ]]; then set -- "$@" --output-last-message "$output_file"; fi
   headless "$@"
 fi
 

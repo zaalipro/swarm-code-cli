@@ -748,6 +748,10 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
     # `attributes.listed` is a test hook: the list the simulated server answers
     listed = get(c.attributes, "listed")
     attrs = if is_list(listed), do: %{"listed" => listed}, else: %{}
+    # cli021 C1 / C-ARCH-13: `apply` (replace, add or none) goes through to the
+    # fetch, which saves by default like the service.
+    apply_mode = get(c.attributes, "apply")
+    attrs = if is_binary(apply_mode), do: Map.put(attrs, "apply", apply_mode), else: attrs
 
     with_provider(state, c, fn p ->
       {{:task, task("provider.fetch_models", %{"id" => p["id"]}, attrs), result("accepted")},
@@ -1885,13 +1889,16 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
           "removed" => Enum.count(rows, &(&1["change"] == "gone")),
           "unchanged" => Enum.count(rows, &(&1["change"] == "same")),
           "ms" => 380,
-          # cli021 C1: the service's fetch saves (replace) and says so; this
-          # fake keeps the preview-then-apply flow the screens' tests drive,
-          # and answers the same keys with `saved: false`.
           "saved" => false
         }
 
-        summary = Map.put(summary, "words", fetch_words(summary))
+        # cli021 C1 / C-ARCH-13: the service's fetch saves (`replace`, the
+        # default; a list over the ceiling is added instead; `add` appends the
+        # new ids) and says so with `saved: true` and `stored`; only
+        # `apply: "none"` leaves the difference for `provider.apply_models`.
+        mode = fetch_mode(task["attributes"], truncated)
+        {state, summary} = store_fetch(state, p, mode, kept, summary)
+        summary = Map.put(summary, "words", fetch_words(summary, mode))
 
         fetches =
           Map.put(state.fetches, task["task_id"], %{
@@ -4108,7 +4115,42 @@ defmodule SwarmCodeCLI.UI.DataSource.Fake.SettingsIntegrations do
   end
 
   # "12 models · 3 new · 2 removed", the service's sentence.
-  defp fetch_words(%{"listed" => listed, "added" => added, "removed" => removed}) do
+  defp fetch_mode(attributes, truncated) do
+    case get(attributes || %{}, "apply") do
+      "none" -> :none
+      "add" -> :add
+      _replace -> if truncated, do: :add, else: :replace
+    end
+  end
+
+  defp store_fetch(state, _p, :none, _kept, summary), do: {state, summary}
+
+  defp store_fetch(state, p, mode, kept, summary) do
+    current = p["models"]
+
+    next =
+      if mode == :replace do
+        kept
+      else
+        new = Enum.reject(kept, &(&1 in current))
+        current ++ Enum.take(new, max(@max_models - length(current), 0))
+      end
+
+    state =
+      if next == current,
+        do: state,
+        else:
+          bump(
+            put_in(state.providers[p["id"]], %{p | "models" => next, "updated_at" => stamp(state)})
+          )
+
+    {state, summary |> Map.put("saved", true) |> Map.put("stored", length(next))}
+  end
+
+  # An add never removes: its words leave the removed count out.
+  defp fetch_words(%{"listed" => listed, "added" => added, "removed" => removed}, mode) do
+    removed = if mode == :add, do: 0, else: removed
+
     changes =
       case Enum.reject(
              [added > 0 && "#{added} new", removed > 0 && "#{removed} removed"],

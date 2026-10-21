@@ -12,8 +12,12 @@ defmodule SwarmCode.Daemon.Application do
   def start(_type, _args) do
     # cli020 L1: the live runtime's capability table is the synced one,
     # `SwarmCode.Domain.LLM.ProviderCaps`, started by `Domain.Runtime`.
+    #
+    # C-ARCH-5: the dev live runtime (`Daemon.Runtime.Run`, `LiveBackend`) owns
+    # its own run supervisor; the product starts none of it, so this tree is the
+    # domain's runtime alone. `Runtime.RunSupervisor` is for tests and tools that
+    # want a supervised `Runtime.Run` and start it themselves.
     children = [
-      SwarmCode.Daemon.Runtime.RunSupervisor,
       SwarmCode.Domain.Runtime
     ]
 
