@@ -3,7 +3,7 @@ defmodule SwarmCode.Domain.Engine do
 
   require Logger
   alias SwarmCode.Domain.{Conversations, Providers, Repo, Settings}
-  alias SwarmCode.Domain.Engine.{Prompts, RunServer, RunSupervisor}
+  alias SwarmCode.Domain.Engine.{Prompts, QueueDrain, RunServer, RunSupervisor}
 
   # Spec 50 §2.4: commands whose turn is defined by the command itself, so a
   # judge would have nothing to judge — the workflow author's turn produces a
@@ -725,11 +725,30 @@ defmodule SwarmCode.Domain.Engine do
   @spec cancel_chains() :: :ok
   def cancel_chains, do: cancel_chain_pids([{{{:chain, :_, :_}, :"$1", :_}, [], [:"$1"]}])
 
+  # pass 77 RD-6: the chains of `conversation_id` that belong to `run_ids` — the compaction a
+  # chain waits on is one of those runs, or the run that launched its turn is.
+  defp cancel_chains_of(conversation_id, run_ids) do
+    ids = MapSet.new(run_ids)
+
+    pids =
+      for {compact_run_id, pid, launched_by} <-
+            Registry.select(SwarmCode.Domain.Registry, [
+              {{{:chain, conversation_id, :"$1"}, :"$2", :"$3"}, [], [{{:"$1", :"$2", :"$3"}}]}
+            ]),
+          MapSet.member?(ids, compact_run_id) or MapSet.member?(ids, launched_by),
+          do: pid
+
+    cancel_chain_list(pids)
+  end
+
   @chain_cancel_ms 5_000
 
-  defp cancel_chain_pids(spec) do
+  defp cancel_chain_pids(spec),
+    do: cancel_chain_list(Registry.select(SwarmCode.Domain.Registry, spec))
+
+  defp cancel_chain_list(pids) do
     monitors =
-      for pid <- Registry.select(SwarmCode.Domain.Registry, spec) do
+      for pid <- pids do
         monitor = Process.monitor(pid)
         send(pid, :cancel_chain)
         {pid, monitor}
@@ -1465,15 +1484,32 @@ defmodule SwarmCode.Domain.Engine do
   escapes. `RunServer.stop/1` replies before the process is gone, so each stopped run is
   awaited (bounded) until it has left the registry.
   """
+  @family_rounds 3
+
   @spec stop_superseded_family(String.t(), String.t()) ::
           {:ok, [String.t()]} | {:error, :database_busy}
   def stop_superseded_family(conversation_id, run_id) do
     if run_id in running_runs(conversation_id), do: stop_and_await(run_id)
+    settle_family(conversation_id, run_id, @family_rounds)
+  end
 
+  # RD-6: one round folds the family as it is now, cancels the compaction chains that would
+  # wake into a new turn when their compactor is stopped, and stops the live members. A run
+  # that a stopped one launched in the meantime is in the next round's family; a round that
+  # stopped something is followed by another fold, which takes in the rows the stops wrote —
+  # the "stopped by user" message of a swarm is created after its run is stopped.
+  defp settle_family(conversation_id, run_id, rounds) do
     with {:ok, family} <- Conversations.supersede_launched(conversation_id, run_id) do
+      cancel_chains_of(conversation_id, [run_id | family])
       running = running_runs(conversation_id)
-      for id <- family, id in running, do: stop_and_await(id)
-      {:ok, family}
+      live = Enum.filter(family, &(&1 in running))
+      Enum.each(live, &stop_and_await/1)
+
+      cond do
+        live == [] -> {:ok, family}
+        rounds > 1 -> settle_family(conversation_id, run_id, rounds - 1)
+        true -> Conversations.supersede_launched(conversation_id, run_id)
+      end
     end
   end
 
@@ -1861,17 +1897,51 @@ defmodule SwarmCode.Domain.Engine do
 
   # spec 74 ARCHITECTURE-17: the chained turns go first — stopping a
   # compaction is what would wake them.
+  #
+  # pass 77 RD-3: the queue is held while the runs are stopped (`QueueDrain.with_hold/2`): the
+  # finish of a stopped chat does not start the next queued message, a drain that is active is
+  # ended first, and the stop waits for the stopped runs to be gone so no finish is left to
+  # arrive after the hold. The queue itself is untouched.
   @spec stop_all(String.t()) :: :ok
   def stop_all(conversation_id) do
-    cancel_chains(conversation_id)
-    conversation_id |> running_runs() |> Enum.each(&stop_run/1)
+    QueueDrain.with_hold(conversation_id, fn ->
+      cancel_chains(conversation_id)
+      stop_runs_and_await(Enum.filter(live_runs(), &(&1.conversation_id == conversation_id)))
+    end)
   end
 
   @doc "Stops every run of every conversation (the quit path, spec 11 §11)."
   @spec stop_all() :: :ok
   def stop_all do
-    cancel_chains()
-    Enum.each(running_run_ids(), &stop_run/1)
+    QueueDrain.with_hold(:all, fn ->
+      cancel_chains()
+      stop_runs_and_await(live_runs())
+    end)
+  end
+
+  @stopped_runs_ms 3_000
+
+  defp stop_runs_and_await(runs) do
+    monitors =
+      for %{run_id: run_id, pid: pid} <- runs do
+        monitor = Process.monitor(pid)
+        stop_run(run_id)
+        {pid, monitor}
+      end
+
+    deadline = System.monotonic_time(:millisecond) + @stopped_runs_ms
+
+    Enum.each(monitors, fn {pid, monitor} ->
+      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      receive do
+        {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+      after
+        remaining -> Process.demonitor(monitor, [:flush])
+      end
+    end)
+
+    :ok
   end
 
   @spec stop_agent(String.t(), String.t()) :: :ok

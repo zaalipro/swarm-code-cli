@@ -1930,8 +1930,9 @@ defmodule SwarmCode.Domain.Conversations do
   def supersede_launched(conv_id, run_id) do
     at = now()
 
+    # RD-7: its own seam tag, so a test can fail this transaction alone.
     result =
-      with_busy_retry(fn ->
+      Repo.retry(:supersede_launched, fn ->
         Repo.transaction(
           fn ->
             family = conv_id |> launched_family([run_id]) |> List.delete(run_id)

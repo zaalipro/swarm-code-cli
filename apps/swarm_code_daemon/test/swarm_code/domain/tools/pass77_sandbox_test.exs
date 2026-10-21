@@ -35,6 +35,24 @@ defmodule SwarmCode.Domain.Tools.Pass77SandboxTest do
       refute Sandbox.profile("/work/proj", [], true) =~ "network"
     end
 
+    test "RD-1: protected policy files lose their write, link and parent removal rights" do
+      profile =
+        Sandbox.profile("/work/proj", [], true, ["/work/proj/.swarm_code/config.json"])
+
+      assert profile =~
+               ~s[(deny file-write* file-link (literal "/work/proj/.swarm_code/config.json"))]
+
+      assert profile =~ ~s[(deny file-write* (literal "/work/proj/.swarm_code"))]
+      assert profile =~ ~s[(literal "/work")]
+      assert profile =~ ~s[(literal "/work/proj")]
+      refute profile =~ ~s[(literal "/")]
+
+      # the deny rules come after the allow, so they win (Seatbelt: last match)
+      {allow, _} = :binary.match(profile, "(allow file-write*")
+      {deny, _} = :binary.match(profile, "(deny file-write* file-link")
+      assert deny > allow
+    end
+
     test "takes several roots" do
       profile = Sandbox.profile(["/work/proj", "/work/owner"], [], true)
       assert profile =~ ~s[(subpath "/work/proj")]
@@ -132,6 +150,54 @@ defmodule SwarmCode.Domain.Tools.Pass77SandboxTest do
       assert output =~ "Operation not permitted"
       assert File.exists?(Path.join(dir, "inside.txt"))
       refute File.exists?(outside)
+    end
+
+    @tag skip: @needs_sandbox
+    test "RD-1: a command cannot rewrite, replace or move away the sandbox policy" do
+      dir = project(%{"sandbox" => "workspace-write"})
+      config = Path.join(dir, ".swarm_code/config.json")
+      original = File.read!(config)
+      progress = fn _, _ -> :ok end
+      ctx = %{project_root: dir}
+
+      attacks = [
+        "echo '{}' > .swarm_code/config.json",
+        "rm -f .swarm_code/config.json",
+        "echo '{}' > swap.json; mv swap.json .swarm_code/config.json",
+        "mv .swarm_code .swarm_code.old; mkdir .swarm_code; echo '{}' > .swarm_code/config.json",
+        "ln .swarm_code/config.json alias.json; echo '{}' > alias.json",
+        "chmod 000 .swarm_code",
+        "mv ../#{Path.basename(dir)} ../#{Path.basename(dir)}-moved"
+      ]
+
+      for attack <- attacks do
+        assert {:ok, "exit code " <> _} =
+                 Tools.run("run_command", %{"command" => attack}, ctx, progress)
+
+        assert File.read!(config) == original, "survived: #{attack}"
+        assert Sandbox.mode(ctx) == :workspace_write, "survived: #{attack}"
+      end
+
+      # the second command is still contained
+      probe = Path.join(System.user_home!(), ".cache/ncode/p77-sbx-probe")
+      File.mkdir_p!(probe)
+      on_exit(fn -> File.rm_rf(probe) end)
+      outside = Path.join(probe, "after-attack-#{System.unique_integer([:positive])}.txt")
+
+      assert {:ok, "exit code 1\n" <> out} =
+               Tools.run("run_command", %{"command" => "touch #{outside}"}, ctx, progress)
+
+      assert out =~ "Operation not permitted"
+      refute File.exists?(outside)
+
+      # ordinary project writes still work, also inside .swarm_code
+      assert {:ok, "exit code 0\n"} =
+               Tools.run(
+                 "run_command",
+                 %{"command" => "touch ok.txt .swarm_code/notes.txt"},
+                 ctx,
+                 progress
+               )
     end
 
     @tag skip: @needs_sandbox

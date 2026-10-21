@@ -1316,7 +1316,12 @@ defmodule SwarmCode.Domain.MCP.Client do
     }
 
     state = notify(state, "notifications/initialized", %{})
-    handshake_request(state, {:tools, {[], MapSet.new(), 1}}, "tools/list", %{})
+
+    # RD-11: a prompts-only server (no `tools` capability) has no tool catalogue
+    # to list; asking anyway answered "method not found" and failed the connection.
+    if skip_tools?(state),
+      do: handshake_request(%{state | tools: []}, :prompts, "prompts/list", %{}),
+      else: handshake_request(state, {:tools, {[], MapSet.new(), 1}}, "tools/list", %{})
   end
 
   defp handshake_step(state, {:tools, {acc, seen, pages}}, %{"result" => result}) do
@@ -1462,12 +1467,24 @@ defmodule SwarmCode.Domain.MCP.Client do
              capabilities: capabilities(info)
          },
          state <- notify(state, "notifications/initialized", %{}),
-         {:ok, tools, state} <- list_tools(state, nil, []) do
+         {:ok, tools, state} <- initial_tools(state) do
       {:ok, list_prompts(%{state | tools: tools})}
     else
       {:error, reason, state} -> {:error, reason, state}
     end
   end
+
+  # RD-11: the handshake follows what the server advertised. A server that offers
+  # prompts and no tools is not asked for a tool catalogue; one that advertises
+  # neither (an older or minimal server) keeps the long-standing `tools/list`.
+  defp initial_tools(state) do
+    if skip_tools?(state), do: {:ok, [], state}, else: list_tools(state, nil, [])
+  end
+
+  defp skip_tools?(state), do: prompts?(state) and not tools?(state)
+
+  defp tools?(%{capabilities: %{"tools" => %{}}}), do: true
+  defp tools?(_state), do: false
 
   # pass 77 D-FEAT-12: the blocking `prompts/list` of the HTTP handshake and the
   # probe. A server that fails it simply has no prompts.

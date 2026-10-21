@@ -111,8 +111,12 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
   # process-dictionary hand-off an MCP image uses (`Engine.Operation.run_tool/4`
   # collects it). The base64 lives only on the agent's in-memory history.
   defp read_image(abs, rel, size, mime) do
-    with true <- size <= SwarmCode.Domain.Attachments.max_bytes(),
-         {:ok, raw} <- File.read(abs),
+    # RD-10: the stat above is only a first look. The bytes are read from one
+    # handle with a hard `max_bytes + 1` limit, so a file that grew (or was
+    # replaced) after the stat is refused before anything is base64-encoded.
+    # The mime type and size are taken from the bytes actually read.
+    with {:ok, raw} <- read_bounded(abs, SwarmCode.Domain.Attachments.max_bytes()),
+         {:ok, mime} <- SwarmCode.Domain.Attachments.sniff(raw),
          data = Base.encode64(raw),
          true <- readable_image?(mime, raw, data) do
       SwarmCode.Domain.MCP.put_images([
@@ -120,11 +124,33 @@ defmodule SwarmCode.Domain.Tools.ReadFile do
       ])
 
       {:ok,
-       "#{rel} is an image (#{mime}, #{size} bytes); it is attached to this result so you can look at it."}
+       "#{rel} is an image (#{mime}, #{byte_size(raw)} bytes); it is attached to this result so you can look at it."}
     else
       _ ->
         {:error,
          "#{rel} is an image the model cannot take (#{mime}, #{size} bytes; too large, too many pixels or a damaged file)"}
+    end
+  end
+
+  @doc false
+  # At most `max` bytes of `abs` (one extra byte is read to tell "exactly max"
+  # from "more"); `{:error, :too_large}` when there is more, and never more than
+  # `max + 1` bytes in memory.
+  @spec read_bounded(String.t(), non_neg_integer()) :: {:ok, binary()} | {:error, term()}
+  def read_bounded(abs, max) do
+    opened =
+      File.open(abs, [:read, :binary], fn fd ->
+        case IO.binread(fd, max + 1) do
+          data when is_binary(data) and byte_size(data) <= max -> {:ok, data}
+          data when is_binary(data) -> {:error, :too_large}
+          :eof -> {:error, :empty}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+
+    case opened do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
     end
   end
 

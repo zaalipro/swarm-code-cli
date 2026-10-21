@@ -222,3 +222,20 @@ The provenance sync pins this commit (`provenance/sync-rules.json`), and 276 of 
 `4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier admits version 2 records at eleven
 adaptation pins: the ten named above and this commit. The recorded copyright, MIT license and
 NOTICE terms remain in place. This addendum does not publish or modify the desktop repository.
+
+## Addendum: desktop commit 3c53871d (pass 77 final, review 1019, 2026-10-21)
+
+**Date:** 2026-10-21
+
+The review-1019 fix round re-pins the extracted domain to desktop commit
+`3c53871d2447441c86c3803a9df965d7c0dc2e09`, the final commit of the desktop pass 77 branch, the
+same project and owner as the commits named above. It follows
+`86f0d083c99d7fcb70e831bf7f93770c67ec492b` with the desktop reviewers' fixes to the engine,
+the queue drain, the sandbox, `load_skill`, the read tools and the MCP client. It adds no migration,
+so the schema contract stays `desktop-4c7c577` (58 migrations). The provenance sync pins this
+commit (`provenance/sync-rules.json`), and 276 of the 300 entries in
+`provenance/extracted-files.json` record it as their upstream commit; 23 record
+`fb1b4ff82354ac8ff2e82d4f6516121fd55ff212` and one, the frozen `domain/format.ex`, records
+`4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier admits version 2 records at twelve
+adaptation pins: the eleven named above and this commit. The recorded copyright, MIT license and
+NOTICE terms remain in place. This addendum does not publish or modify the desktop repository.

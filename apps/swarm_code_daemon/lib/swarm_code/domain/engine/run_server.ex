@@ -567,6 +567,10 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     # write them before the terminal row, so a crashed or quit run leaves the
     # node statuses the boot sweep would otherwise have to guess.
     started = System.monotonic_time(:millisecond)
+
+    # pass 77 D-ARCH-2 (step 2): the periodic batch in flight is joined first (an older batch must
+    # not land after the terminal one), inside the same budget as the flush attempts below.
+    state = settle_flush_task(state, terminal_flush_ms())
     state = flush_for_terminate(state, 1, started + terminal_flush_ms())
 
     # spec 55 T11: the terminal row is written even when the flush could not be.
@@ -850,6 +854,10 @@ defmodule SwarmCode.Domain.Engine.RunServer do
         # flush — `:all` for a register or any column outside `Node.patch_cols/0`.
         dirty_cols: %{},
         flush_ref: nil,
+        # pass 77 D-ARCH-2 (step 2): the one periodic write batch in flight, `%{task:, plan:}`;
+        # nil when none. A timer flush starts it, its result (or its DOWN) lands it, and every
+        # synchronous writer joins it first so two batches can never reach SQLite out of order.
+        flush_task: nil,
         # pass76 fix-db-flush-backoff: current re-arm delay after raised flushes; 0 = healthy.
         flush_backoff: 0,
         # pass76 fix-m5-engine (M5-DB-002): monotonic ms before which no non-terminal flush
@@ -2090,7 +2098,9 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
   # Spec 74 BUGS-71: see `resync_stream/2`.
   def handle_cast({:resync_stream, pid}, state) do
-    state = flush(state)
+    # pass 77 D-ARCH-2 (step 2): it is the pending deltas that must go out before the reset;
+    # a window being mounted does not wait for the database.
+    state = flush(state, :async)
 
     case state.assistant_message do
       %{id: message_id} ->
@@ -2266,7 +2276,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
 
         SwarmCode.Domain.Engine.Questions.delete(state.run.id, node_id)
         Events.broadcast(state.conversation.id, {:question_cleared, state.run.id, node_id})
-        {:noreply, flush(state)}
+        # pass 77 D-ARCH-2 (step 2): an answer must not wait for a contended writer lock.
+        {:noreply, flush(state, :async)}
     end
   end
 
@@ -2301,11 +2312,29 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   @impl true
-  def handle_info(:flush, state), do: {:noreply, flush(%{state | flush_ref: nil})}
+  # pass 77 D-ARCH-2 (step 2): the two periodic writers (the 100 ms flush timer and the answer
+  # checkpoint) hand their database write to the one in-flight task and go on serving calls; the
+  # broadcasts of `flush/2` go out at once.
+  def handle_info(:flush, state), do: {:noreply, flush(%{state | flush_ref: nil}, :async)}
 
   def handle_info({:answer_checkpoint, tag}, %{checkpoint_ref: tag} = state) do
-    state = flush(%{state | checkpoint_ref: nil, checkpoint_timer: nil})
+    state = flush(%{state | checkpoint_ref: nil, checkpoint_timer: nil}, :async)
     {:noreply, if(answer_unsaved?(state), do: arm_checkpoint(state), else: state)}
+  end
+
+  # The in-flight batch landed (or its task died): acknowledge exactly what it sent.
+  def handle_info({ref, result}, %{flush_task: %{task: %Task{ref: ref}} = flight} = state)
+      when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, apply_flush_result(%{state | flush_task: nil}, flight.plan, result, :task)}
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{flush_task: %{task: %Task{ref: ref}} = flight} = state
+      ) do
+    result = {:raised, {:exit, reason}}
+    {:noreply, apply_flush_result(%{state | flush_task: nil}, flight.plan, result, :task)}
   end
 
   def handle_info({:answer_checkpoint, _stale}, state), do: {:noreply, state}
@@ -2986,8 +3015,17 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   defp merge_cols(_prev, :all), do: :all
   defp merge_cols(prev, cols), do: MapSet.union(prev, cols)
 
-  defp flush(state) do
-    state = state |> flush_previews() |> flush_writes()
+  # `:sync` (every caller but the two periodic timers) writes in this process, after joining the
+  # periodic batch in flight; `:async` (pass 77 D-ARCH-2 step 2) hands the write to that one task.
+  defp flush(state, mode \\ :sync) do
+    state = flush_previews(state)
+
+    state =
+      case mode do
+        :sync -> state |> settle_flush_task() |> flush_writes()
+        :async -> flush_writes_async(state)
+      end
+
     conv_id = state.conversation.id
 
     # Spec 54 §2.1 (54a B1): a streaming tick changed `detail`/`progress`/
@@ -3115,8 +3153,60 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   end
 
   defp flush_writes(state, _force?) do
-    # spec 55 T12 (55a A8); pass 77 D-ARCH-2: the writes are an immutable batch, acknowledged
-    # by value below (`Nodes.ack_batch/2`) — the seam for moving the write off this process.
+    case prepare_flush(state) do
+      {:idle, state} -> state
+      {:write, state, plan} -> apply_flush_result(state, plan, write_plan(plan), :inline)
+    end
+  end
+
+  # pass 77 D-ARCH-2 (step 2): the timer flush. The database write goes to the one owned,
+  # monitored task (`flush_task`); this process keeps serving approvals, stop, mailbox calls and
+  # streaming events while a contended writer lock is waited for. One batch at a time: a timer
+  # that fires while it is out only broadcasts, and the result re-arms whatever moved meanwhile.
+  # The backoff gate of `flush_writes/2` applies unchanged.
+  defp flush_writes_async(%{flush_task: %{}} = state), do: state
+
+  defp flush_writes_async(%{flush_backoff: backoff, flush_next_at: next_at} = state)
+       when backoff > 0 and is_integer(next_at) do
+    now = System.monotonic_time(:millisecond)
+
+    if now < next_at,
+      do: rearm_flush(state, next_at - now),
+      else: start_flush(state)
+  end
+
+  defp flush_writes_async(state), do: start_flush(state)
+
+  defp start_flush(state) do
+    case prepare_flush(state) do
+      {:idle, state} ->
+        state
+
+      {:write, state, plan} ->
+        # Only the write itself is captured: the task never sees the state, nor the
+        # acknowledgment half of the plan.
+        write = %{
+          batch: Map.take(plan.batch, [:inserts, :updates]),
+          totals: plan.totals,
+          checkpoint: plan.checkpoint
+        }
+
+        task =
+          Task.Supervisor.async_nolink(SwarmCode.Domain.TaskSupervisor, fn ->
+            write_plan(write)
+          end)
+
+        %{state | flush_task: %{task: task, plan: write_only(plan)}}
+    end
+  end
+
+  # What the acknowledgment needs, without the writes themselves (they can be large).
+  defp write_only(plan), do: %{plan | batch: %{plan.batch | inserts: [], updates: []}}
+
+  # spec 55 T12 (55a A8); pass 77 D-ARCH-2: what one flush sends is an immutable plan, built here
+  # in the state owner and acknowledged by value in `apply_flush_result/4`
+  # (`Nodes.ack_batch/2`), so the write can be done by another process.
+  defp prepare_flush(state) do
     batch = SwarmCode.Domain.Engine.RunServer.Nodes.build_batch(state)
     %{inserts: inserts, updates: updates} = batch
 
@@ -3129,72 +3219,157 @@ defmodule SwarmCode.Domain.Engine.RunServer do
     {state, checkpoint} = answer_checkpoint(state)
 
     if updates == [] and inserts == [] and totals == nil and checkpoint == nil do
-      state
+      {:idle, state}
     else
-      try do
-        opts = if checkpoint, do: [answer_checkpoint: elem(checkpoint, 0)], else: []
-
-        case Conversations.flush_run_writes(inserts, updates, totals, opts) do
-          {:ok, run} ->
-            state = if run, do: %{state | run: run, totals_written: triple}, else: state
-
-            state =
-              case checkpoint do
-                {{_id, text}, sig} ->
-                  %{
-                    state
-                    | answer_checkpoint: {System.monotonic_time(:millisecond), sig},
-                      assistant_message: %{state.assistant_message | content: text}
-                  }
-
-                nil ->
-                  state
-              end
-
-            %{state | flush_backoff: 0, flush_next_at: nil, flush_log_until: nil}
-            |> SwarmCode.Domain.Engine.RunServer.Nodes.ack_batch(batch)
-
-          {:error, :database_busy} ->
-            state |> warn_busy("flush of #{length(updates)} node writes") |> rearm_flush()
-
-          # spec 67 T12 (B16): `flush_ref` was nil'd before this call, so
-          # returning the state unchanged left the columns in `unsaved` with
-          # nothing armed to write them — on a finishing run the next writer is
-          # `terminate/2`, and the run's last progress was simply lost.
-          {:error, _reason} ->
-            rearm_flush(state)
-        end
-      rescue
-        # spec 55 T11 (55a A4): no write error may end the run's sole state owner.
-        error ->
-          # pass76 fix-db-flush-backoff: a persistent non-busy error (one bad node row) must not
-          # re-arm every 100 ms and log every time. Back off exponentially up to a cap; log the
-          # first failure and then only the attempts that run at the cap.
-          previous = state.flush_backoff
-          delay = if previous == 0, do: @flush_ms, else: min(previous * 2, flush_backoff_cap())
-
-          now = System.monotonic_time(:millisecond)
-
-          state =
-            if state.flush_log_until == nil or now >= state.flush_log_until do
-              Logger.error(
-                "swarm_code: run #{state.run.id} flush raised #{Exception.message(error)}; " <>
-                  "nodes #{Enum.join(MapSet.union(state.persist_pending, state.uninserted), ", ")} stay " <>
-                  "unsaved and the flush is re-armed in #{delay} ms"
-              )
-
-              %{state | flush_log_until: now + flush_backoff_cap()}
-            else
-              state
-            end
-
-          state = %{state | flush_next_at: now + delay}
-
-          # pass76 db-writer-stall: re-arm the flush itself, not only the checkpoint — a raised
-          # flush left the columns in `unsaved` with nothing scheduled to write them.
-          rearm_flush(%{state | flush_backoff: delay}, delay)
-      end
+      {:write, state,
+       %{
+         batch: batch,
+         updates_count: length(updates),
+         totals: totals,
+         triple: triple,
+         checkpoint: checkpoint
+       }}
     end
+  end
+
+  # The database part only: no state, in this process (`:sync`) or in the flush task. A raise is
+  # an answer (`{:raised, error}`), never the end of the caller.
+  defp write_plan(%{batch: batch, totals: totals, checkpoint: checkpoint}) do
+    opts = if checkpoint, do: [answer_checkpoint: elem(checkpoint, 0)], else: []
+    Conversations.flush_run_writes(batch.inserts, batch.updates, totals, opts)
+  rescue
+    error -> {:raised, error}
+  end
+
+  # What the write answered, applied to the state as it is NOW. `:inline` ran in this process with
+  # nothing changed in between; `:task` ran in the flush task and may find newer dirty columns
+  # (which `ack_batch/2` leaves in place), a newer run row, or a retired answer checkpoint.
+  defp apply_flush_result(state, plan, result, source) do
+    %{batch: batch, triple: triple, checkpoint: checkpoint} = plan
+
+    case result do
+      {:ok, run} ->
+        state =
+          cond do
+            run == nil -> state
+            source == :inline -> %{state | run: run, totals_written: triple}
+            # The live row may have moved on (more tokens, a pause): only what was sent is noted.
+            true -> %{state | totals_written: triple}
+          end
+
+        state =
+          case {checkpoint, state} do
+            {{{id, text}, sig},
+             %{assistant_message: %{id: id} = message, answer_checkpoint: current}}
+            when current != :retired ->
+              %{
+                state
+                | answer_checkpoint: {System.monotonic_time(:millisecond), sig},
+                  assistant_message: %{message | content: text}
+              }
+
+            _none_or_replaced ->
+              state
+          end
+
+        state =
+          %{state | flush_backoff: 0, flush_next_at: nil, flush_log_until: nil}
+          |> SwarmCode.Domain.Engine.RunServer.Nodes.ack_batch(batch)
+
+        if source == :task, do: rearm_if_owed(state), else: state
+
+      {:error, :database_busy} ->
+        state |> warn_busy("flush of #{plan.updates_count} node writes") |> rearm_flush()
+
+      # spec 67 T12 (B16): `flush_ref` was nil'd before this call, so
+      # returning the state unchanged left the columns in `unsaved` with
+      # nothing armed to write them — on a finishing run the next writer is
+      # `terminate/2`, and the run's last progress was simply lost.
+      {:error, _reason} ->
+        rearm_flush(state)
+
+      # spec 55 T11 (55a A4): no write error may end the run's sole state owner.
+      {:raised, error} ->
+        # pass76 fix-db-flush-backoff: a persistent non-busy error (one bad node row) must not
+        # re-arm every 100 ms and log every time. Back off exponentially up to a cap; log the
+        # first failure and then only the attempts that run at the cap.
+        previous = state.flush_backoff
+        delay = if previous == 0, do: @flush_ms, else: min(previous * 2, flush_backoff_cap())
+
+        now = System.monotonic_time(:millisecond)
+
+        state =
+          if state.flush_log_until == nil or now >= state.flush_log_until do
+            Logger.error(
+              "swarm_code: run #{state.run.id} flush raised #{flush_error_message(error)}; " <>
+                "nodes #{Enum.join(MapSet.union(state.persist_pending, state.uninserted), ", ")} stay " <>
+                "unsaved and the flush is re-armed in #{delay} ms"
+            )
+
+            %{state | flush_log_until: now + flush_backoff_cap()}
+          else
+            state
+          end
+
+        state = %{state | flush_next_at: now + delay}
+
+        # pass76 db-writer-stall: re-arm the flush itself, not only the checkpoint — a raised
+        # flush left the columns in `unsaved` with nothing scheduled to write them.
+        rearm_flush(%{state | flush_backoff: delay}, delay)
+
+      # A bounded join (terminate) gave up on the task: nothing was acknowledged, so the
+      # terminal flush owes the same columns again.
+      :timeout ->
+        state
+    end
+  end
+
+  defp flush_error_message(error) when is_exception(error), do: Exception.message(error)
+
+  defp flush_error_message(error),
+    do: error |> inspect(limit: 20, printable_limit: 200) |> SwarmCode.Domain.LLM.HTTP.redact()
+
+  # After an async batch landed: whatever moved while it was out is still owed, and so is a
+  # checkpoint of answer text that grew (`arm_checkpoint/1` stays silent while a batch is out).
+  defp rearm_if_owed(state) do
+    state =
+      if state.flush_ref == nil and flush_owed?(state),
+        do: %{state | flush_ref: Process.send_after(self(), :flush, @flush_ms)},
+        else: state
+
+    if answer_unsaved?(state), do: arm_checkpoint(state), else: state
+  end
+
+  # Joins the in-flight periodic batch, if any, and applies its result. Every synchronous writer
+  # calls this before building its own batch, so two batches can never reach SQLite out of order
+  # (a column written twice, an INSERT twice); `terminate/2` calls it with the remaining
+  # terminal-flush budget. A task that is not done at `timeout` is killed and the batch counts as
+  # not written.
+  defp settle_flush_task(state, timeout \\ :infinity)
+  defp settle_flush_task(%{flush_task: nil} = state, _timeout), do: state
+
+  defp settle_flush_task(
+         %{flush_task: %{task: %Task{ref: ref, pid: pid}, plan: plan}} = state,
+         timeout
+       ) do
+    result =
+      receive do
+        {^ref, reply} ->
+          Process.demonitor(ref, [:flush])
+          reply
+
+        {:DOWN, ^ref, :process, ^pid, reason} ->
+          {:raised, {:exit, reason}}
+      after
+        timeout ->
+          # A process inside a SQLite busy wait dies only when the NIF returns, so it is not
+          # awaited (as in `bounded/2`).
+          Process.exit(pid, :kill)
+          Process.demonitor(ref, [:flush])
+          :timeout
+      end
+
+    apply_flush_result(%{state | flush_task: nil}, plan, result, :task)
   end
 
   # pass76 eng-answer-checkpoint: a brutal kill runs no `terminate/2`, so the
@@ -3245,6 +3420,11 @@ defmodule SwarmCode.Domain.Engine.RunServer do
   # than the current deadline. A flush may push the deadline forward under a
   # pending timer, so a timer that fires early re-arms for the remaining time
   # (`answer_unsaved?/1`); each timer carries a tag, and a stale one is ignored.
+  # pass 77 D-ARCH-2 (step 2): no timer while a periodic batch is out — its deadline may already be
+  # past, and a zero-delay timer would spin until the batch lands; the landing re-arms
+  # (`rearm_if_owed/1`).
+  defp arm_checkpoint(%{flush_task: %{}} = state), do: state
+
   defp arm_checkpoint(%{run: %{kind: kind} = run} = state) when kind in ["chat", "compact"] do
     if state.assistant_message == nil or state.answer_checkpoint == :retired or terminal?(run) do
       state
@@ -4840,7 +5020,8 @@ defmodule SwarmCode.Domain.Engine.RunServer do
       {:question, state.run.id, node_id, questions}
     )
 
-    {:noreply, flush(state)}
+    # pass 77 D-ARCH-2 (step 2): as the answer above, a raised question is not held by the writer.
+    {:noreply, flush(state, :async)}
   end
 
   # spec 74 BUGS-48: false when an agent on the way up from `node_id` was

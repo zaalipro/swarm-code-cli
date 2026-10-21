@@ -11,6 +11,12 @@ defmodule SwarmCode.Domain.Tools.Sandbox do
   exit code. `sandbox-exec` execs the shell in place, so the shell keeps its pid
   and `SwarmCode.Domain.OSProcess.kill_tree/1` still owns the whole tree.
 
+  RD-1: the policy file itself, `.swarm_code/config.json`, is read-only to the
+  sandboxed shell (and so is replacing it through a parent directory); a command
+  cannot rewrite it to switch the sandbox off or add an unsandboxed hook for the
+  next command. A `git checkout` that updates a tracked config.json is refused
+  in the sandbox for the same reason.
+
   The profile is fail-closed: a path that cannot be quoted in the profile
   language refuses the command rather than running it unsandboxed. A project
   that asks for the sandbox on a machine without `sandbox-exec` runs unsandboxed
@@ -69,9 +75,10 @@ defmodule SwarmCode.Domain.Tools.Sandbox do
       true ->
         roots = write_roots(ctx.project_root)
         tmp = tmp_dirs()
+        protected = policy_files(ctx.project_root)
 
-        if Enum.all?(roots ++ tmp, &quotable?/1) do
-          {@exec, ["-p", profile(roots, tmp, network?(ctx)), shell | args]}
+        if Enum.all?(roots ++ tmp ++ protected, &quotable?/1) do
+          {@exec, ["-p", profile(roots, tmp, network?(ctx), protected), shell | args]}
         else
           {:error, "sandbox: the project path cannot be expressed in a sandbox profile"}
         end
@@ -82,9 +89,16 @@ defmodule SwarmCode.Domain.Tools.Sandbox do
   The Seatbelt profile (pure): everything allowed except writes, which are
   allowed under `roots` (a path or a list), `tmp_dirs` and a few device files;
   the network is denied unless `network?`.
+
+  RD-1: `protected` lists the policy files `mode/1` rereads on every command
+  (`.swarm_code/config.json`, which also carries the hooks). They sit inside the
+  writable project, so a later rule (Seatbelt: the last match wins) takes them
+  back: no write, link or removal of the file, and no removal or rename of any
+  directory above it, so the file cannot be swapped by replacing a parent. A
+  command can therefore not switch its own sandbox off for the next command.
   """
-  @spec profile(String.t() | [String.t()], [String.t()], boolean()) :: String.t()
-  def profile(roots, tmp_dirs, network?) do
+  @spec profile(String.t() | [String.t()], [String.t()], boolean(), [String.t()]) :: String.t()
+  def profile(roots, tmp_dirs, network?, protected \\ []) do
     subpaths =
       (List.wrap(roots) ++ tmp_dirs ++ ["/private/tmp", "/private/var/folders"])
       |> Enum.uniq()
@@ -96,11 +110,53 @@ defmodule SwarmCode.Domain.Tools.Sandbox do
       "(deny file-write*)",
       "(allow file-write* #{subpaths} " <>
         ~s[(literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") ] <>
-        ~s[(regex #"^/dev/tty") (regex #"^/dev/fd/"))],
-      if(network?, do: nil, else: "(deny network*)")
+        ~s[(regex #"^/dev/tty") (regex #"^/dev/fd/"))]
     ]
+    |> Kernel.++(protect_rules(protected))
+    |> Kernel.++([if(network?, do: nil, else: "(deny network*)")])
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
+  end
+
+  defp protect_rules([]), do: []
+
+  defp protect_rules(files) do
+    literals = fn paths -> Enum.map_join(paths, " ", &~s[(literal "#{&1}")]) end
+    parents = files |> Enum.map(&Path.dirname/1) |> Enum.uniq()
+    dirs = files |> Enum.flat_map(&ancestors/1) |> Enum.uniq()
+
+    [
+      # the file: no write, removal, rename-over, or second name for its inode
+      "(deny file-write* file-link #{literals.(files)})",
+      # its own directory: not created, removed, renamed or re-moded
+      "(deny file-write* #{literals.(parents)})",
+      # every directory above: not renamed away, removed or made unreadable
+      "(deny file-write-unlink file-write-mode file-write-owner #{literals.(dirs)})"
+    ]
+  end
+
+  # Every directory above `path`, the filesystem root excluded.
+  defp ancestors(path) do
+    path
+    |> Path.dirname()
+    |> Path.split()
+    |> Enum.reduce([], fn
+      "/", acc -> acc
+      part, [] -> ["/" <> part]
+      part, [last | _] = acc -> [Path.join(last, part) | acc]
+    end)
+  end
+
+  # The one file `mode/1` rereads: the owning project's config.json (an
+  # isolation directory answers for its project), resolved like the roots.
+  defp policy_files(root) do
+    owner =
+      case root |> Path.split() |> Enum.reverse() do
+        [_name, "worktrees", ".swarm_code" | up] -> up |> Enum.reverse() |> Path.join()
+        _plain -> root
+      end
+
+    [Path.join(real(owner), ".swarm_code/config.json")]
   end
 
   @doc "The network is open only in Full access (the mode this op was decided in)."
