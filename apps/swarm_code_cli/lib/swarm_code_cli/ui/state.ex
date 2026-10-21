@@ -166,7 +166,8 @@ defmodule SwarmCodeCLI.UI.State do
     # (`%{id, text}`: the `queue.edit` request that removes it and what it said).
     queue_take: nil,
     # cli020 D10: the rewind in flight (`%{mode}` while the turns load,
-    # `%{mode: :apply, turn, scope}` while it applies) and the last bare Esc.
+    # `%{mode: :apply, turn, scope, key, identity}` while it applies: the
+    # composer that asked and its payload identity, C-BUG-17) and the last bare Esc.
     rewind: nil,
     last_escape_at: nil,
     # cli020 D19: the history search's debounce timer and newest request,
@@ -291,6 +292,28 @@ defmodule SwarmCodeCLI.UI.State do
   end
 
   def dirty?(state), do: Drafts.dirty?(state.drafts) or FieldEditors.dirty?(state.field_editors)
+
+  @typedoc "The surface that owns the keys (C-ARCH-8): see `surface/1`."
+  @type surface :: :hint | {:layer, term()} | :settings | :home | :overlay | :shell
+
+  @doc """
+  The one surface that owns the keys, from the nullable surface fields, in the
+  one written precedence order (the order `Keymap.Context.of/1` reads them):
+  hint mode (it opens over a request card, so over a layer), then the top
+  layer, then the settings layer, then Home, then the agent overlay, else the
+  shell. Reducer guards and the keymap ask this instead of each re-deriving
+  the order from `hint`, `layers`, `settings`, `home` and `overlay`.
+  """
+  @spec surface(t() | map()) :: surface()
+  def surface(%{hint: %{}}), do: :hint
+  def surface(%{layers: [layer | _]}), do: {:layer, layer}
+
+  def surface(%{settings: settings}) when is_struct(settings, SwarmCodeCLI.UI.Settings.Layer),
+    do: :settings
+
+  def surface(%{home: home}) when is_struct(home, SwarmCodeCLI.UI.Home), do: :home
+  def surface(%{overlay: %{}}), do: :overlay
+  def surface(_state), do: :shell
 
   # orbit D9: Home's own composer, one draft for the whole session. While Home
   # is open it covers the agent overlay, so its key comes first.

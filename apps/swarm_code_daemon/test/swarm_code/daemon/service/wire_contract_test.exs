@@ -66,7 +66,11 @@ defmodule SwarmCode.Daemon.Service.WireContractTest do
       source_epoch: Ecto.UUID.generate()
     ]
 
-    backend = start_supervised!({Backend, opts})
+    # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+    # delta of its own: let it land before a test counts deltas.
+    backend =
+      {Backend, opts} |> start_supervised!() |> SwarmCode.Test.C020Backend.settle_slash_extras()
+
     on_exit(fn -> Engine.stop_all(conv.id) end)
 
     Map.merge(fixture, %{

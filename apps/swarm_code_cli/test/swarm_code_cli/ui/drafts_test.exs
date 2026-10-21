@@ -104,6 +104,69 @@ defmodule SwarmCodeCLI.UI.DraftsTest do
     assert Editor.text(Drafts.fetch(store, a.key).editor) == "unsent"
   end
 
+  # C-BUG-15: a settled, empty draft is the only thing the store reclaims.
+  defp sent_and_cleared(store, key) do
+    store
+    |> Drafts.put(Draft.new(key, editor("prompt #{elem(key, 0)}")))
+    |> Drafts.mark_submitted(key, "request-#{elem(key, 0)}")
+    |> Drafts.clear_origin(key, "request-#{elem(key, 0)}")
+  end
+
+  defp key(n), do: {"c" <> String.pad_leading(Integer.to_string(n), 3, "0"), :main}
+
+  test "32 sent and cleared drafts do not block the 33rd conversation" do
+    store = Enum.reduce(1..32, Drafts.new(), &sent_and_cleared(&2, key(&1)))
+    assert map_size(store.entries) == 32
+    refute Drafts.dirty?(store)
+
+    store = Drafts.put(store, Draft.new(key(33), editor("33rd")))
+    assert map_size(store.entries) == 32
+    assert Map.has_key?(store.entries, key(33))
+    # The smallest settled key went; everything else is kept.
+    refute Map.has_key?(store.entries, key(1))
+    assert Map.has_key?(store.entries, key(2))
+    assert Editor.text(Drafts.fetch(store, key(33)).editor) == "33rd"
+  end
+
+  test "at the limit with 32 dirty drafts the 33rd still raises and nothing is lost" do
+    store =
+      Enum.reduce(
+        1..32,
+        Drafts.new(),
+        &Drafts.put(&2, Draft.new(key(&1), editor("unsent #{&1}")))
+      )
+
+    assert_raise ArgumentError, ~r/draft capacity/, fn ->
+      Drafts.put(store, Draft.new(key(33), editor("33rd")))
+    end
+
+    assert map_size(store.entries) == 32
+    assert Editor.text(Drafts.fetch(store, key(1)).editor) == "unsent 1"
+  end
+
+  test "a draft with undo history, a pending submission or a collapsed paste is never reclaimed" do
+    # key(1): emptied by hand, so the text is blank but the undo history remains.
+    {:ok, typed} = Editor.apply(Editor.new(), {:insert, "typed"})
+    {:ok, emptied} = Editor.apply(typed, :select_all)
+    {:ok, emptied} = Editor.apply(emptied, :delete_backward)
+    assert Editor.text(emptied) == "" and emptied.undo != []
+
+    # key(2): sent, not yet answered.
+    # key(3): blank text but a collapsed paste payload.
+    store =
+      Drafts.new(max_drafts: 3)
+      |> Drafts.put(Draft.new(key(1), emptied))
+      |> Drafts.put(Draft.new(key(2), editor("sent")))
+      |> Drafts.mark_submitted(key(2), "request")
+      |> Drafts.put(%{Draft.new(key(3), Editor.new()) | pastes: %{1 => "payload"}})
+
+    assert_raise ArgumentError, ~r/draft capacity/, fn ->
+      Drafts.put(store, Draft.new(key(4), editor("4th")))
+    end
+
+    assert Map.keys(store.entries) |> Enum.sort() == [key(1), key(2), key(3)]
+  end
+
   test "attachments are validated metadata only and every container redacts content" do
     ref = attachment()
     assert AttachmentRef.validate(ref) == :ok

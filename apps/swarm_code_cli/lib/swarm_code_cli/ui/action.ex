@@ -103,7 +103,7 @@ defmodule SwarmCodeCLI.UI.Action do
           # pass73-K: Enter on the palette runs its command (T4); the opt-out
           # key sends a "workflow" message as it is (T5); /diff, /theme and
           # /mouse (T1, T2, T9) and the /approval picker's rows (T7).
-          | {:run_command, binary()}
+          | {:run_command, binary() | {:dynamic, binary()}}
           # cli021 B3: the argument list (`SlashPalette`): Tab, Enter.
           | {:complete_argument, binary()}
           | {:run_argument, binary()}
@@ -195,7 +195,7 @@ defmodule SwarmCodeCLI.UI.Action do
              | {:preset, :compact | :balanced | :wide}
              | {:nudge, -8 | -2 | 2 | 8}}
           | {:composer_height, :reset | {:nudge, -1 | 1}}
-          | {:complete_command, binary()}
+          | {:complete_command, binary() | {:dynamic, binary()}}
           # pass73 finisher (V1's request K1): Enter on an approval card with a
           # blank draft shows every command line, or folds them back.
           | {:approval_show_all, binary()}
@@ -289,6 +289,12 @@ defmodule SwarmCodeCLI.UI.Action do
           :delete
         ]
       )
+
+  # C-FEAT-1/8: a project's custom command or workflow, checked by shape here
+  # (the action layer cannot know them) and against the listed rows when the
+  # reducer applies it.
+  def validate({kind, {:dynamic, name}} = action) when kind in [:run_command, :complete_command],
+    do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.dynamic_name?(name))
 
   def validate({:run_command, name} = action),
     do: valid_action(action, SwarmCodeCLI.UI.SlashPalette.valid_name?(name))

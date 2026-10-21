@@ -107,6 +107,14 @@ defmodule SwarmCodeCLI.UI.Reducer do
 
     state = SwarmCodeCLI.UI.Reducer.TerminalPrefs.apply_prefs(state, init.prefs)
 
+    # C-FEAT-14: the saved composer height and inspector width apply at launch
+    # (their live consumers emit no effects).
+    {state, _} =
+      SwarmCodeCLI.UI.Reducer.Settings.Commit.apply_names(state, [
+        "composer_rows",
+        "inspector_width"
+      ])
+
     state = %{
       state
       | watches: Map.new([:shell, :workspace, :activity, :inspector], &{&1, %WatchState{}}),
@@ -275,7 +283,7 @@ defmodule SwarmCodeCLI.UI.Reducer do
         {state, []}
 
       key ->
-        {state, replaced} = replace_draft(state, key, "/" <> name)
+        {state, replaced} = replace_draft(state, key, "/" <> SlashPalette.plain_name(name))
 
         case Keymap.draft_send(state) do
           {:ok, action} ->
@@ -2017,9 +2025,15 @@ defmodule SwarmCodeCLI.UI.Reducer do
         state
 
       key ->
-        draft = Drafts.fetch(state.drafts, key)
-        editor = %{draft.editor | anchor: nil}
-        %{state | drafts: Drafts.put(state.drafts, %{draft | editor: editor})}
+        # C-BUG-15: a composer that was never edited has no entry and so no
+        # anchor to drop; putting a fresh draft would raise at the store limit.
+        if Map.has_key?(state.drafts.entries, key) do
+          draft = Drafts.fetch(state.drafts, key)
+          editor = %{draft.editor | anchor: nil}
+          %{state | drafts: Drafts.put(state.drafts, %{draft | editor: editor})}
+        else
+          state
+        end
     end
   end
 
@@ -2994,14 +3008,12 @@ defmodule SwarmCodeCLI.UI.Reducer do
   # header shows them and Ctrl-N reaches them. orbit D19: they wait under Home
   # too (the dot and "Ctrl-N go" carry them); the step that closes Home is
   # one of its own, so the card opens as Home goes.
-  defp auto_open?(
-         %{layers: [], lifecycle: :running, hint: nil, overlay: nil, settings: nil, home: nil} =
-           state,
-         action
-       ) do
-    (match?({:data, %{kind: kind}} when kind != :response, action) or
-       action in [:close_top_layer, :boot] or match?({:navigate, _}, action) or
-       match?({:home, _}, action)) and
+  defp auto_open?(%{lifecycle: :running} = state, action) do
+    # C-ARCH-8: no hint, layer, settings, Home or overlay is in front.
+    State.surface(state) == :shell and
+      (match?({:data, %{kind: kind}} when kind != :response, action) or
+         action in [:close_top_layer, :boot] or match?({:navigate, _}, action) or
+         match?({:home, _}, action)) and
       state.focus in ["composer", "main", "inspector"] and
       Layout.for_state(state).mutations_visible?
   end

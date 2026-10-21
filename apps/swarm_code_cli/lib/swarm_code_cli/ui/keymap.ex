@@ -591,10 +591,17 @@ defmodule SwarmCodeCLI.UI.Keymap do
 
   defp send_under_card(state) do
     case SwarmCodeCLI.UI.SlashPalette.enter_completion(state) do
-      {:complete, name} -> result({:complete_command, name})
-      {:run, name} -> result({:run_command, name})
-      {:run_argument, text} -> result({:run_argument, text})
-      nil -> draft_send(state)
+      {:complete, name} ->
+        result({:complete_command, SwarmCodeCLI.UI.SlashPalette.action_name(name)})
+
+      {:run, name} ->
+        result({:run_command, SwarmCodeCLI.UI.SlashPalette.action_name(name)})
+
+      {:run_argument, text} ->
+        result({:run_argument, text})
+
+      nil ->
+        draft_send(state)
     end
   end
 

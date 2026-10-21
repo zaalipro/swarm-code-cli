@@ -41,7 +41,8 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       swarm_effort_effective: nil,
       swarm_effort_source: nil,
       scheduled_effort_default: nil,
-      local_zone: nil
+      local_zone: nil,
+      slash_extras: %{"custom" => [], "workflows" => []}
     ],
     fields: [
       project: {:optional, {:text, 200}},
@@ -99,6 +100,9 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       # defaults a new scheduled task shows.
       scheduled_effort_default: {:optional, {:text, 32}},
       local_zone: {:optional, {:text, 64}},
+      # C-FEAT-1/8: the project's custom commands and workflows, for the `/`
+      # popup and /help (an older daemon sends none).
+      slash_extras: {:dto, SwarmCodeCLI.UI.DataSource.DTO.SlashExtras},
       allowed_actions: :actions,
       revision: :revision,
       seen_revision: :revision,
@@ -155,6 +159,7 @@ defmodule SwarmCodeCLI.UI.DataSource.DTO.WorkspaceSnapshot do
       swarm_effort_source: nil,
       scheduled_effort_default: nil,
       local_zone: nil,
+      slash_extras: %SwarmCodeCLI.UI.DataSource.DTO.SlashExtras{},
       allowed_actions: [],
       revision: 0,
       seen_revision: 0,

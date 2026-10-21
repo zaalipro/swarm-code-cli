@@ -11,14 +11,20 @@ defmodule SwarmCodeCLI.UI.Reducer.TerminalPrefs do
   | ---------------------- | ----------------------- | ------------------------ |
   | `notify`               | `notify`                | auto/bell/osc9/os/off    |
   | `title`                | `title?`                | boolean, true            |
-  | `paste_collapse_lines` | `paste_collapse_lines`  | 0..200, 8                |
-  | `wheel_lines`          | `wheel_lines`           | 1..10, 3                 |
-  | `notice_seconds`       | `notice_ms`             | 2..30 s, 6,000 ms        |
+  | `paste_collapse_lines` | `paste_collapse_lines`  | registry range (0..200), 8 |
+  | `wheel_lines`          | `wheel_lines`           | registry range (1..10), 3  |
+  | `notice_seconds`       | `notice_ms`             | registry range (2..30 s), 6,000 ms |
   | `hint_letters`         | `hint_letters`          | 2..26 distinct a-z, none of `UI.Hint.forbidden/0` |
   | `reduced_motion`       | `capabilities.reduced_motion?` | boolean            |
   """
 
   @notify %{"auto" => :auto, "bell" => :bell, "osc9" => :osc9, "os" => :os, "off" => :off}
+
+  # C-ARCH-12: the bounds are the registry's (`core/settings/registry/terminal.ex`),
+  # read once at compile time.
+  @paste_lines SwarmCode.Settings.Registry.range("terminal.paste_collapse_lines")
+  @wheel_lines SwarmCode.Settings.Registry.range("terminal.wheel_lines")
+  @notice_seconds SwarmCode.Settings.Registry.range("terminal.notice_seconds")
 
   @doc "Applies `state.prefs` to the typed fields when it differs from `previous`'s."
   @spec sync(map(), map() | nil) :: map()
@@ -31,8 +37,8 @@ defmodule SwarmCodeCLI.UI.Reducer.TerminalPrefs do
     state
     |> put(:notify, notify(Map.get(prefs, "notify")))
     |> put(:title?, boolean(Map.get(prefs, "title")))
-    |> put(:paste_collapse_lines, integer(Map.get(prefs, "paste_collapse_lines"), 0, 200))
-    |> put(:wheel_lines, integer(Map.get(prefs, "wheel_lines"), 1, 10))
+    |> put(:paste_collapse_lines, integer(Map.get(prefs, "paste_collapse_lines"), @paste_lines))
+    |> put(:wheel_lines, integer(Map.get(prefs, "wheel_lines"), @wheel_lines))
     |> put(:notice_ms, seconds(Map.get(prefs, "notice_seconds")))
     |> put(:hint_letters, letters(Map.get(prefs, "hint_letters")))
     |> reduced_motion(boolean(Map.get(prefs, "reduced_motion")))
@@ -64,12 +70,12 @@ defmodule SwarmCodeCLI.UI.Reducer.TerminalPrefs do
   defp boolean("off"), do: false
   defp boolean(_value), do: :keep
 
-  defp integer(value, min, max) when is_integer(value) and value >= min and value <= max,
+  defp integer(value, first..last//_) when is_integer(value) and value >= first and value <= last,
     do: value
 
-  defp integer(_value, _min, _max), do: :keep
+  defp integer(_value, _range), do: :keep
 
-  defp seconds(value) when is_integer(value) and value >= 2 and value <= 30, do: value * 1_000
+  defp seconds(value) when is_integer(value) and value in @notice_seconds, do: value * 1_000
   defp seconds(_value), do: :keep
 
   defp letters(value) when is_binary(value) do

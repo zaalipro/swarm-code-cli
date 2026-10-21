@@ -349,6 +349,36 @@ defmodule SwarmCode.Daemon.Service.Settings.C74ValuesTest do
              )
   end
 
+  test "C-FEAT-15: session.effort reads NCODE_EFFORT (SWARM_EFFORT) as an env layer below the conversation's own",
+       fixture do
+    {:ok, conversation} = Conversations.update(fixture.conversation, %{effort: nil})
+    fixture = %{fixture | conversation: conversation}
+
+    by_key = values(C74S1.context(fixture, env: %{"SWARM_EFFORT" => "high"}))
+    effort = by_key["session.effort"]
+
+    assert effort["winner"] == "env"
+    assert effort["value"] == "high"
+
+    assert %{"set" => true, "value" => "high"} =
+             Enum.find(effort["layers"], &(&1["layer"] == "env"))
+
+    # The conversation's own level still wins over the session's environment.
+    {:ok, conversation} = Conversations.update(conversation, %{effort: "low"})
+    fixture = %{fixture | conversation: conversation}
+
+    effort =
+      values(C74S1.context(fixture, env: %{"SWARM_EFFORT" => "high"}))["session.effort"]
+
+    assert effort["winner"] == "session" and effort["value"] == "low"
+
+    # Without the variable the row falls to the global default as before.
+    {:ok, conversation} = Conversations.update(conversation, %{effort: nil})
+    fixture = %{fixture | conversation: conversation}
+    effort = values(C74S1.context(fixture))["session.effort"]
+    assert effort["winner"] in ["global", "default"]
+  end
+
   test "--model is the flag layer of both session model rows; a write clears it", fixture do
     override = %{provider_id: fixture.deepseek.id, model: "deepseek-v4-flash"}
     Application.put_env(:swarm_code_daemon, :session_model_override, override)

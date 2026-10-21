@@ -143,7 +143,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
     case {PathCompletion.selected(state), SlashPalette.selected(state)} do
       {%{id: path}, _} -> ok({:complete_path, path})
       {nil, %{arg?: true, text: text}} -> ok({:complete_argument, text})
-      {nil, %{name: name}} -> ok({:complete_command, name})
+      {nil, %{name: name}} -> ok({:complete_command, SlashPalette.action_name(name)})
       _ -> if Keymap.live_turn(state), do: run(:queue, nil, state, table), else: :ignore
     end
   end
@@ -159,7 +159,7 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
   def run(:focus_next, _key, state, _table) do
     case SlashPalette.selected(state) do
       %{arg?: true, text: text} -> ok({:complete_argument, text})
-      %{name: name} -> ok({:complete_command, name})
+      %{name: name} -> ok({:complete_command, SlashPalette.action_name(name)})
       nil -> ok({:focus_cycle, :next})
     end
   end
@@ -277,10 +277,10 @@ defmodule SwarmCodeCLI.UI.Keymap.Special do
         ok(:shell_send)
 
       {:complete, name} ->
-        ok({:complete_command, name})
+        ok({:complete_command, SlashPalette.action_name(name)})
 
       {:run, name} ->
-        ok({:run_command, name})
+        ok({:run_command, SlashPalette.action_name(name)})
 
       {:run_argument, text} ->
         ok({:run_argument, text})

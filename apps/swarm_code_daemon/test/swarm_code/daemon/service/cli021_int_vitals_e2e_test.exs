@@ -89,6 +89,10 @@ defmodule SwarmCode.Daemon.Service.Cli021IntVitalsE2ETest do
          source_epoch: Ecto.UUID.generate()}
       )
 
+    # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+    # delta of its own: let it land before a test counts deltas.
+    SwarmCode.Test.C020Backend.settle_slash_extras(backend)
+
     if :ets.whereis(:swarm_code_speed) == :undefined,
       do: start_supervised!(SwarmCode.Domain.LLM.Speed)
 

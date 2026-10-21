@@ -10,6 +10,7 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
   """
   use ExUnit.Case, async: false
   import Ecto.Query
+  import SwarmCode.Test.C020Backend, only: [settle_slash_extras: 1]
   alias SwarmCode.Daemon.Service.PersistedBackend, as: Backend
   alias SwarmCode.Domain.{Cache, Conversations, MCP, Notifications, Projects, Providers, Repo}
   alias SwarmCode.Domain.Engine.{Events, Questions}
@@ -80,6 +81,10 @@ defmodule SwarmCode.Daemon.Service.Pass70ConversationTest do
          conversation_id: current.id,
          source_epoch: Ecto.UUID.generate()}
       )
+
+    # The launch listing of the project's commands (C-FEAT-1/8) is a metadata
+    # delta of its own: let it land before a test counts deltas.
+    settle_slash_extras(backend)
 
     %{backend: backend, project: project, older: older, current: current}
   end

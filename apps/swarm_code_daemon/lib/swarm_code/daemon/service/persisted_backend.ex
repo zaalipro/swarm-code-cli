@@ -275,6 +275,9 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         # computing some of them, and the ones whose diff failed (not retried).
         facts_missing: [],
         facts_job: nil,
+        # C-FEAT-1/8: the project's custom commands and workflows, listed by one
+        # owned task at launch for the terminal's `/` popup and /help.
+        slash_extras: %{task: nil, items: nil, pending: false},
         facts_failed: MapSet.new(),
         file_index: nil,
         # Queue ownership follows the conversation, not the selected view.
@@ -358,6 +361,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       # init returns, from the mailbox).
       send(self(), {:drain_queue, opts[:conversation_id]})
       send(self(), {:git_facts, :start})
+      send(self(), {:slash_extras, :start})
       {:ok, reload(state)}
     else
       # The refusal is the shape of the failed check (`false`, `nil`, a tagged
@@ -609,6 +613,24 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
 
   def handle_info({:DOWN, ref, :process, _, _}, %{git: %{task: %Task{ref: ref}}} = state),
     do: {:noreply, git_done(state, nil, nil)}
+
+  # C-FEAT-1/8: the project's custom commands and workflows are listed (at
+  # launch) by one owned task; a task that dies keeps the previous list.
+  def handle_info({:slash_extras, _reason}, state), do: {:noreply, slash_extras_job(state)}
+
+  def handle_info(
+        {ref, {:slash_extras, items}},
+        %{slash_extras: %{task: %Task{ref: ref}}} = state
+      ) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, slash_extras_done(state, items)}
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _, _},
+        %{slash_extras: %{task: %Task{ref: ref}}} = state
+      ),
+      do: {:noreply, slash_extras_done(state, nil)}
 
   def handle_info({:git_timeout, ref}, %{git: %{task: %Task{ref: ref} = task}} = state) do
     Task.shutdown(task, :brutal_kill)
@@ -5716,9 +5738,131 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
       "validator_model" => effective_model_name(conversation, :validator),
       # cli020 C22: the status line's Git facts.
       "git_branch" => state.git.branch,
-      "git_dirty" => state.git.dirty
+      "git_dirty" => state.git.dirty,
+      # C-FEAT-1/8: the project's custom commands and workflows (names and
+      # descriptions only) for the `/` popup and /help.
+      "slash_extras" => slash_extras_items(state)
     }
   end
+
+  @slash_extras_empty %{"custom" => [], "workflows" => []}
+  @slash_extras_max 200
+
+  defp slash_extras_items(%{slash_extras: %{items: %{} = items}}), do: items
+  defp slash_extras_items(_state), do: @slash_extras_empty
+
+  defp slash_extras_job(%{slash_extras: %{task: %Task{}} = extras} = state),
+    do: %{state | slash_extras: %{extras | pending: true}}
+
+  defp slash_extras_job(%{slash_extras: extras} = state) do
+    conversation_id = state.opts[:conversation_id]
+
+    task =
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+        {:slash_extras, slash_extras_for(conversation_id)}
+      end)
+
+    %{state | slash_extras: %{extras | task: task, pending: false}}
+  rescue
+    _ -> state
+  end
+
+  defp slash_extras_job(state), do: state
+
+  # The task ended: keep its list (`nil`: it died, keep the previous one), run
+  # once more if another request came in meanwhile, and send the metadata
+  # delta when the list changed (no reload of the projection, as for Git).
+  defp slash_extras_done(%{slash_extras: extras} = state, items) do
+    state = %{state | slash_extras: %{extras | task: nil, items: items || extras.items}}
+    state = if extras.pending, do: slash_extras_job(state), else: state
+
+    case state.metadata do
+      %{} = meta ->
+        facts = %{"slash_extras" => slash_extras_items(state)}
+
+        if Map.take(meta, Map.keys(facts)) == facts,
+          do: state,
+          else:
+            broadcast_metadata(%{
+              state
+              | metadata: Map.merge(meta, facts),
+                revision: state.revision + 1
+            })
+
+      _ ->
+        state
+    end
+  end
+
+  defp slash_extras_done(state, _items), do: state
+
+  # What the terminal's popup needs of `Commands.list/1` and `Workflows.list/1`
+  # (the sources `CommandDispatcher` parses with): names and one-line
+  # descriptions, never bodies; at most 200 entries in all, sorted by name
+  # (workflows keep up to 100 of them, the commands the rest).
+  defp slash_extras_for(conversation_id) do
+    project =
+      case Conversations.get(conversation_id) do
+        %{project: project} -> project
+        _ -> nil
+      end
+
+    workflows =
+      project
+      |> SwarmCode.Domain.Workflows.list()
+      |> Enum.flat_map(fn definition ->
+        meta = if is_map(definition.meta), do: definition.meta, else: %{}
+
+        if slash_name?(definition.name),
+          do: [
+            %{
+              "name" => definition.name,
+              "description" =>
+                slash_description(Map.get(meta, :description) || Map.get(meta, "description"))
+            }
+          ],
+          else: []
+      end)
+      |> Enum.sort_by(& &1["name"])
+      |> Enum.take(div(@slash_extras_max, 2))
+
+    custom =
+      project
+      |> SwarmCode.Domain.Commands.list()
+      |> Enum.flat_map(fn command ->
+        body = Map.get(command, :body)
+
+        if slash_name?(command.name),
+          do: [
+            %{
+              "name" => command.name,
+              "description" => slash_description(Map.get(command, :description)),
+              "args" =>
+                is_binary(body) and
+                  (String.contains?(body, "$ARGUMENTS") or Regex.match?(~r/\$[1-9]/, body))
+            }
+          ],
+          else: []
+      end)
+      |> Enum.sort_by(& &1["name"])
+      |> Enum.take(@slash_extras_max - length(workflows))
+
+    %{"custom" => custom, "workflows" => workflows}
+  rescue
+    _ -> @slash_extras_empty
+  catch
+    # The repo went away mid-read (the session is closing): an empty list.
+    :exit, _ -> @slash_extras_empty
+  end
+
+  defp slash_name?(name),
+    do: is_binary(name) and Regex.match?(~r/\A[A-Za-z0-9_.-]{1,64}\z/, name)
+
+  defp slash_description(text) when is_binary(text) do
+    text |> String.split(["\r\n", "\n"], parts: 2) |> hd() |> String.trim() |> preview(200)
+  end
+
+  defp slash_description(_), do: ""
 
   defp vitals_body(%{vitals: pid}) when is_pid(pid), do: Vitals.body(pid)
   defp vitals_body(_state), do: nil
