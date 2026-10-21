@@ -2400,6 +2400,70 @@
       "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
       "upstream_path": "test/swarm_code/tools/pass77_sandbox_test.exs",
       "upstream_sha256": "423cc15f4255f1b5d5bd15e98f89da662b95f1d212c21a58a0e76771364a3699"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/domain/engine/polish74_c_e1_tool_images_test.exs",
+      "sha256": "874499866cd34d5c55a3f5f2e403912e9bcbe8b44b8b753b858d443a7182d923",
+      "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
+      "upstream_path": "test/swarm_code/engine/polish74_c_e1_tool_images_test.exs",
+      "upstream_sha256": "ff9ee220c3c01291e13281031c4f07e8e2652934f72b3d17f4da61a60450fbd1"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/domain/llm/pass76_transport_test.exs",
+      "sha256": "522e8c23aa894ff51b9549b5c5d279a39ed99337f169d836155898eb15c22aa3",
+      "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
+      "upstream_path": "test/swarm_code/llm/pass76_transport_test.exs",
+      "upstream_sha256": "5141f9e626a3ad62f22834d72633717d1322d13e338cb7ae88203b5a0d101a7f"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/domain/tools/pass76_command_safety_test.exs",
+      "sha256": "52d575f5423fd52e71aa9a9b7ba16a822eeb4ee0a2eaba859c9c4e4e8516846b",
+      "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
+      "upstream_path": "test/swarm_code/tools/pass76_command_safety_test.exs",
+      "upstream_sha256": "efe872dc06a911e9452029f5c5b00c4c6e3f9289171c73681166f753403b6a39"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/domain/tools/polish74_bo2_command_safety_test.exs",
+      "sha256": "6028d32f67707a092b08e47d8af9496254a678bc9be360b1b386574f34f39676",
+      "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
+      "upstream_path": "test/swarm_code/tools/polish74_bo2_command_safety_test.exs",
+      "upstream_sha256": "5262ddf7f47d2ccb7ab49c5ebbbc6d88d482093f4277618f3b730be830e741eb"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/domain/workflows/pass76_host_read_test.exs",
+      "sha256": "e7ed641e0d32c2d45ec6944b273f5ab6d7c2f327ff4ffdb88f5f0219f2170927",
+      "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
+      "upstream_path": "test/swarm_code/workflows/pass76_host_read_test.exs",
+      "upstream_sha256": "a05962668f81750a8ff3dbe506ed731995233dd4cc6105f2fb31d16da598d61b"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/domain/workflows/pass76_smoke_admission_test.exs",
+      "sha256": "1d876452410e56f4b4538f91add1b4b706147dee49042e1a7b471b08da07ef79",
+      "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
+      "upstream_path": "test/swarm_code/workflows/pass76_smoke_admission_test.exs",
+      "upstream_sha256": "57be3f9af6458c1e77260c1d60a7d4a95047895d30d68b231962572cc5fd1241"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/swarm_code/domain/workflows/pass76_watchdog_test.exs",
+      "sha256": "c57bbfca1c904cfe594dd86595249f06ff1f8b8b6bb6dcc659881a1ad20318fe",
+      "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
+      "upstream_path": "test/swarm_code/workflows/pass76_watchdog_test.exs",
+      "upstream_sha256": "003aab406671ec23c711490e8ee49fb0f0347308d75cc17cec3ac9d84d19f0cb"
+    },
+    {
+      "classification": "test",
+      "destination": "apps/swarm_code_daemon/test/support/domain/loopback_http.ex",
+      "sha256": "0d210aff96aaee8ca314353bb43aab807eff82469b0ece321ada378e33a741b0",
+      "upstream_commit": "3c53871d2447441c86c3803a9df965d7c0dc2e09",
+      "upstream_path": "test/support/loopback_http.ex",
+      "upstream_sha256": "68a9ffd9f887522ebf1bfac8a1f63cf63ce2175f984ad1a06c22730e1b7447a2"
     }
   ]
 }
