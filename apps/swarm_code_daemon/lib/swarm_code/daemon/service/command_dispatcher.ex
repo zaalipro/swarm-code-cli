@@ -233,26 +233,17 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
       ]
 
       result =
-        cond do
-          mode == "swarm" ->
-            Engine.start_swarm(
-              SessionConfiguration.overlay(conv),
-              goal.text,
-              args ++ approval(opts)
-            )
-
-          approval(opts) == [] ->
-            Engine.start_goal_turn(SessionConfiguration.overlay(conv), goal.text, args)
-
-          # `start_goal_turn/3` does not forward `approval_mode:`; this is the
-          # chat turn it starts, with the session's mode.
-          true ->
-            Engine.start_chat_turn(
-              SessionConfiguration.overlay(conv),
-              message,
-              [],
-              [prompt: args[:prompt], goal_id: goal.id] ++ chat_opts(opts)
-            )
+        if mode == "swarm" do
+          Engine.start_swarm(SessionConfiguration.overlay(conv), goal.text, args ++ approval(opts))
+        else
+          # `start_goal_turn/3` forwards neither `approval_mode:` nor the overlay nor the
+          # extra read roots; this is the chat turn it starts, with the session's options.
+          Engine.start_chat_turn(
+            SessionConfiguration.overlay(conv),
+            message,
+            [],
+            [prompt: args[:prompt], goal_id: goal.id] ++ chat_opts(opts)
+          )
         end
 
       case started(conv, cmd.name, result) do
@@ -629,7 +620,7 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
           SessionConfiguration.overlay(conv),
           cmd.text,
           [],
-          [reply_to_run_id: root.id, context: reply_context(root)] ++ approval(opts)
+          [reply_to_run_id: root.id, context: reply_context(root)] ++ chat_opts(opts)
         )
       )
     end
@@ -1305,9 +1296,18 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   # `NCODE_EFFORT`) as a function, so a turn the engine chains after an
   # automatic compaction reloads the conversation and applies it again. The
   # engine reads it from the options of a chat turn only; a swarm start does
-  # not take it.
+  # not take it. Every `Engine.start_chat_turn/4` of this module takes its options
+  # from here, so a slash-launched turn also gets the session's extra read-only
+  # folders (`--add-dir`, `/add-dir`; pass 77 C-FEAT-12, review fix RC-7).
   defp chat_opts(opts),
-    do: approval(opts) ++ [conversation_overlay: &SessionConfiguration.overlay/1]
+    do: approval(opts) ++ [conversation_overlay: &SessionConfiguration.overlay/1] ++ roots(opts)
+
+  defp roots(opts) do
+    case Keyword.get(opts, :extra_read_roots, []) do
+      [_ | _] = roots -> [extra_read_roots: roots]
+      _ -> []
+    end
+  end
 
   defp research(id) do
     case Integer.parse(id) do
@@ -1384,6 +1384,14 @@ defmodule SwarmCode.Daemon.Service.CommandDispatcher do
   defp valid_options?([{:approval_mode, mode} | rest], seen) do
     :approval_mode not in seen and mode in @approval_modes and
       valid_options?(rest, [:approval_mode | seen])
+  end
+
+  # Review 1019 RC-7: the session's extra read-only folders (at most 8, as the
+  # backend keeps them) ride on the options of a command that starts a chat turn.
+  defp valid_options?([{:extra_read_roots, roots} | rest], seen) do
+    :extra_read_roots not in seen and bounded_list?(roots, 8) and
+      Enum.all?(roots, &valid_text?(&1, 4_096)) and
+      valid_options?(rest, [:extra_read_roots | seen])
   end
 
   defp valid_options?([{key, value} | rest], seen) when key in @allowed do

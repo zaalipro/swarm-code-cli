@@ -1914,7 +1914,8 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         CommandDispatcher.dispatch(
           state.opts[:conversation_id],
           text,
-          [research_ids: state.research_ids, attachments: attachments] ++ approval_opts(state)
+          [research_ids: state.research_ids, attachments: attachments] ++
+            approval_opts(state) ++ extra_roots_opts(state)
         )
       end
 
@@ -2399,7 +2400,7 @@ defmodule SwarmCode.Daemon.Service.PersistedBackend do
         CommandDispatcher.dispatch(
           conversation.id,
           text,
-          [research_ids: [], attachments: []] ++ approval_opts(state)
+          [research_ids: [], attachments: []] ++ approval_opts(state) ++ extra_roots_opts(state)
         )
       else
         # A prompt is never dropped: any failure puts it back to be retried.
