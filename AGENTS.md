@@ -6,7 +6,7 @@ Claude Code reads this file directly when the project has no `CLAUDE.md`; do not
 
 ## What this is
 
-Product name (v0.2.2): **ncode**, lowercase; the installed command is `ncode`
+Product name (v0.3.0): **ncode**, lowercase; the installed command is `ncode`
 (`rel/overlays/bin/ncode`), with `swarmcode` and `swarm-code` kept as deprecated aliases that
 exec it. Internal names are unchanged on purpose: modules (`SwarmCode.*`, `SwarmCodeCLI.*`), OTP
 apps and the release (`swarm_code_*`), Mix tasks, the data folder
@@ -111,8 +111,8 @@ Three umbrella apps with deliberate ownership boundaries (`apps/*/mix.exs`):
   handshake/request), `SwarmCode.Commands` the slash-command registry, and
   `SwarmCode.Governance.Provenance` the extraction audit.
 - **`swarm_code_daemon`**: the domain extracted from the desktop app plus the daemon shell.
-  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `3c53871d` (desktop pass
-  77 final, branch `r1019/Dint`, CLI review 1019; merge it into desktop `main` without squashing, the CLI pins this sha; before it `86f0d083`, the integration commit, `68bc97cd`, pass 76, `2552de92`, `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
+  `SwarmCode.Domain.*` is the desktop lineage, re-derived from desktop `344acc2d` (desktop 0.3.0 on `main`; before it `3c53871d`, pass
+  77 final, branch `r1019/Dint`, CLI review 1019, then `86f0d083`, the integration commit, `68bc97cd`, pass 76, `2552de92`, `04baeb1c` and `a93d6d8e`, pass 74, CLI 0.2.1 and 0.2.2, and
   `7b8f379f`, pass 72, CLI 0.2.0) by `mix swarm_code.provenance.sync`; CLI-local files (`domain/runtime.ex`, `paths.ex`,
   `notifications.ex`, `pub_sub.ex`, `feature_catalog.ex`, `html.ex`,
   `engine/pending_interactions.ex`, `tools/agent_title.ex`) are never synced (Ecto SQLite Repo via vendored `exqlite`,
@@ -185,7 +185,7 @@ Invariants that the code base defends and tests pin:
   with `StartupError{code: :schema_incompatible}`. The domain is synced to desktop `4c7c577a`
   (desktop 0.2.0), re-synced to `7b8f379f` (desktop pass 72, no migration), then to `a93d6d8e`
   (desktop pass 74, CLI 0.2.1 and 0.2.2, no migration), then to `68bc97cd` (desktop pass 76, no
-  migration), then to `86f0d083` and `3c53871d` (desktop pass 77, no migration); its schema contract is
+  migration), then to `86f0d083` and `3c53871d` (desktop pass 77, no migration) and `344acc2d` (desktop 0.3.0, no migration); its schema contract is
   `desktop-4c7c577` (58 migrations, `apps/swarm_code_daemon/priv/schema/desktop-4c7c577.json`),
   and `forward_compatible` lets the CLI run `20261015000004`, `20261016000001`,
   `20261016000002`, `20261017000004` and `20261018000001` itself after the verified backup.

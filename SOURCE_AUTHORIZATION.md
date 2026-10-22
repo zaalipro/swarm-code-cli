@@ -239,3 +239,20 @@ commit (`provenance/sync-rules.json`), and 276 of the 300 entries in
 `4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier admits version 2 records at twelve
 adaptation pins: the eleven named above and this commit. The recorded copyright, MIT license and
 NOTICE terms remain in place. This addendum does not publish or modify the desktop repository.
+
+## Addendum: desktop commit 344acc2d (ncode 0.3.0, 2026-10-22)
+
+**Date:** 2026-10-22
+
+The ncode 0.3.0 release re-pins the extracted domain to desktop commit
+`344acc2dbc75acc59592c83ea22fcc922b34b8a5`, desktop `main` after the 0.3.0 version change, the
+same project and owner as the commits named above. It follows
+`3c53871d2447441c86c3803a9df965d7c0dc2e09` with the 0.3.0 version in the MCP and LSP
+`clientInfo` (the CLI keeps its recorded patch there) and one test that waits for the command
+library. It adds no migration, so the schema contract stays `desktop-4c7c577` (58 migrations).
+The provenance sync pins this commit (`provenance/sync-rules.json`), and 284 of the 308 entries in
+`provenance/extracted-files.json` record it as their upstream commit; 23 record
+`fb1b4ff82354ac8ff2e82d4f6516121fd55ff212` and one, the frozen `domain/format.ex`, records
+`4c7c577aa909274b009dc1bf0f216e5179acddc9`. The verifier admits version 2 records at thirteen
+adaptation pins: the twelve named above and this commit. The recorded copyright, MIT license and
+NOTICE terms remain in place. This addendum does not publish or modify the desktop repository.
